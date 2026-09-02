@@ -704,8 +704,10 @@ test_supported_origin_spellings_preserve_repository_binding() {
     cat >"$case_dir/fakebin/ssh" <<'SH'
 #!/usr/bin/env bash
 host=${!#}
-[ "$host" = work-gitlab ] || exit 1
-printf 'hostname gitlab.example\n'
+case "$host" in
+  work-gitlab) host=gitlab.example ;;
+esac
+printf 'hostname %s\n' "$host"
 SH
     chmod +x "$case_dir/fakebin/ssh"
 
@@ -720,6 +722,98 @@ SH
       "supported-origin-$name: matching origin did not reach the forge merge"
   done
   pass "supported origin spellings retain exact repository binding"
+}
+
+test_ssh_hostname_override_refuses_repository_binding() {
+  local case_dir head rc
+  case_dir=$(make_case ssh-hostname-override)
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+  git -C "$case_dir/wt" remote set-url origin git@github.com:example/repo.git
+  cat >"$case_dir/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+host=${!#}
+[ "$host" = github.com ] || exit 1
+printf 'hostname mirror.internal\n'
+SH
+  chmod +x "$case_dir/fakebin/ssh"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/85 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "ssh-hostname-override: fm-pr-merge should refuse"
+  assert_grep 'task worktree origin does not match the PR repository' "$case_dir/stderr" \
+    "ssh-hostname-override: effective SSH host mismatch was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ssh-hostname-override: merge crossed the effective SSH host boundary"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "ssh-hostname-override: record-time warning prevented the durable poll"
+  pass "effective SSH host overrides cannot bypass repository binding"
+}
+
+test_ssh_config_resolution_is_bounded() {
+  local case_dir elapsed rc started
+  case_dir=$(make_case ssh-config-timeout)
+  add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+  git -C "$case_dir/wt" remote set-url origin git@work-github:example/repo.git
+  cat >"$case_dir/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+sleep 20
+printf 'hostname github.com\n'
+SH
+  chmod +x "$case_dir/fakebin/ssh"
+
+  started=$SECONDS
+  set +e
+  FM_PR_STALE_BASE_TIMEOUT=1 FM_TIMEOUT_KILL_GRACE=1 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/86 \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+
+  expect_code 1 "$rc" "ssh-config-timeout: fm-pr-merge should refuse"
+  [ "$elapsed" -lt 8 ] \
+    || fail "ssh-config-timeout: SSH configuration resolution exceeded its bound (${elapsed}s)"
+  assert_grep 'task worktree origin does not match the PR repository' "$case_dir/stderr" \
+    "ssh-config-timeout: bounded SSH resolution failure was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "ssh-config-timeout: merge ran after SSH configuration resolution timed out"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "ssh-config-timeout: timeout prevented the durable poll"
+  pass "SSH configuration resolution obeys the stale-base probe timeout"
+}
+
+test_multiple_merge_bases_refuse_comparison() {
+  local a1 a2 b1 b2 case_dir root tree rc
+  case_dir=$(make_case multiple-merge-bases)
+  root=$(git -C "$case_dir/wt" rev-parse main)
+  tree=$(git -C "$case_dir/wt" rev-parse "$root^{tree}")
+  a1=$(printf 'first side\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$root")
+  b1=$(printf 'second side\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$root")
+  a2=$(printf 'first merge\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$a1" -p "$b1")
+  b2=$(printf 'second merge\n' | git -C "$case_dir/wt" commit-tree "$tree" -p "$b1" -p "$a1")
+  git -C "$case_dir/wt" push -q --force origin "$a2:refs/heads/main"
+  git -C "$case_dir/wt" switch -q --detach "$b2"
+  add_gh_mocks "$case_dir" "$b2"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/87 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "multiple-merge-bases: fm-pr-merge should refuse"
+  assert_grep 'multiple best merge bases' "$case_dir/stderr" \
+    "multiple-merge-bases: ambiguous comparison was not reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "multiple-merge-bases: ambiguous history reached the forge merge"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "multiple-merge-bases: comparison refusal prevented the durable poll"
+  pass "multiple best merge bases fail the stale-base comparison closed"
 }
 
 test_stale_details_name_presence_content_type_and_mode_losses() {
@@ -883,13 +977,13 @@ test_allowlisted_merge_args_forwarded() {
   : > "$case_dir/gh-axi.log"
 
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 -- \
-    --squash --subject 'Guarded merge' --body 'Current base checked' \
+    --squash --subject 'Guarded merge' --body 'Current base checked' --delete-branch -d \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "extra-args: fm-pr-merge failed"
 
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
-  grep -qxF "pr merge 15 --repo example/repo --match-head-commit $head --squash --subject Guarded merge --body Current base checked" "$case_dir/gh.log" \
+  grep -qxF "pr merge 15 --repo example/repo --match-head-commit $head --squash --subject Guarded merge --body Current base checked --delete-branch -d" "$case_dir/gh.log" \
     || fail "extra-args: allowlisted gh pr merge arguments were not forwarded"
-  pass "fm-pr-merge forwards allowlisted GitHub method and message arguments"
+  pass "fm-pr-merge forwards allowlisted GitHub method, message, and cleanup arguments"
 }
 
 test_missing_meta_refuses_before_merge() {
@@ -1000,12 +1094,12 @@ test_non_allowlisted_merge_args_refuse_before_recording_or_comparison() {
   set -- \
     'github|https://github.com/right/repo/pull/5|--auto' \
     'github-true|https://github.com/right/repo/pull/5|--auto=TRUE' \
-    'github-delete|https://github.com/right/repo/pull/5|--delete-branch' \
+    'github-wrong-cleanup|https://github.com/right/repo/pull/5|--remove-source-branch' \
     "gitlab|$MR_URL|--auto-merge" \
     "gitlab-true|$MR_URL|--auto-merge=true" \
     "gitlab-legacy|$MR_URL|--when-pipeline-succeeds" \
     "gitlab-legacy-true|$MR_URL|--when-pipeline-succeeds=1" \
-    "gitlab-remove|$MR_URL|--remove-source-branch"
+    "gitlab-wrong-cleanup|$MR_URL|--delete-branch"
   for name in "$@"; do
     flag=${name##*|}
     url=${name#*|}
@@ -1363,13 +1457,13 @@ test_non_allowlisted_short_args_refuse_before_recording() {
   : > "$case_dir/gh-axi.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/8 -- -d \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/8 -- -x \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 1 "$rc" "bundled-non-repo-cluster: a non-allowlisted short option should refuse"
-  assert_grep 'refusing extra merge argument -d because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
+  assert_grep 'refusing extra merge argument -x because an unbounded passthrough cannot guarantee immediate execution' "$case_dir/stderr" \
     "bundled-non-repo-cluster: refusal did not name the short option"
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "bundled-non-repo-cluster: non-allowlisted short option reached the forge"
@@ -2014,15 +2108,16 @@ test_gitlab_allowlisted_args_forwarded() {
   set +e
   run_pr_merge "$case_dir" task-x1 "$MR_URL" -- \
     --rebase -r --message guarded-merge --squash-message=base-checked \
+    --remove-source-branch -d \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "gitlab-extra-args: merge should succeed"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --rebase -r --message guarded-merge --squash-message=base-checked" ] \
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --rebase -r --message guarded-merge --squash-message=base-checked --remove-source-branch -d" ] \
     || fail "gitlab-extra-args: allowlisted glab arguments were not forwarded: '$merge_line'"
-  pass "fm-pr-merge forwards allowlisted GitLab method and message arguments"
+  pass "fm-pr-merge forwards allowlisted GitLab method, message, and cleanup arguments"
 }
 
 test_gitlab_merge_failure_propagates() {
@@ -2646,6 +2741,9 @@ test_pathspec_magic_filename_cannot_bypass_stale_refusal
 test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
 test_supported_origin_spellings_preserve_repository_binding
+test_ssh_hostname_override_refuses_repository_binding
+test_ssh_config_resolution_is_bounded
+test_multiple_merge_bases_refuse_comparison
 test_stale_details_name_presence_content_type_and_mode_losses
 test_stale_submodule_update_names_both_commits
 test_github_head_race_is_rejected_by_the_forge_binding

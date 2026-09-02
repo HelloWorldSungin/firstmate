@@ -127,6 +127,7 @@ require_forwardable_merge_arguments() {
   while [ "$#" -gt 0 ]; do
     arg=$1
     case "$PROVIDER:$arg" in
+      # Merge-method selectors choose the form of an immediate merge and cannot defer execution.
       github:--merge|github:--squash|github:--rebase|github:-m|github:-s|github:-r|\
       gitlab:--squash|gitlab:--rebase|gitlab:-s|gitlab:-r)
         shift
@@ -144,6 +145,7 @@ require_forwardable_merge_arguments() {
           || { printf 'error: unsupported merge method %s\n' "${value:-<empty>}" >&2; return 1; }
         shift
         ;;
+      # Message arguments only supply text for the immediate merge and cannot defer execution.
       github:--subject|github:--body|github:--body-file|github:-t|github:-b|github:-F|\
       gitlab:--message|gitlab:--squash-message|gitlab:-m)
         [ "$#" -ge 2 ] \
@@ -152,6 +154,10 @@ require_forwardable_merge_arguments() {
         ;;
       github:--subject=*|github:--body=*|github:--body-file=*|\
       gitlab:--message=*|gitlab:--squash-message=*)
+        shift
+        ;;
+      # Cleanup runs only after merge execution, so these flags cannot defer execution.
+      github:--delete-branch|github:-d|gitlab:--remove-source-branch|gitlab:-d)
         shift
         ;;
       *) forwarded_argument_refusal "$arg"; return 1 ;;

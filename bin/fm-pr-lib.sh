@@ -253,9 +253,10 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
-fm_pr_remote_matches_identity() { # <worktree> <host> <project-path>
-  local wt=${1-} expected_host=${2-} expected_path=${3-}
+fm_pr_remote_matches_identity() { # <worktree> <host> <project-path> <timeout-seconds>
+  local wt=${1-} expected_host=${2-} expected_path=${3-} bound=${4-}
   local remote resolved remote_host remote_path remote_count ssh_host
+  case "$bound" in ''|*[!0-9]*|0) return 1 ;; esac
   remote=$(git -C "$wt" config --get-all remote.origin.url 2>/dev/null) || return 1
   remote_count=$(printf '%s\n' "$remote" | awk 'END { print NR + 0 }')
   [ "$remote_count" -eq 1 ] || return 1
@@ -264,10 +265,8 @@ fm_pr_remote_matches_identity() { # <worktree> <host> <project-path>
   fm_project_origin_identity "$remote" || return 1
   remote_host=$FM_PROJECT_ORIGIN_HOST
   remote_path=$FM_PROJECT_ORIGIN_PATH
-  if [ "$FM_PROJECT_ORIGIN_TRANSPORT" = ssh ] \
-    && [ "$(printf '%s' "$remote_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
-      != "$(printf '%s' "$expected_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]; then
-    ssh_host=$(ssh -G "$remote_host" 2>/dev/null | awk '
+  if [ "$FM_PROJECT_ORIGIN_TRANSPORT" = ssh ]; then
+    ssh_host=$(fm_run_timed "$bound" ssh -G "$remote_host" 2>/dev/null | awk '
       tolower($1) == "hostname" { count++; value=$2 }
       END { if (count == 1 && value != "") print value; else exit 1 }
     ') || return 1
@@ -312,7 +311,8 @@ fm_pr_git_mode_type() { # <raw-git-mode>
 fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-path> <number>
   local wt=${1-} id=${2-} provider=${3-} host=${4-} project_path=${5-} number=${6-}
   local source_ref remote_state default_ref default_name
-  local token base_ref head_ref base head merge_base paths_file path delta added deleted quoted
+  local token base_ref head_ref base head merge_bases merge_base merge_base_count
+  local paths_file path delta added deleted quoted
   local raw raw_meta old_mode new_mode old_oid new_oid status old_type new_type detail
   local probe_timeout=${FM_PR_STALE_BASE_TIMEOUT:-15}
   local branch_diff_status inspection_failed=0
@@ -342,7 +342,7 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
       ;;
   esac
 
-  if ! fm_pr_remote_matches_identity "$wt" "$host" "$project_path"; then
+  if ! fm_pr_remote_matches_identity "$wt" "$host" "$project_path" "$probe_timeout"; then
     FM_PR_STALE_BASE_REASON="task worktree origin does not match the PR repository"
     return 2
   fi
@@ -387,11 +387,25 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
   fi
   FM_PR_STALE_BASE_HEAD=$head
   FM_PR_STALE_BASE_TIP=$base
-  merge_base=$(git -C "$wt" merge-base "$base" "$head" 2>/dev/null) || merge_base=
-  if ! fm_pr_head_valid "$merge_base"; then
+  merge_bases=$(git -C "$wt" merge-base --all "$base" "$head" 2>/dev/null) || merge_bases=
+  merge_base_count=$(printf '%s\n' "$merge_bases" | awk 'NF { count++ } END { print count + 0 }')
+  if [ "$merge_base_count" -eq 0 ]; then
     git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
     git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
     FM_PR_STALE_BASE_REASON="current default branch and PR head have no common commit"
+    return 2
+  fi
+  if [ "$merge_base_count" -ne 1 ]; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="current default branch and PR head have multiple best merge bases"
+    return 2
+  fi
+  merge_base=$merge_bases
+  if ! fm_pr_head_valid "$merge_base"; then
+    git -C "$wt" update-ref -d "$base_ref" >/dev/null 2>&1 || true
+    git -C "$wt" update-ref -d "$head_ref" >/dev/null 2>&1 || true
+    FM_PR_STALE_BASE_REASON="current default branch and PR head have an invalid common commit"
     return 2
   fi
 
