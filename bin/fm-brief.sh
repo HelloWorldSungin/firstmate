@@ -150,9 +150,10 @@
 # fails, times out, returns no rows, or emits an unframed document, the brief
 # carries the instruction alone and the scaffold still succeeds. The same search
 # prints at most one advisory "nearest prior work" stdout line for firstmate.
-# Once ranked task identities are classifiable, it names the earliest one whose
-# report is safe and readable, or says no local report exists; an unclassifiable
-# task identity leaves the advisory silent rather than guessing. The line claims
+# After skipping rows that are definitely not tasks, it names the earliest
+# classifiable task whose report is safe and readable, or says no local report
+# exists; a task-shaped unclassifiable row leaves the advisory silent rather
+# than guessing. The line claims
 # proximity, never duplication, is independent of whether the embed mounted,
 # and never enters the brief. A home with no local index runs no search and
 # omits the section. The secondmate charter carries the instruction alone.
