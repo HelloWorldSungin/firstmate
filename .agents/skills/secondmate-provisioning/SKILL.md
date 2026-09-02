@@ -85,8 +85,9 @@ Release happens only on explicit retirement or seed rollback, never on routine r
 
 `bin/fm-home-seed.sh` copies the charter into the secondmate home as `data/charter.md`.
 It also writes the gitignored `.fm-secondmate-parent` durable binding before the required `.fm-secondmate-home` identity marker; the parser header in [`bin/fm-secondmate-parent-lib.sh`](../../../bin/fm-secondmate-parent-lib.sh) owns the record contract, and both files must remain in place.
-After a successful local or remote seed, create that home's first user-owned local JIT destination if it has none.
-Apply [`stow`'s local destination creation contract](../stow/SKILL.md#local-destination-creation-contract) rather than restating it here.
+After a successful local seed, create that home's first user-owned local JIT destination if it has none by applying [`stow`'s local destination creation contract](../stow/SKILL.md#local-destination-creation-contract) with the exact resolved seeded home as its explicit target.
+After a successful remote seed, launch the new secondmate through its registered remote route and send it a marked request to apply that same contract with the route's remote `home:` path as the explicit target.
+The remote secondmate must verify that target is its own `$FM_HOME` and return the contract's completion confirmation before provisioning is complete.
 `bin/fm-spawn.sh --secondmate` launches it through the secondmate harness path, resolving `config/secondmate-harness` -> `config/crew-harness` -> the primary's own harness unless an explicit per-spawn harness override is passed.
 If that path resolves to a crew-only adapter (`agy`, or `muse`, which `fm-spawn` also refuses as a secondmate launcher), configure a different concrete secondmate harness as required by `harness-adapters`; an explicit override cannot bypass that gate.
 

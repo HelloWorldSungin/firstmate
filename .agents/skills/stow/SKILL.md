@@ -211,7 +211,7 @@ Every test must hold for a candidate:
 Approved project-level destinations are not produced by stow: they ship normally through that project's own registered delivery path.
 
 - A user-owned local skill: a directory under `.agents/skills/<freeform-name>/` whose path is appended to that resolved exclude file, never to a `.gitignore`.
-  Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root, and anchor every destination index check, exclude-path lookup, and ignore verification to that root with `git -C "$home_root"`.
+  Resolve `home_root` through the local destination creation contract below, and anchor every destination index check, exclude-path lookup, and ignore verification to that root with `git -C "$home_root"`.
   The skill directory is per-home because worktrees are separate paths, so the destination itself is private to this home.
   The exclude rule is repository-wide: a secondmate home that is a linked worktree resolves `info/exclude` to the primary repository's exclude file, shared by every worktree of that clone.
   This home's collision check cannot see another home's directory, so two homes can pick the same name and neither check complains.
@@ -261,7 +261,9 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
 
 This sequence owns every user-owned local skill destination creation, whether invoked by the bounded bootstrap, a validated weight or fit split, secondmate provisioning, or an approved pinned migration.
 
-1. Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root.
+1. Use the caller-supplied explicit target home as `home_root` whenever creation is performed for another home.
+   Only an operation acting for its current home may omit that target and resolve `home_root` to `$FM_HOME` when set and otherwise to the Firstmate code root.
+   Secondmate provisioning always supplies the exact seeded home path, so the provisioning session's own `$FM_HOME` never selects the target.
 2. Immediately before creation, validate that the chosen freeform destination under `home_root` is absent from that home's git index, collides with no existing file or directory in this home, and is home-distinct.
    Reject the destination if any check fails.
 3. Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
