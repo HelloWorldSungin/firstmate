@@ -210,11 +210,13 @@ materialize_github_body_file() {
   fi
   MATERIALIZED_BODY_COUNT=$((MATERIALIZED_BODY_COUNT + 1))
   staged="$MATERIALIZED_BODY_WORKDIR/body-$MATERIALIZED_BODY_COUNT"
-  : >"$staged" && chmod 0600 "$staged" || {
+  if : >"$staged" && chmod 0600 "$staged"; then
+    :
+  else
     printf 'error: refusing extra merge argument %s because its body-file input could not be staged safely\n' \
       "$option" >&2
     return 1
-  }
+  fi
   case "$source" in
     -) read_source=- ;;
     -*) read_source="./$source" ;;
@@ -411,7 +413,6 @@ FIELDS
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
 # returns non-zero after reporting every condition that failed.
 FM_PR_MERGE_HEAD=
-FM_PR_MERGE_LIVE_HEAD=
 FM_PR_MERGE_TARGET=
 FM_PR_MERGE_TARGET_OID=
 gitlab_verify_mergeable() {
@@ -425,6 +426,7 @@ gitlab_verify_mergeable() {
   # GITLAB_HOST is set to the same host the project URL already carries, so the
   # instance is taken from the parsed URL by both signals and never from the
   # operator's configured default.
+  # shellcheck disable=SC2016 # Non-expansion is intentional: these are GraphQL variables.
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api graphql \
     -f fullPath="$FM_PR_PATH" -f iid="$PR_NUMBER" \
     -f targetRef="$target_ref" -f sourceRef="$source_ref" \
@@ -509,7 +511,6 @@ FIELDS
     return 1
   fi
   if [ "$live_head" != "$FM_PR_INSPECTED_HEAD" ]; then
-    FM_PR_MERGE_LIVE_HEAD=$live_head
     printf 'notice: GitLab head moved from inspected %s to live %s; re-inspecting the live head\n' \
       "$FM_PR_INSPECTED_HEAD" "$live_head" >&2
     return 3
@@ -704,6 +705,7 @@ github_read_merge_state() {
   FM_GITHUB_IN_QUEUE=
   FM_GITHUB_AUTO_MERGE=
   FM_GITHUB_QUEUE_ENTRY=
+  # shellcheck disable=SC2016 # Non-expansion is intentional: these are GraphQL variables.
   if ! fields=$(GH_PROMPT_DISABLED=1 gh api graphql --hostname "$FM_PR_HOST" \
     -f owner="$PR_OWNER" -f name="$PR_REPO" -F number="$PR_NUMBER" \
     -f query='query($owner: String!, $name: String!, $number: Int!) {
@@ -1046,7 +1048,6 @@ case "$PROVIDER" in
                 exit 1
               fi
               inspect_merge_boundary "$FM_PR_MERGE_TARGET" || exit 1
-              FM_PR_MERGE_LIVE_HEAD=
               gitlab_attempt=2
               ;;
             5)

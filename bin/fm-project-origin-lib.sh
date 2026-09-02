@@ -185,7 +185,7 @@ FM_PROJECT_ORIGIN_HOST=
 FM_PROJECT_ORIGIN_PORT=
 FM_PROJECT_ORIGIN_PATH=
 fm_project_origin_identity() { # <url>; populate a host-backed repository identity
-  local url=${1-} rest authority hostpart userpart user= host port path transport
+  local url=${1-} rest authority hostpart userpart user='' host port path transport
   FM_PROJECT_ORIGIN_TRANSPORT=
   FM_PROJECT_ORIGIN_USER=
   FM_PROJECT_ORIGIN_HOST=
@@ -249,9 +249,15 @@ fm_project_origin_identity() { # <url>; populate a host-backed repository identi
   esac
   path=${path%.git}
   [ -n "$host" ] && [ -n "$path" ] || return 1
+  # These documented parser outputs are read across files by bin/fm-pr-lib.sh.
+  # shellcheck disable=SC2034
   FM_PROJECT_ORIGIN_TRANSPORT=$transport
+  # shellcheck disable=SC2034
   FM_PROJECT_ORIGIN_USER=$user
+  # shellcheck disable=SC2034
   FM_PROJECT_ORIGIN_HOST=$host
+  # shellcheck disable=SC2034
   FM_PROJECT_ORIGIN_PORT=$port
+  # shellcheck disable=SC2034
   FM_PROJECT_ORIGIN_PATH=$path
 }
