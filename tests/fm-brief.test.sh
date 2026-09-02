@@ -1912,13 +1912,16 @@ test_brain_scaffold_read_embeds_found_rows() {
   assert_contains "$SCAFFOLD_OUT" 'nearest prior work (proximity, not duplication)' \
     "a scout scaffold must print the nearest-prior-work line"
 
-  # A report-less top result is skipped for the earliest ranked task whose
-  # completed report is readable.
+  # Report-less and symlinked results are skipped for the earliest ranked task
+  # whose completed report is a readable regular file.
   ranked="$TMP_ROOT/brain-ranked-reports.json"
-  mkdir -p "$home/data/top-without-report" "$home/data/lower-with-report"
+  mkdir -p "$home/data/top-without-report" "$home/data/symlink-report" "$home/data/lower-with-report"
+  printf 'a different report\n' > "$home/symlink-target-report.md"
+  ln -s "$home/symlink-target-report.md" "$home/data/symlink-report/report.md"
   printf 'a lower-ranked completed report\n' > "$home/data/lower-with-report/report.md"
   jq -n '[
     {slug:"firstmate/firstmate-deadbeef/task/top-without-report", title:"Top without report", chunk_text:"top", score:0.9, stale:false},
+    {slug:"firstmate/firstmate-deadbeef/task/symlink-report", title:"Symlink report", chunk_text:"symlink", score:0.85, stale:false},
     {slug:"firstmate/firstmate-deadbeef/task/lower-with-report", title:"", chunk_text:"lower", score:0.8, stale:false}
   ]' > "$ranked"
   brain_scaffold "$home" found-outranked-report "$ranked" 0 0 --mode direct-PR
@@ -1928,6 +1931,8 @@ test_brain_scaffold_read_embeds_found_rows() {
     "the first readable report in ranked order must be named without shifting an empty title"
   assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
     "a higher-ranked task without a readable report must be skipped"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-report' \
+    "a higher-ranked symlinked report must be skipped"
 
   # Ranked rows with no readable completed report make no proximity claim.
   rm "$home/data/lower-with-report/report.md"
@@ -1938,6 +1943,8 @@ test_brain_scaffold_read_embeds_found_rows() {
     "ranked rows without a readable report must state that no local report exists"
   assert_not_contains "$SCAFFOLD_OUT" 'Top without report' \
     "the no-report line must not name a report-less task record"
+  assert_not_contains "$SCAFFOLD_OUT" 'task/symlink-report' \
+    "the no-report line must not name a symlinked report"
   assert_not_contains "$SCAFFOLD_OUT" 'task/lower-with-report' \
     "the no-report line must not claim proximity to an unreadable report"
   pass "fm-brief.sh: a found scaffold search embeds labeled rows and prints the nearest prior work"

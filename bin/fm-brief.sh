@@ -509,7 +509,7 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       && IFS= read -r -d '' candidate_id \
       && IFS= read -r -d '' candidate_state; do
     report="$FM_HOME/data/$candidate_id/report.md"
-    [ -f "$report" ] && [ -r "$report" ] || continue
+    [ ! -L "$report" ] && [ -f "$report" ] && [ -r "$report" ] || continue
     citation=$candidate_citation
     title=$candidate_title
     id=$candidate_id
