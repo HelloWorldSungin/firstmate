@@ -2068,13 +2068,13 @@ EOF
     "the advisory line remains independent of the embed gate"
 
   unclassified_doc="$TMP_ROOT/unclassified-document.json"
-  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:?", title:"Unclassified row", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null}]}' > "$unclassified_doc"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:?", title:"Unclassified row", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$unclassified_doc"
   brain_wrapper_scaffold "$home" "$legacy_root" unclassified-result "$unclassified_doc"
   expect_code 0 "$SCAFFOLD_RC" "a result with incomplete identity provenance must still scaffold"
   assert_grep 'scaffold time' "$home/data/unclassified-result/brief.md" \
     "identity provenance must not add a new worker-embed gate"
   assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
-    "incomplete result identities must stay silent rather than claim no local report"
+    "an incomplete higher-ranked identity must suppress lower-ranked proximity claims"
 
   called="$TMP_ROOT/no-jq-wrapper-called"
   SCAFFOLD_RC=0

@@ -524,7 +524,10 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       && IFS= read -r -d '' candidate_state \
       && IFS= read -r -d '' candidate_classifiable; do
     identity_rows=$((identity_rows + 1))
-    [ "$candidate_classifiable" = true ] || identities_classifiable=0
+    if [ "$candidate_classifiable" != true ]; then
+      identities_classifiable=0
+      break
+    fi
     [ "$candidate_kind" = task ] || continue
     record="$FM_HOME/data/$candidate_id"
     report="$record/report.md"
