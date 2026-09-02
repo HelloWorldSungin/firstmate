@@ -19,6 +19,8 @@
 
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-project-origin-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-project-origin-lib.sh"
 
 FM_PR_PROVIDER=
 FM_PR_URL=
@@ -253,36 +255,24 @@ fm_pr_head_valid() {
 
 fm_pr_remote_matches_identity() { # <worktree> <host> <project-path>
   local wt=${1-} expected_host=${2-} expected_path=${3-}
-  local remote resolved rest remote_host remote_path remote_count
+  local remote resolved remote_host remote_path remote_count ssh_host
   remote=$(git -C "$wt" config --get-all remote.origin.url 2>/dev/null) || return 1
   remote_count=$(printf '%s\n' "$remote" | awk 'END { print NR + 0 }')
   [ "$remote_count" -eq 1 ] || return 1
   resolved=$(git -C "$wt" remote get-url origin 2>/dev/null) || return 1
   [ "$resolved" = "$remote" ] || return 1
-  case "$remote" in
-    https://*)
-      rest=${remote#https://}
-      remote_host=${rest%%/*}
-      [ "$remote_host" != "$rest" ] || return 1
-      remote_path=${rest#*/}
-      case "$remote_host" in *:*|*@*) return 1 ;; esac
-      ;;
-    ssh://*)
-      rest=${remote#ssh://}
-      rest=${rest#*@}
-      remote_host=${rest%%/*}
-      [ "$remote_host" != "$rest" ] || return 1
-      remote_path=${rest#*/}
-      case "$remote_host" in *:*) return 1 ;; esac
-      ;;
-    *@*:*)
-      rest=${remote#*@}
-      remote_host=${rest%%:*}
-      remote_path=${rest#*:}
-      ;;
-    *) return 1 ;;
-  esac
-  remote_path=${remote_path%.git}
+  fm_project_origin_identity "$remote" || return 1
+  remote_host=$FM_PROJECT_ORIGIN_HOST
+  remote_path=$FM_PROJECT_ORIGIN_PATH
+  if [ "$FM_PROJECT_ORIGIN_TRANSPORT" = ssh ] \
+    && [ "$(printf '%s' "$remote_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
+      != "$(printf '%s' "$expected_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ]; then
+    ssh_host=$(ssh -G "$remote_host" 2>/dev/null | awk '
+      tolower($1) == "hostname" { count++; value=$2 }
+      END { if (count == 1 && value != "") print value; else exit 1 }
+    ') || return 1
+    remote_host=$ssh_host
+  fi
   [ -n "$remote_host" ] && [ -n "$remote_path" ] || return 1
   [ "$(printf '%s' "$remote_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" \
     = "$(printf '%s' "$expected_host" | LC_ALL=C tr '[:upper:]' '[:lower:]')" ] \
@@ -478,6 +468,8 @@ fm_pr_stale_base_inspect() { # <worktree> <task-id> <provider> <host> <project-p
       M)
         if [ "$old_oid" = "$new_oid" ] && [ "$old_mode" != "$new_mode" ]; then
           detail="current default changes mode from $old_mode to $new_mode absent from the PR head"
+        elif [ "$old_type" = submodule ] && [ "$new_type" = submodule ]; then
+          detail="current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid"
         else
           case "$added:$deleted" in
             -:-)

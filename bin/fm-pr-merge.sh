@@ -128,7 +128,7 @@ require_forwardable_merge_arguments() {
     arg=$1
     case "$PROVIDER:$arg" in
       github:--merge|github:--squash|github:--rebase|github:-m|github:-s|github:-r|\
-      gitlab:--squash|gitlab:-s)
+      gitlab:--squash|gitlab:--rebase|gitlab:-s|gitlab:-r)
         shift
         ;;
       github:--method)
@@ -497,9 +497,9 @@ github_require_immediate_execution() {
 
 github_confirm_merged() {
   if ! github_read_merge_state; then
-    printf 'error: refusing to treat %s as merged because its post-command GitHub state is unknown; the merge poll remains armed\n' \
+    printf 'actionable: GitHub accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
       "$URL" >&2
-    return 1
+    return 2
   fi
   [ "$FM_GITHUB_STATE" = MERGED ] && return 0
   if [ "$FM_GITHUB_IN_QUEUE" = true ] || [ "$FM_GITHUB_QUEUE_ENTRY" != none ]; then
@@ -521,16 +521,16 @@ gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'error: refusing to treat %s as merged because its post-command GitLab state is unknown; the merge poll remains armed\n' \
+    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
       "$URL" >&2
-    return 1
+    return 2
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'error: refusing to treat %s as merged because its post-command GitLab state is unknown; the merge poll remains armed\n' \
+    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
       "$URL" >&2
-    return 1
+    return 2
   fi
   if [ "$state" != merged ]; then
     printf 'error: refusing to treat %s as merged because GitLab left it queued or pending instead of executing immediately; the merge poll remains armed\n' \
@@ -635,7 +635,9 @@ case "$PROVIDER" in
       cleanup_materialized_body_files
       trap - EXIT HUP INT TERM
     fi
-    github_confirm_merged || exit 1
+    github_confirm_rc=0
+    github_confirm_merged || github_confirm_rc=$?
+    case "$github_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
     ;;
   gitlab)
     inspect_current_default || exit 1
@@ -661,7 +663,9 @@ case "$PROVIDER" in
     verify_inspected_default_tip || exit 1
     GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
       --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
-    gitlab_confirm_merged || exit 1
+    gitlab_confirm_rc=0
+    gitlab_confirm_merged || gitlab_confirm_rc=$?
+    case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
     ;;
   *)
     echo "error: invalid PR merge request" >&2

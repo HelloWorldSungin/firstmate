@@ -350,6 +350,9 @@ case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
+    if [ -e "$case_dir/glab-merge-called" ] && [ -e "$case_dir/glab-post-view-fails" ]; then
+      exit 1
+    fi
     if [ -e "$case_dir/glab-merge-called" ] && [ ! -e "$case_dir/glab-stays-open" ]; then
       payload=$case_dir/mr-post.json
     else
@@ -530,9 +533,9 @@ run_pr_merge() {
     *) source_ref=; canonical= ;;
   esac
   remote=$(git -C "$case_dir/wt" config --get remote.origin.url 2>/dev/null || true)
-  case "$remote" in http://*|https://*|ssh://*|*@*:*) ;; *)
+  if ! fm_project_origin_identity "$remote"; then
     [ -z "$canonical" ] || git -C "$case_dir/wt" remote set-url origin "$canonical"
-  esac
+  fi
   if [ -n "$source_ref" ] && git -C "$case_dir/wt" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$case_dir/wt" push -q --force "$case_dir/origin.git" "HEAD:$source_ref"
   fi
@@ -687,6 +690,38 @@ test_mismatched_repository_refuses_before_merging() {
   pass "fm-pr-merge refuses when task origin and PR repository identities differ"
 }
 
+test_supported_origin_spellings_preserve_repository_binding() {
+  local case_dir name origin rc spec
+  for spec in \
+    'ssh-alias|git@work-gitlab:group/subgroup/project.git' \
+    'ssh-port|ssh://git@gitlab.example:2222/group/subgroup/project.git' \
+    'https-userinfo|https://user:token@gitlab.example/group/subgroup/project.git' \
+    'scp-no-user|gitlab.example:group/subgroup/project.git'; do
+    name=${spec%%|*}
+    origin=${spec#*|}
+    case_dir=$(make_gitlab_case "supported-origin-$name")
+    git -C "$case_dir/wt" remote set-url origin "$origin"
+    cat >"$case_dir/fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+host=${!#}
+[ "$host" = work-gitlab ] || exit 1
+printf 'hostname gitlab.example\n'
+SH
+    chmod +x "$case_dir/fakebin/ssh"
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 0 "$rc" "supported-origin-$name: matching origin should merge"
+    assert_grep ' mr merge ' "$case_dir/glab.log" \
+      "supported-origin-$name: matching origin did not reach the forge merge"
+  done
+  pass "supported origin spellings retain exact repository binding"
+}
+
 test_stale_details_name_presence_content_type_and_mode_losses() {
   local case_dir default_wt head rc
   case_dir=$(make_case stale-detail-kinds)
@@ -724,6 +759,51 @@ test_stale_details_name_presence_content_type_and_mode_losses() {
   assert_no_grep 'pr merge' "$case_dir/gh.log" \
     "stale-detail-kinds: a stale detail case reached the forge merge"
   pass "stale refusal accurately names presence, content, type, and mode losses"
+}
+
+test_stale_submodule_update_names_both_commits() {
+  local case_dir default_wt head new_oid old_oid rc subrepo
+  case_dir=$(make_case stale-submodule-update)
+  subrepo="$case_dir/subrepo"
+  git init -q --initial-branch=main "$subrepo"
+  printf 'old submodule content\n' >"$subrepo/content.txt"
+  git -C "$subrepo" add content.txt
+  git -C "$subrepo" commit -qm 'old submodule commit'
+  old_oid=$(git -C "$subrepo" rev-parse HEAD)
+  printf 'new submodule content\n' >"$subrepo/content.txt"
+  git -C "$subrepo" commit -qam 'new submodule commit'
+  new_oid=$(git -C "$subrepo" rev-parse HEAD)
+
+  git -C "$case_dir/wt" switch -q main
+  git -C "$case_dir/wt" update-index --add \
+    --cacheinfo "160000,$old_oid,modules/dependency"
+  git -C "$case_dir/wt" commit -qm 'add shared submodule revision'
+  git -C "$case_dir/wt" push -q origin main
+  git -C "$case_dir/wt" switch -q task
+  git -C "$case_dir/wt" rebase -q main
+
+  default_wt="$case_dir/default-submodule-wt"
+  git clone -q "$case_dir/origin.git" "$default_wt"
+  git -C "$default_wt" update-index \
+    --cacheinfo "160000,$new_oid,modules/dependency"
+  git -C "$default_wt" commit -qm 'advance submodule revision'
+  git -C "$default_wt" push -q origin main
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_mocks "$case_dir" "$head"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/84 \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stale-submodule-update: fm-pr-merge should refuse"
+  assert_grep "modules/dependency: current default changes submodule commit from $old_oid to $new_oid; the PR head would restore $old_oid" \
+    "$case_dir/stderr" \
+    "stale-submodule-update: refusal did not name both submodule commits"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "stale-submodule-update: an omitted submodule update reached the forge"
+  pass "stale submodule updates name both commit identities"
 }
 
 test_github_head_race_is_rejected_by_the_forge_binding() {
@@ -1933,14 +2013,14 @@ test_gitlab_allowlisted_args_forwarded() {
 
   set +e
   run_pr_merge "$case_dir" task-x1 "$MR_URL" -- \
-    --squash --message guarded-merge --squash-message=base-checked \
+    --rebase -r --message guarded-merge --squash-message=base-checked \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "gitlab-extra-args: merge should succeed"
   merge_line=$(glab_merge_line "$case_dir/glab.log")
-  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --squash --message guarded-merge --squash-message=base-checked" ] \
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes --auto-merge=false --rebase -r --message guarded-merge --squash-message=base-checked" ] \
     || fail "gitlab-extra-args: allowlisted glab arguments were not forwarded: '$merge_line'"
   pass "fm-pr-merge forwards allowlisted GitLab method and message arguments"
 }
@@ -2407,6 +2487,56 @@ test_queued_github_merge_is_refused_and_leaves_the_poll_armed() {
   pass "a queued GitHub merge is refused and leaves its durable poll armed"
 }
 
+test_unknown_github_post_merge_state_is_nonretryable() {
+  local case_dir rc url
+  url=https://github.com/example/repo/pull/71
+  case_dir=$(make_case unknown-github-post-merge)
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  set +e
+  FM_TEST_GH_POST_STATE_UNAVAILABLE=1 \
+    run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "unknown-github-post-merge: an accepted mutation should not look retryable"
+  assert_grep "GitHub accepted the merge request for $url but its landed state could not be confirmed" \
+    "$case_dir/stderr" \
+    "unknown-github-post-merge: unknown outcome was not actionable"
+  assert_grep 'pr merge 71 ' "$case_dir/gh.log" \
+    "unknown-github-post-merge: the fixture did not reach the forge mutation"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "unknown-github-post-merge: unknown outcome retired the durable poll"
+  assert_absent "$case_dir/state/.wake-queue" \
+    "unknown-github-post-merge: unknown outcome was reported as landed"
+  pass "an unknown GitHub post-merge state is nonretryable and remains polled"
+}
+
+test_unknown_gitlab_post_merge_state_is_nonretryable() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case unknown-gitlab-post-merge)
+  : >"$case_dir/glab-post-view-fails"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "unknown-gitlab-post-merge: an accepted mutation should not look retryable"
+  assert_grep "GitLab accepted the merge request for $MR_URL but its landed state could not be confirmed" \
+    "$case_dir/stderr" \
+    "unknown-gitlab-post-merge: unknown outcome was not actionable"
+  [ -n "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "unknown-gitlab-post-merge: the fixture did not reach the forge mutation"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "unknown-gitlab-post-merge: unknown outcome retired the durable poll"
+  assert_absent "$case_dir/state/.wake-queue" \
+    "unknown-gitlab-post-merge: unknown outcome was reported as landed"
+  pass "an unknown GitLab post-merge state is nonretryable and remains polled"
+}
+
 test_distinct_merged_prs_keep_distinct_wakes() {
   local case_dir first_url second_url
   first_url=https://github.com/example/repo/pull/68
@@ -2515,7 +2645,9 @@ test_stale_pr_refuses_before_merging
 test_pathspec_magic_filename_cannot_bypass_stale_refusal
 test_unavailable_stale_comparison_refuses_before_merging
 test_mismatched_repository_refuses_before_merging
+test_supported_origin_spellings_preserve_repository_binding
 test_stale_details_name_presence_content_type_and_mode_losses
+test_stale_submodule_update_names_both_commits
 test_github_head_race_is_rejected_by_the_forge_binding
 test_merge_failure_propagates_after_recording
 test_allowlisted_merge_args_forwarded
@@ -2573,6 +2705,8 @@ test_failed_merge_reports_nothing
 test_gitlab_refusal_reports_nothing
 test_main_home_merge_leaves_a_durable_wake
 test_queued_github_merge_is_refused_and_leaves_the_poll_armed
+test_unknown_github_post_merge_state_is_nonretryable
+test_unknown_gitlab_post_merge_state_is_nonretryable
 test_distinct_merged_prs_keep_distinct_wakes
 test_uncommitted_marker_retry_is_never_silent
 test_secondmate_without_parent_binding_is_loud

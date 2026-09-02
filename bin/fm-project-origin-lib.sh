@@ -178,3 +178,70 @@ fm_project_origin_safe() { # <url>; 0 when the URL is an accepted clone URL
   esac
   return 0
 }
+
+FM_PROJECT_ORIGIN_TRANSPORT=
+FM_PROJECT_ORIGIN_HOST=
+FM_PROJECT_ORIGIN_PORT=
+FM_PROJECT_ORIGIN_PATH=
+fm_project_origin_identity() { # <url>; populate a host-backed repository identity
+  local url=${1-} rest authority hostpart userpart host port path transport
+  FM_PROJECT_ORIGIN_TRANSPORT=
+  FM_PROJECT_ORIGIN_HOST=
+  FM_PROJECT_ORIGIN_PORT=
+  FM_PROJECT_ORIGIN_PATH=
+  fm_project_origin_safe "$url" || return 1
+
+  case $url in
+    https://* | http://* | ssh://* | git://*)
+      transport=${url%%://*}
+      rest=${url#*://}
+      authority=${rest%%/*}
+      [ "$authority" != "$rest" ] || return 1
+      hostpart=$authority
+      case $authority in
+        *@*) hostpart=${authority##*@} ;;
+      esac
+      path=${rest#*/}
+      case $hostpart in
+        '['*)
+          host=${hostpart%%']'*}']'
+          port=${hostpart#"$host"}
+          port=${port#:}
+          ;;
+        *)
+          host=${hostpart%%:*}
+          if [[ $hostpart == *:* ]]; then port=${hostpart#*:}; else port=; fi
+          ;;
+      esac
+      ;;
+    file://* | /*) return 1 ;;
+    *)
+      transport=ssh
+      rest=$url
+      case $url in
+        *@*)
+          userpart=${url%%@*}
+          case $userpart in *:*) ;; *) rest=${url#*@} ;; esac
+          ;;
+      esac
+      case $rest in
+        '['*)
+          host=${rest%%']'*}']'
+          path=${rest#"$host"}
+          path=${path#:}
+          ;;
+        *)
+          host=${rest%%:*}
+          path=${rest#*:}
+          ;;
+      esac
+      port=
+      ;;
+  esac
+  path=${path%.git}
+  [ -n "$host" ] && [ -n "$path" ] || return 1
+  FM_PROJECT_ORIGIN_TRANSPORT=$transport
+  FM_PROJECT_ORIGIN_HOST=$host
+  FM_PROJECT_ORIGIN_PORT=$port
+  FM_PROJECT_ORIGIN_PATH=$path
+}
