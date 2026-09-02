@@ -2033,7 +2033,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # framing and provenance fields does not mount the embed, while the advisory
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
-  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc note_only_doc unclassified_doc called output_lines
+  local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc note_only_doc malformed_task_doc unclassified_doc called output_lines
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
@@ -2092,6 +2092,13 @@ EOF
   expect_code 0 "$SCAFFOLD_RC" "a result containing only a known non-task row must still scaffold"
   assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
     "a non-task row must not create a nearest-prior-work claim"
+
+  malformed_task_doc="$TMP_ROOT/malformed-task-document.json"
+  jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/task/bad$id", slug:"firstmate/firstmate-deadbeef/task/bad$id", title:"Malformed task", excerpt:"candidate", captured_at:null, source_state:"unknown"},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$malformed_task_doc"
+  brain_wrapper_scaffold "$home" "$legacy_root" malformed-task-result "$malformed_task_doc"
+  expect_code 0 "$SCAFFOLD_RC" "a task-shaped result with an invalid identity must still scaffold"
+  assert_not_contains "$SCAFFOLD_OUT" 'nearest prior work' \
+    "a task-shaped unclassifiable row must hide lower-ranked readable tasks"
 
   unclassified_doc="$TMP_ROOT/unclassified-task-document.json"
   jq -cn '{schema:"fm-recall.v1", answer:{kind:"nearest"}, results:[{citation:"local:firstmate/firstmate-deadbeef/task/unknown-task", slug:"firstmate/firstmate-deadbeef/task/unknown-task", title:"Unclassified task", excerpt:"candidate", captured_at:null, source_state:"unknown", source_kind:null, source_id:null},{citation:"local:firstmate/firstmate-deadbeef/task/prior-task", slug:"firstmate/firstmate-deadbeef/task/prior-task", title:"Lower readable task", excerpt:"candidate", captured_at:null, source_state:"current", source_kind:"task", source_id:"prior-task"}]}' > "$unclassified_doc"

@@ -554,18 +554,16 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     def task_slug:
       if ((.slug | type) == "string"
           and (.slug | test("^firstmate/[^/]+/task/[^/]+$"))) then
-        (.slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")) as $slug
-        | if (($slug.id | source_id_valid)
-              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid))
-          then $slug
-          else null
-          end
+        .slug | capture("^firstmate/(?<tag>[^/]+)/task/(?<id>[^/]+)$")
       else null
       end;
     def identity:
       task_slug as $slug
       | if $slug == null then
           {kind: "", id: "", classifiable: true}
+        elif ((($slug.id | source_id_valid)
+              and ("v1." + $slug.tag + ".task." + $slug.id | document_id_valid)) | not) then
+          {kind: "", id: "", classifiable: false}
         elif has("source_kind") or has("source_id") then
           if (.source_kind == "task"
               and (.source_id | source_id_valid)
