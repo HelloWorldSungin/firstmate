@@ -2,7 +2,7 @@
 
 - Status: accepted 2026-08-20, when the captain answered both open captain choices below; implementation remains the follow-up tracked work named under "Consequences"
 - Date: 2026-08-19
-- Deciders: the design interview between the `fm-gbrain-read-integration-design` worker and firstmate, with two choices held for the captain (see "Open captain choices")
+- Deciders: the design interview between the `fm-gbrain-read-integration-design` worker and firstmate, including two choices that were held for the captain and answered on 2026-08-20 (see "Captain choices answered 2026-08-20")
 
 ## The headline finding, first
 
