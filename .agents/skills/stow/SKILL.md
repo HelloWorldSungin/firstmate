@@ -216,7 +216,7 @@ Approved project-level destinations are not produced by stow: they ship normally
   The exclude rule is repository-wide: a secondmate home that is a linked worktree resolves `info/exclude` to the primary repository's exclude file, shared by every worktree of that clone.
   This home's collision check cannot see another home's directory, so two homes can pick the same name and neither check complains.
   Names must be home-distinct, not merely unused here.
-  Before approval and again before migration, validate that the chosen freeform destination under `home_root` is absent from that home's git index, collides with no existing file or directory in this home, and is home-distinct, and reject the destination if any of those checks fail.
+  Before approving a pinned migration, validate that the chosen freeform destination under `home_root` is absent from that home's git index, collides with no existing file or directory in this home, and is home-distinct, and reject the destination if any of those checks fail.
   The name is freeform with no user-vs-firstmate naming convention, the skill stays per-home and untracked, and the harness still lists and JIT-loads it because skill discovery scans the filesystem and ignores git status (verified in `docs/verification/stow-memory.md`).
   Its precise, condition-stated description line is its entire trigger; it gets no `AGENTS.md` declaration because `AGENTS.md` is shared tracked material.
   Because this destination is local and untracked, it is also the JIT home for private conditional knowledge that no committed surface may hold.
@@ -239,13 +239,15 @@ Approved project-level destinations are not produced by stow: they ship normally
   A description naming topic categories fires more precisely and meets the fit limit first.
   Both are legitimate trades, and this skill does not mandate one.
   It tells a home which limit its own choice has bought.
-  The pass may add to an existing destination and must not invent a new always-discoverable surface on its own initiative.
+  The pass may add to an existing destination and may create another only when the existing destination has become too heavy or an eligible entry does not fit any existing description.
+  Those are validated weight and fit splits, not permission to invent a new always-discoverable surface on its own initiative.
   One bounded exception: when this home has no user-owned local skill destination, this pass may create at most one, with a short fixed class-naming description, and never a second.
   That exception exists so a home with none can acquire the surface this page already describes.
   It is not a licence to keep creating destinations.
   A home that already has one stays add-only under this exception.
   A later split on weight or on fit is not this exception and is not a second bootstrap.
-  When this exception fires, write that one destination as a user-owned local skill whose description names the class of conditional detail this home holds and never the entries, and whose body carries the three constraints above.
+  When this exception fires, write that one destination as a user-owned local skill whose description names the class of conditional detail this home holds and never the entries.
+  Its body points to [`stow`'s Destinations contract](../stow/SKILL.md#destinations) for the never-grow, split-on-weight, and split-on-fit rules.
   A new secondmate home's first destination is created by `secondmate-provisioning` at seed rather than left for this exception.
 - An already-existing user-owned local on-demand note with an established trigger, after confirming it is untracked, private, and able to hold the quoted entry.
   The pass may add the entry to that existing owner but never creates a new note or trigger for this purpose.
@@ -255,21 +257,29 @@ Approved project-level destinations are not produced by stow: they ship normally
 Forbidden destinations: any firstmate-repo-tracked skill per the hard rule; firstmate's own `AGENTS.md`, which is always-loaded for every fleet session; `docs/` alone, which is never agent-loaded on demand, though a skill body may point into docs for depth; and any committed surface for private content.
 A local skill exists only in this home, so offloading an entry out of `data/captain-shared.md` removes it from every inheriting home's always-injected memory: the proposal must say so, and the default for shared entries is keep.
 
+#### Local destination creation contract
+
+This sequence owns every user-owned local skill destination creation, whether invoked by the bounded bootstrap, a validated weight or fit split, secondmate provisioning, or an approved pinned migration.
+
+1. Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root.
+2. Immediately before creation, validate that the chosen freeform destination under `home_root` is absent from that home's git index, collides with no existing file or directory in this home, and is home-distinct.
+   Reject the destination if any check fails.
+3. Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
+4. Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger and resolving pointer to this Destinations contract, then confirm the skill appears in a fresh session's skill index.
+5. If any step fails, remove the destination content and the exclude rule written by this attempt, leaving neither partial private content nor a partial rule behind.
+
 ### Flow: reduce, approve, migrate, remove
 
 1. Reduce non-pinned material now.
    For each eligible non-pinned candidate, record its first line, source file, estimated tokens, one-line trigger, live destination, privacy and visibility verdict, and actual budget relief in the completion receipt.
-   Autonomously relocate it only by adding it to an already-existing allowed JIT note, or, when Destinations allows the one bootstrap because this home has none, by creating that destination and adding the entry to it, or by routing it through a project's established delivery path to its existing owning `AGENTS.md`, then confirming that destination holds the quoted entry before removing the memory entry.
-   A destination that needs creation is not live, except that one bootstrap; uncompleted project delivery or any other future work still cannot count as relief, so continue with the next archival or eviction rung instead of leaving an over-budget proposal pending.
+   Autonomously relocate it only by adding it to an already-existing allowed JIT note, by applying the local destination creation contract when Destinations allows the one bootstrap or requires a validated weight or fit split, or by routing it through a project's established delivery path to its existing owning `AGENTS.md`, then confirming that destination holds the quoted entry before removing the memory entry.
+   A destination that needs creation is not live until the allowed bootstrap or validated split completes the local destination creation contract; uncompleted project delivery or any other future work still cannot count as relief, so continue with the next archival or eviction rung instead of leaving an over-budget proposal pending.
 2. Propose pinned relocation only.
    For a pinned candidate, append a `proposed-offload` section with the same fields to the completion receipt and create or refresh one durable captain-held backlog item using `tasks-axi add`, `tasks-axi hold`, `tasks-axi show <id> --full`, and `tasks-axi update <id> --body-file <path>` as appropriate.
    Preserve each candidate's approval state in that item, and require explicit plain-chat approval for that named item before any migration.
    If the captain never answers, nothing migrates and the held item persists, but it is never treated as budget relief.
 3. Migrate an approved pinned candidate outside this pass.
-   Resolve `home_root` to `$FM_HOME` when it is set and otherwise to the Firstmate code root, then re-validate the approved local-skill destination under that root for index absence with `git -C "$home_root"`, filesystem collision absence, and a home-distinct name.
-   Before creating the destination or writing any private content, resolve the exclude file with `git -C "$home_root" rev-parse --git-path info/exclude`, append the destination directory path to it, and verify the future `SKILL.md` path is ignored with `git -C "$home_root" check-ignore`.
-   Only after that verification succeeds, create the destination and write the `SKILL.md` with its precise description trigger, then confirm the skill appears in a fresh session's skill index.
-   If any migration step fails, remove the destination content and the exclude rule written by this attempt, leaving neither partial private content nor a partial rule behind.
+   Apply the local destination creation contract to the approved local-skill destination.
    An approved project destination ships as a normal task through that project's registered delivery mode.
    The migration's source of truth is the entry as quoted in the proposal.
 4. Remove only once live.
@@ -303,7 +313,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    It is inert in a home with no brain, which is a complete answer rather than an exception to report.
 5. **Use inspect-then-update.**
    For every retained fact, ask which current statement it supersedes, whether it can be a one-sentence rewrite, and whether a stale entry should be refreshed, archived, or routed to an existing stronger owner.
-   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected by AGENTS.md, archiving a stale entry to `data/memory-archive.md`, autonomous offload of an eligible non-pinned conditional entry to an already-existing allowed owner through the reduce flow above, captain-approved offload of a pinned durable conditional entry to a JIT-loaded owner executed through the migration step above, or deletion of an entry that is a duplicate or already preserved through a stronger existing owner.
+   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the captain-preference destination selected by AGENTS.md, archiving a stale entry to `data/memory-archive.md`, autonomous offload of an eligible non-pinned conditional entry through the reduce flow above to an already-existing allowed owner or the local destination that flow permits for a bounded bootstrap or validated weight or fit split, captain-approved offload of a pinned durable conditional entry to a JIT-loaded owner executed through the migration step above, or deletion of an entry that is a duplicate or already preserved through a stronger existing owner.
    A stale unique fact is never deleted, only archived.
    Do not invent another graduation path.
 
@@ -382,9 +392,10 @@ Extend the completion receipt with one entry per secondmate alongside the primar
 Keep those entries in the same plain captain-facing language the rest of the receipt uses.
 The session is reset-safe only when every home is within its own budget with no unresolved exception.
 
-## Scope exclusion: no skill storage by the pass
+## Scope exclusion: no unbounded skill storage by the pass
 
-The stow pass itself must never store, create, or edit a skill as a destination for any finding, except the one bounded bootstrap Destinations allows when this home has none.
+The stow pass may write only the user-owned local skill actions Destinations allows: adding to an existing destination, the one bounded bootstrap when this home has none, or a validated weight or fit split.
+It must never store, create, or edit a skill as a destination for any finding outside those bounds.
 The exclusion binds the pass as a writer: proposing an offload and letting the migration step execute a captain-approved candidate later is not the pass storing a skill.
 Every Firstmate-home skill that migration produces is user-owned and local under the destinations hard rule, while an approved project-level destination is produced and shipped through that project's registered delivery path, never by stow.
 Changing firstmate's tracked `.agents/skills/` or public `skills/` remains a deliberately scoped Firstmate repository task through its pipeline, never a stow product.
