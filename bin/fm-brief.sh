@@ -611,7 +611,7 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
       else "" end;
     frame as $frame
     | tail as $tail
-    | ($frame | utf8bytelength) + ($tail | utf8bytelength) as $fixed
+    | (($frame | utf8bytelength) + ($tail | utf8bytelength)) as $fixed
     | [ .results[] ]
     | reduce .[] as $r ([]; if any(.[]; .citation == $r.citation) then . else . + [$r] end)
     | map(row) as $lines
