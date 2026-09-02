@@ -326,7 +326,8 @@ Forwarded arguments are an allow-list of immediate merge-method selectors, commi
 The current default-branch tip is the final network read before either forge mutation, and no network operation reopens that check-to-mutation window.
 After an attempted mutation, the script reads forge state again; queued or pending execution is refused, an unreadable result records no landed outcome, and every unconfirmed result leaves the poll armed.
 A confirmed merge leaves a durable role-routed outcome instead of living only in the merging agent's memory, and [`bin/fm-merge-outcome-lib.sh`](../bin/fm-merge-outcome-lib.sh)'s header owns its destination, shape, identity, normal-case deduplication, and at-least-once recovery.
-Failure to write that outcome is reported and returns non-zero even though the merge itself has already landed.
+Failure to write or route that outcome is reported loudly and deliberately returns zero because the merge itself has already landed; only an unlanded merge returns non-zero.
+When publication fails while committing the notification marker, the durable queued outcome remains, the retry poll stays armed, and the notified marker remains absent.
 The same emitter handles a merge firstmate performed and one its poll detected, while the watcher immediately delivers the emitter's local actionable poll row.
 After a merge succeeds, `bin/fm-pr-merge.sh` closes at most one eligible recorded work item, on whichever forge it holds a write adapter for and in the repository that item records; multiple items, a forge or host with no adapter, a credential that is absent or refused, and bookkeeping failures warn without turning a completed merge into a failed, retryable merge.
 Teardown is fail-closed for ship and design worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.

@@ -335,6 +335,11 @@ case "${1:-} ${2:-}" in
   "api graphql")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     task_head=$(git -C "$FM_TEST_WT" rev-parse HEAD)
+    count_file="$case_dir/gitlab-graphql-count"
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
     target_ref=
     for arg in "$@"; do
       case "$arg" in targetRef=*) target_ref=${arg#targetRef=} ;; esac
@@ -353,7 +358,8 @@ case "${1:-} ${2:-}" in
         fi
         ;;
     esac
-    if [ -n "${FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL:-}" ]; then
+    if [ -n "${FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL:-}" ] \
+      && [ "$count" -eq "$FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL" ]; then
       "$FM_TEST_REAL_GIT" --git-dir="$FM_TEST_GIT_REMOTE" update-ref \
         refs/heads/main "$FM_TEST_ADVANCED_BASE"
     fi
@@ -409,6 +415,8 @@ case "${1:-} ${2:-}" in
   "mr merge")
     [ ! -e "$case_dir/glab-merge-fails" ] || { echo "error: mr merge failed" >&2 ; exit 1 ; }
     : > "$case_dir/glab-merge-called"
+    [ ! -e "$case_dir/glab-merge-lands-then-fails" ] \
+      || { echo "error: GitLab response transport failed after landing" >&2 ; exit 1 ; }
     exit 0
     ;;
 esac
@@ -591,6 +599,10 @@ case "${1:-} ${2:-}" in
   "pr merge")
     "$delegate" "$@" || exit $?
     : >"${FM_TEST_WT%/wt}/github-merge-called-${3:?missing pull request number}"
+    if [ -n "${FM_TEST_GH_MERGE_LANDS_THEN_FAILS:-}" ]; then
+      echo "error: GitHub response transport failed after landing" >&2
+      exit 1
+    fi
     ;;
   *) exec "$delegate" "$@" ;;
 esac
@@ -1428,7 +1440,7 @@ test_final_gitlab_preflight_cannot_reopen_default_tip_race() {
   new_tip=$(prepare_advanced_default "$case_dir")
 
   set +e
-  FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL=1 FM_TEST_ADVANCED_BASE=$new_tip \
+  FM_TEST_ADVANCE_DEFAULT_DURING_GITLAB_GRAPHQL=2 FM_TEST_ADVANCED_BASE=$new_tip \
     run_pr_merge "$case_dir" task-x1 "$MR_URL" \
       >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
@@ -3090,6 +3102,121 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
+test_every_observed_landed_path_reports_success() {
+  local case_dir number=100 provider rc route spec url
+  for spec in \
+    github\|preflight-observed \
+    github\|post-mutation-confirmed \
+    github\|state-read-transition \
+    github\|command-error-confirmed \
+    gitlab\|preflight-observed \
+    gitlab\|post-mutation-confirmed \
+    gitlab\|settings-read-transition \
+    gitlab\|command-error-confirmed; do
+    provider=${spec%%|*}
+    route=${spec#*|}
+    case "$provider" in
+      github)
+        number=$((number + 1))
+        url="https://github.com/example/repo/pull/$number"
+        case_dir=$(make_home_case "landed-invariant-$provider-$route")
+        add_gh_mocks "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)"
+        : >"$case_dir/glab.log"
+        ;;
+      gitlab)
+        url=$MR_URL
+        case "$route" in
+          preflight-observed)
+            case_dir=$(make_gitlab_case "landed-invariant-$provider-$route" state=merged)
+            ;;
+          *)
+            case_dir=$(make_gitlab_case "landed-invariant-$provider-$route")
+            ;;
+        esac
+        mkdir -p "$case_dir/home"
+        ;;
+    esac
+
+    set +e
+    case "$provider:$route" in
+      github:preflight-observed)
+        FM_TEST_GH_PRE_STATE=MERGED FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      github:state-read-transition)
+        FM_TEST_GH_MERGED_ON_GRAPHQL=2 FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      github:command-error-confirmed)
+        FM_TEST_GH_MERGE_LANDS_THEN_FAILS=1 FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      github:post-mutation-confirmed)
+        FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab:settings-read-transition)
+        : >"$case_dir/glab-merge-on-project-read"
+        FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab:command-error-confirmed)
+        : >"$case_dir/glab-merge-lands-then-fails"
+        FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+      gitlab:preflight-observed|gitlab:post-mutation-confirmed)
+        FM_TEST_HOME="$case_dir/home" \
+          run_pr_merge "$case_dir" task-x1 "$url" \
+            >"$case_dir/stdout" 2>"$case_dir/stderr"
+        ;;
+    esac
+    rc=$?
+    set -e
+
+    expect_code 0 "$rc" \
+      "landed-invariant-$provider-$route: an observed landed merge should exit zero"
+    assert_grep "observed: merged $url; recording the landed outcome" \
+      "$case_dir/stderr" \
+      "landed-invariant-$provider-$route: the landed observation was not loud"
+    assert_grep "$url" "$case_dir/state/.wake-queue" \
+      "landed-invariant-$provider-$route: the landed outcome was not durable"
+    assert_present "$case_dir/state/task-x1.check.sh" \
+      "landed-invariant-$provider-$route: outcome reporting disarmed the retry poll"
+    case "$route" in
+      preflight-observed|state-read-transition|settings-read-transition)
+        assert_no_grep 'pr merge' "$case_dir/gh.log" \
+          "landed-invariant-$provider-$route: recovery invoked a GitHub mutation"
+        assert_no_grep ' mr merge ' "$case_dir/glab.log" \
+          "landed-invariant-$provider-$route: recovery invoked a GitLab mutation"
+        ;;
+      post-mutation-confirmed|command-error-confirmed)
+        if [ "$provider" = github ]; then
+          assert_grep "pr merge $number " "$case_dir/gh.log" \
+            "landed-invariant-$provider-$route: the GitHub mutation was not attempted"
+        else
+          assert_grep ' mr merge ' "$case_dir/glab.log" \
+            "landed-invariant-$provider-$route: the GitLab mutation was not attempted"
+        fi
+        ;;
+    esac
+    case "$route" in
+      command-error-confirmed)
+        assert_grep 'exited with status 1, but the merge is confirmed landed' \
+          "$case_dir/stderr" \
+          "landed-invariant-$provider-$route: the post-landing command error was not reported"
+        ;;
+    esac
+  done
+  pass "every observed landed route reports success and a durable outcome"
+}
+
 test_records_pr_and_head_before_merging
 test_mismatched_repository_refuses_before_merging
 test_supported_origin_spellings_preserve_repository_binding
@@ -3167,4 +3294,5 @@ test_unknown_gitlab_post_merge_state_is_nonretryable
 test_distinct_merged_prs_keep_distinct_wakes
 test_uncommitted_marker_retry_is_never_silent
 test_secondmate_without_parent_binding_is_loud
+test_every_observed_landed_path_reports_success
 printf '\nall fm-pr-merge tests passed\n'

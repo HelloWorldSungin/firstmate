@@ -860,9 +860,15 @@ verify_forge_inspected_identity() {
 }
 
 github_confirm_merged() {
+  local command_rc=$1
   if ! github_read_merge_state; then
-    printf 'actionable: GitHub accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    if [ "$command_rc" -eq 0 ]; then
+      printf 'actionable: GitHub accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" >&2
+    else
+      printf 'actionable: GitHub merge command for %s exited with status %s and its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" "$command_rc" >&2
+    fi
     return 2
   fi
   [ "$FM_GITHUB_STATE" = MERGED ] && return 0
@@ -882,18 +888,28 @@ github_confirm_merged() {
 }
 
 gitlab_confirm_merged() {
-  local json state
+  local command_rc=$1 json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    if [ "$command_rc" -eq 0 ]; then
+      printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" >&2
+    else
+      printf 'actionable: GitLab merge command for %s exited with status %s and its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" "$command_rc" >&2
+    fi
     return 2
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    if [ "$command_rc" -eq 0 ]; then
+      printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" >&2
+    else
+      printf 'actionable: GitLab merge command for %s exited with status %s and its landed state could not be confirmed; the merge poll remains armed\n' \
+        "$URL" "$command_rc" >&2
+    fi
     return 2
   fi
   if [ "$state" != merged ]; then
@@ -944,7 +960,8 @@ verify_inspected_default_tip() {
   fi
 }
 
-merge_mutation_accepted=0
+merge_mutation_attempted=0
+merge_command_rc=0
 case "$PROVIDER" in
   github)
     github_preflight_rc=0
@@ -1009,11 +1026,12 @@ case "$PROVIDER" in
           # A sub-second residual window remains because neither forge exposes an
           # expected-base parameter; this guard narrows rather than eliminates it.
           verify_inspected_default_tip || exit 1
+          merge_mutation_attempted=1
           GH_PROMPT_DISABLED=1 gh pr merge "$PR_NUMBER" \
             --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" \
             --match-head-commit "$FM_PR_INSPECTED_HEAD" \
-            "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}"
-          merge_mutation_accepted=1
+            "${merge_args[@]+"${merge_args[@]}"}" "${github_args[@]+"${github_args[@]}"}" \
+            || merge_command_rc=$?
           ;;
         3) ;;
         *) exit 1 ;;
@@ -1021,10 +1039,19 @@ case "$PROVIDER" in
       cleanup_materialized_body_files
       trap - EXIT HUP INT TERM
     fi
-    if [ "$merge_mutation_accepted" -eq 1 ]; then
+    if [ "$merge_mutation_attempted" -eq 1 ]; then
       github_confirm_rc=0
-      github_confirm_merged || github_confirm_rc=$?
-      case "$github_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+      github_confirm_merged "$merge_command_rc" || github_confirm_rc=$?
+      case "$github_confirm_rc" in
+        0)
+          if [ "$merge_command_rc" -ne 0 ]; then
+            printf 'actionable: GitHub merge command for %s exited with status %s, but the merge is confirmed landed; recording the outcome\n' \
+              "$URL" "$merge_command_rc" >&2
+          fi
+          ;;
+        2) exit 0 ;;
+        *) exit 1 ;;
+      esac
     fi
     ;;
   gitlab)
@@ -1042,17 +1069,33 @@ case "$PROVIDER" in
           gitlab_verify_mergeable || gitlab_verify_rc=$?
           case "$gitlab_verify_rc" in
             0)
-              if ! gitlab_attestation_error=$(gitlab_require_attested_merge 2>&1); then
-                gitlab_recheck_rc=0
-                gitlab_verify_mergeable 2>/dev/null || gitlab_recheck_rc=$?
-                if [ "$gitlab_recheck_rc" -eq 4 ]; then
-                  gitlab_verify_rc=4
+              gitlab_attestation_rc=0
+              gitlab_attestation_error=$(gitlab_require_attested_merge 2>&1) \
+                || gitlab_attestation_rc=$?
+              gitlab_verify_rc=0
+              gitlab_verify_mergeable || gitlab_verify_rc=$?
+              case "$gitlab_verify_rc" in
+                0)
+                  if [ "$gitlab_attestation_rc" -ne 0 ]; then
+                    printf '%s\n' "$gitlab_attestation_error" >&2
+                    exit 1
+                  fi
                   break
-                fi
-                printf '%s\n' "$gitlab_attestation_error" >&2
-                exit 1
-              fi
-              break
+                  ;;
+                4) break ;;
+                3)
+                  if [ "$gitlab_attempt" -ne 1 ]; then
+                    echo "error: refusing to merge $URL because its head changed repeatedly during validation" >&2
+                    exit 1
+                  fi
+                  inspect_merge_boundary "$FM_PR_MERGE_TARGET" || exit 1
+                  gitlab_attempt=2
+                  ;;
+                5)
+                  refuse_changed_target_after_reinspection "$FM_PR_MERGE_TARGET" || exit 1
+                  ;;
+                *) exit 1 ;;
+              esac
               ;;
             4) break ;;
             3)
@@ -1078,14 +1121,24 @@ case "$PROVIDER" in
           # in between is refused by GitLab instead of merged unverified. --yes only
           # skips the interactive confirmation, which no supervised run can answer;
           # the conditions above are what authorize the merge.
+          merge_mutation_attempted=1
           GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
-            --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@"
-          merge_mutation_accepted=1
+            --sha "$FM_PR_MERGE_HEAD" --yes --auto-merge=false "$@" \
+            || merge_command_rc=$?
         fi
-        if [ "$merge_mutation_accepted" -eq 1 ]; then
+        if [ "$merge_mutation_attempted" -eq 1 ]; then
           gitlab_confirm_rc=0
-          gitlab_confirm_merged || gitlab_confirm_rc=$?
-          case "$gitlab_confirm_rc" in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
+          gitlab_confirm_merged "$merge_command_rc" || gitlab_confirm_rc=$?
+          case "$gitlab_confirm_rc" in
+            0)
+              if [ "$merge_command_rc" -ne 0 ]; then
+                printf 'actionable: GitLab merge command for %s exited with status %s, but the merge is confirmed landed; recording the outcome\n' \
+                  "$URL" "$merge_command_rc" >&2
+              fi
+              ;;
+            2) exit 0 ;;
+            *) exit 1 ;;
+          esac
         fi
         ;;
     esac
@@ -1100,6 +1153,7 @@ esac
 # landed: set -e exits on a refused, queued, pending, unreadable, or failed merge
 # above while its existing poll remains armed.
 outcome_rc=0
+printf 'observed: merged %s; recording the landed outcome\n' "$URL" >&2
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self || outcome_rc=$?
 case "$outcome_rc" in
   0) ;;
