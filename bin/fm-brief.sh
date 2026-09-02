@@ -149,11 +149,13 @@
 # ~1,100 estimated tokens) after the instruction; when the search never starts,
 # fails, times out, returns no rows, or emits an unframed document, the brief
 # carries the instruction alone and the scaffold still succeeds. The same search
-# prints one advisory "nearest prior work" stdout line for firstmate, naming
-# the closest task record and its report path when one exists; that line claims
-# proximity, never duplication, prints whether or not the embed mounted, and
-# never enters the brief. A home with no local index runs no search and omits
-# the section. The secondmate charter carries the instruction alone.
+# prints at most one advisory "nearest prior work" stdout line for firstmate.
+# Once ranked task identities are classifiable, it names the earliest one whose
+# report is safe and readable, or says no local report exists; an unclassifiable
+# task identity leaves the advisory silent rather than guessing. The line claims
+# proximity, never duplication, is independent of whether the embed mounted,
+# and never enters the brief. A home with no local index runs no search and
+# omits the section. The secondmate charter carries the instruction alone.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -481,7 +483,8 @@ BRAIN_SCAFFOLD_QUERY_DISPLAY_CHARS=200
 # One read, two outputs, two gates. The worker-facing embed becomes trusted
 # context, so it mounts only when the installed wrapper is OBSERVED to emit the
 # framed answer and per-result provenance fields; the firstmate-facing line is
-# a candidate to compare, so it prints from any parseable document with rows.
+# independent of that embed gate, but prints only after task identities remain
+# classifiable through the selected ranked candidate.
 # Every other outcome - never started, failed, timed out, empty, unframed -
 # leaves BRAIN_EMBED empty so the brief carries the instruction alone, and none
 # of them can stop the scaffold. The wrapper's exit codes keep never-started
@@ -513,8 +516,10 @@ brain_scaffold_read() {  # -> BRAIN_EMBED, BRAIN_NEAREST; both may stay empty
     echo "brain: the search returned something other than an fm-recall.v1 document; the brief carries the retrieval instruction only" >&2
     return 0
   }
-  # D4: the nearest prior work is the first ranked task row whose completed
-  # report this home can read. Ungated, advisory, and never in the brief. Reports
+  # D4: skip rows that are definitely not tasks, then name the first ranked
+  # classifiable task whose completed report this home can read. A task-shaped
+  # row with unclassifiable identity stops the claim rather than letting a lower
+  # row masquerade as nearest. Ungated, advisory, and never in the brief. Reports
   # are looked up under the brain's own home, the same place the wrapper reads
   # provenance from, rather than under a relocated brief directory.
   while IFS= read -r -d '' candidate_citation \
