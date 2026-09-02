@@ -349,7 +349,7 @@ Read across those four rows, none blocks capture, dispatch, or a session, and no
   Each time, the sentence that kept being wrong stopped being load-bearing, which is the only repair that does not have to be made again.
 - The process rule this design paid a round to learn: a review finding that collides with a decided property escalates to that decision's owner and is never applied as a correction.
   A round of review here did exactly that, trading away D2's decided "inert without a brain" for a more accurate description of an unspecified detail, and the finding's apparent correctness is precisely what made the override invisible - a wrong decision is arguable, whereas a right-looking correction is not read as a decision at all.
-- Implementation is follow-up tracked work, per item: the audit trail (first, and carrying the seam declaration at the dashboard and eval call sites that D2 names), the scaffold search with its two outputs and two gates, the `/stow` advisory step, the `harness-adapters` split, and the tranche moves - each through the project's normal delivery path.
+- Implementation is tracked per item: the D1 scaffold search and D4 advisory line now ship in `bin/fm-brief.sh`; the audit trail (carrying the seam declaration at the dashboard and eval call sites that D2 names), the `/stow` advisory step, the `harness-adapters` split, and the tranche moves remain follow-up work through the project's normal delivery path.
   This ADR authorizes none of them to skip their own validation.
 
 ## Captain choices answered 2026-08-20

@@ -2034,7 +2034,7 @@ test_brain_scaffold_read_degrades_without_blocking() {
 # line still prints from the rows it did return.
 test_brain_scaffold_read_gates_embed_on_answer_contract() {
   local home legacy_root brief legacy_doc control_doc bogus_doc non_task_doc unclassified_doc called output_lines
-  local no_jq_bin path_dir executable
+  local no_jq_bin path_dir executable no_brain_home
   home=$(brain_home brain-legacy)
   legacy_root="$TMP_ROOT/legacy root"
   mkdir -p "$legacy_root/bin" "$home/data/prior-task"
@@ -2121,8 +2121,38 @@ EOF
     "a missing parser dependency must be classified as never-started"
   assert_contains "$SCAFFOLD_ERR" 'jq is required' \
     "the never-started diagnostic must name the missing dependency"
+  assert_grep 'fm-recall.sh search' "$home/data/no-jq/brief.md" \
+    "a missing parser dependency must leave the retrieval instruction in the brief"
   assert_no_grep 'scaffold time' "$home/data/no-jq/brief.md" \
     "a search that never started must leave the instruction-only section"
+
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(
+    FM_SECONDMATE_CHARTER='Supervise alpha.' PATH="$no_jq_bin" FM_HOME="$home" \
+      FM_ROOT_OVERRIDE="$legacy_root" "$ROOT/bin/fm-brief.sh" no-jq-charter repo \
+      --secondmate alpha 2>"$home/charter-stderr.txt"
+  ) || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$home/charter-stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a secondmate charter without jq must still scaffold"
+  assert_grep 'fm-recall.sh search' "$home/data/no-jq-charter/brief.md" \
+    "a secondmate charter without jq must retain the retrieval instruction"
+  assert_no_grep 'scaffold time' "$home/data/no-jq-charter/brief.md" \
+    "a secondmate charter without jq must not gain a scaffold search embed"
+  [ -z "$SCAFFOLD_ERR" ] \
+    || fail "a charter performs no search and must not emit a never-started diagnostic: $SCAFFOLD_ERR"
+
+  no_brain_home="$TMP_ROOT/no-jq-no-brain"
+  mkdir -p "$no_brain_home/data"
+  SCAFFOLD_RC=0
+  SCAFFOLD_OUT=$(PATH="$no_jq_bin" FM_HOME="$no_brain_home" FM_ROOT_OVERRIDE="$legacy_root" \
+    "$ROOT/bin/fm-brief.sh" no-jq-no-brain repo --mode no-mistakes \
+    2>"$no_brain_home/stderr.txt") || SCAFFOLD_RC=$?
+  SCAFFOLD_ERR=$(cat "$no_brain_home/stderr.txt")
+  expect_code 0 "$SCAFFOLD_RC" "a home without a brain or jq must still scaffold"
+  assert_no_grep '^# Brain$' "$no_brain_home/data/no-jq-no-brain/brief.md" \
+    "a home with no local index must still omit the Brain section"
+  [ -z "$SCAFFOLD_ERR" ] \
+    || fail "a legitimate no-brain home must not emit a search diagnostic: $SCAFFOLD_ERR"
   pass "fm-brief.sh: the embed and advisory gates reject untrusted or incomplete protocol states"
 }
 
