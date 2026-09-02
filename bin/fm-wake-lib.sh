@@ -73,9 +73,10 @@ fm_path_mtime() {
 }
 
 fm_path_age() {
-  local path=$1 m
+  local path=$1 m now
   m=$(fm_path_mtime "$path") || { echo 999999; return; }
-  echo $(( $(date +%s) - m ))
+  now=$(date +%s)
+  echo $((now - m))
 }
 
 # fm_watcher_lock_unheld <state>
@@ -501,11 +502,15 @@ _fm_atomic_replace() {
 }
 
 _fm_recovery_marker_write_locked() {
-  local marker=$1 kind=$2 generation=${3:-} status=${4:-pending} tmp
+  local marker=$1 kind=$2 generation=${3:-} status=${4:-pending} tmp pid now
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   case "$status" in pending|announced) ;; *) return 1 ;; esac
   tmp=$(mktemp "${marker}.tmp.XXXXXX") || return 1
-  [ -n "$generation" ] || generation="$(fm_current_pid).$(date +%s).${tmp##*.}"
+  if [ -z "$generation" ]; then
+    pid=$(fm_current_pid)
+    now=$(date +%s)
+    generation="$pid.$now.${tmp##*.}"
+  fi
   if ! printf '%s:%s:%s\n' "$status" "$kind" "$generation" > "$tmp" \
     || ! chmod 0600 "$tmp" \
     || ! _fm_atomic_replace "$tmp" "$marker"; then
@@ -1301,10 +1306,12 @@ fm_wake_signal_seen_path() {  # <state> <file>
 # A missing marker or unreadable signature is NOT a match, so uncertainty reads
 # as "unannounced bytes present".
 fm_wake_signal_seen_current() {  # <state> <file>
-  local sig
+  local sig seen_path seen
   sig=$(fm_wake_signal_sig "$2") || return 1
   [ -n "$sig" ] || return 1
-  [ "$(cat "$(fm_wake_signal_seen_path "$1" "$2")" 2>/dev/null)" = "$sig" ]
+  seen_path=$(fm_wake_signal_seen_path "$1" "$2")
+  seen=$(cat "$seen_path" 2>/dev/null || true)
+  [ "$seen" = "$sig" ]
 }
 
 # Guarded self-announced status append - the one dedup primitive for a status

@@ -552,6 +552,47 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
+test_watcher_term_trap_survives_runtime_expansion() {
+  # Bash 5.2 can corrupt its parser when a trapped signal arrives from the
+  # first of multiple command substitutions in one runtime expansion.
+  # Deliver TERM from the first lookup itself so this is deterministic rather
+  # than depending on a signal racing an arbitrary watcher poll instruction.
+  local dir state out err status
+  dir=$(make_case term-runtime-expansion)
+  state="$dir/state"
+  out="$dir/runtime.out"
+  err="$dir/runtime.err"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    window_to_task() { printf ""; }
+    window_backend() { kill -TERM "$$"; printf tmux; }
+    window_harness() { printf claude; }
+    fm_busy_classify() { printf unknown; }
+    trap "exit 71" TERM
+    window_is_busy fixture ""
+  ' _ "$WATCH" >"$out" 2>"$err"
+  status=$?
+  [ "$status" -eq 71 ] \
+    || fail "watcher TERM trap did not exit from a runtime backend lookup (status $status, stderr: $(cat "$err"))"
+  ! grep -F 'unexpected EOF while looking for matching' "$err" >/dev/null \
+    || fail "watcher TERM trap corrupted the runtime expansion parser: $(cat "$err")"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_wake_signal_sig() { printf signature; }
+    fm_wake_signal_seen_path() { kill -TERM "$$"; printf /nonexistent; }
+    trap "exit 71" TERM
+    fm_wake_signal_seen_current "$2" fixture.status
+  ' _ "$WATCH" "$state" >"$out" 2>"$err"
+  status=$?
+  [ "$status" -eq 71 ] \
+    || fail "watcher TERM trap did not exit from a runtime signal lookup (status $status, stderr: $(cat "$err"))"
+  ! grep -F 'unexpected EOF while looking for matching' "$err" >/dev/null \
+    || fail "watcher TERM trap corrupted the signal lookup parser: $(cat "$err")"
+  pass "watcher TERM traps survive runtime expansions without parser corruption"
+}
+
 test_watcher_stops_promptly_on_term() {
   # A watcher must honor its own stop signal within the cycle it receives it, not
   # at the end of the current poll interval. Bash defers a trapped signal until
@@ -1347,6 +1388,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
+test_watcher_term_trap_survives_runtime_expansion
 test_watcher_stops_promptly_on_term
 test_watcher_stop_burst_during_cleanup_still_releases_lock
 test_watch_restart_hands_over_within_its_own_budget

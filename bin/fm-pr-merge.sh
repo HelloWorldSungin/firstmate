@@ -1093,11 +1093,9 @@ case "$outcome_rc" in
   3)
     printf 'actionable: merged %s but could not report it upward: this home has no readable secondmate identity or parent binding (.fm-secondmate-home, .fm-secondmate-parent)\n' \
       "$URL" >&2
-    exit 1
     ;;
   *)
     printf 'actionable: merged %s but could not record the outcome for supervision\n' "$URL" >&2
-    exit 1
     ;;
 esac
 
