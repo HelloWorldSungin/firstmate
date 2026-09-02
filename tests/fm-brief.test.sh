@@ -2079,6 +2079,8 @@ EOF
   called="$TMP_ROOT/no-jq-wrapper-called"
   SCAFFOLD_RC=0
   SCAFFOLD_OUT=$(
+    # The scaffolded child process invokes this exported command shim indirectly.
+    # shellcheck disable=SC2329
     command() {
       if [ "$1" = -v ] && [ "${2:-}" = jq ]; then return 1; fi
       builtin command "$@"
