@@ -94,8 +94,8 @@ The update transition is deliberate: locked bootstrap may add a missing branch o
 Detect-only and post-migration bootstrap name every remaining live no-mistakes ship without proven branch identity, so an operator learns which run-state reads are unavailable before an urgent supervision decision.
 Pre-transition briefs have no branch marker, work items do not bind branches, and task-name, ambient-branch, and run-list matches are inference, so none can backfill the record and all remaining tasks stay refused until cleanup.
 [`bin/fm-run-attribution-legacy-transition.sh`](../bin/fm-run-attribution-legacy-transition.sh) owns the exact proof, the per-candidate and whole-sweep bounds that keep a hung forge off the session-start path, the atomic publication that keeps the record's trailing PR identity block last, and the diagnostic wording.
-The script header owns the exact run-head relationship, current-versus-historical source, lookup-conclusiveness, cache, and source-precedence rules.
-Architecturally, an in-progress pipeline may advance the crew tip or report a head unavailable in that worktree without losing attribution, while the narrowed exceptions continue to reject stale historical evidence.
+[`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh)'s header owns the exact branch, head, and pipeline-custody attribution rules, and the script header owns the current-versus-historical source, lookup-conclusiveness, cache, and source-precedence rules.
+Architecturally, an in-progress pipeline may advance the crew tip without losing attribution, and while the pipeline holds custody of the branch an active run keeps attribution on any head at all, including one this worktree cannot resolve or one that diverged; outside that custody the narrowed exceptions continue to reject stale historical evidence, so an unresolvable head on a synced branch is not attributed.
 An inconclusive run lookup remains distinct from a confirmed absence and may replay that crew's recent observed step under source `run-step-degraded` only within a finite window after endpoint-liveness and exact-busy checks, preserving wedge detection when the crew stops, the lookup stays unavailable, or the reported run head remains unresolved in the worktree.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
@@ -108,14 +108,16 @@ Decision-only events such as `resolved` never become current state or leak their
 In that status-log fallback, a declared external wait reports the distinct `paused` state with its reason.
 The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
 For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, current crew state, endpoint probes, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
+Each home also atomically publishes that same bounded home summary with freshness epoch metadata at `state/home-summary.json` after a locked session start, a watcher-observed status change, task spawn, task teardown, and on a recurring live-watcher cadence; `bin/fm-home-summary-refresh.sh` owns the publication mechanics.
+The fleet snapshot and Bearings paths do not consume this additive publication yet, so mixed-version homes without it retain the established on-demand summary behavior.
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, while `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
 The script header owns the exact JSON schema.
 [`fleet-data-contracts.md`](fleet-data-contracts.md) owns field ownership across the durable outcome manifest, the work-item reference store, the normalized PR observation, and the snapshot fields projected from them, including the card-column precedence a board renderer resolves overlapping signals against.
 
 On a Pi primary, supervision is default-on: the watcher extension can hand eligible task-local rows from an ordinary actionable wake, plus selected fleet-wide heartbeat reviews, to a persistent in-process supervision conversation while main-only rows remain on the captain-facing path.
 The branch handles those rows, stores the outcome durably, and merges an append-only note back.
-A captain-facing outcome instead opens exactly one follow-up turn on the captain's conversation without printing or rendering a separate note - that turn is the captain-visible result.
-[docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility and dispatch architecture, and every other harness keeps the wake-to-main path unchanged.
+A captain-facing outcome instead opens exactly one follow-up turn on the captain's conversation without printing or rendering a separate note.
+[docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility and dispatch architecture, while the generated [Pi supervision protocol](supervision-protocols/pi.md) owns MAIN's captain-visible response and merged-event handling; every other harness keeps the wake-to-main path unchanged.
 
 ### Registered secondmate current state
 
