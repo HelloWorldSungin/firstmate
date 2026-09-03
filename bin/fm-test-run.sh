@@ -49,7 +49,9 @@
 #                   script approaches it, so it only converts a HUNG script
 #                   into a bounded failure. A hung suite is the shape that
 #                   silently outruns a caller's invocation budget, so the
-#                   bound is a guard, not a speed control.
+#                   bound is a guard, not a speed control. A script the bound
+#                   could not be armed for is recorded as exit 125 and says so
+#                   on stdout, so it is never read as a test that failed.
 #   -h, --help      print this header
 #
 # Per-script machine-parseable markers (stdout):
@@ -1710,24 +1712,26 @@ trap 'rm -rf "$RUN_TMP"' EXIT
 # dropped the developer sees today's behaviour, a stalled script surviving
 # Ctrl-C, which the deadline still bounds.
 #
-# The exit status is per signal on purpose: the conventional 128+signal, so an
-# operator or CI wrapper reading the status still learns whether the sweep was
-# interrupted from a terminal (INT, 130) or terminated by a supervisor
-# (TERM, 143) rather than seeing one cause reported for both.
+# Both the relayed signal and the runner's own exit status are per signal on
+# purpose. The status is the conventional 128+signal, so an operator or CI
+# wrapper reading it still learns whether the sweep was interrupted from a
+# terminal (INT, 130) or terminated by a supervisor (TERM, 143); the group
+# receives that same signal rather than a blanket TERM, so a script whose own
+# trap distinguishes the two runs the branch matching the reported cause.
 # shellcheck disable=SC2329 # Registered by the INT and TERM traps below.
-run_forward_signal() {  # <exit-status>
-  local f pgid
+run_forward_signal() {  # <exit-status> <signal>
+  local f pgid status=${1:-130} signal=${2:-TERM}
   trap - INT TERM
   for f in "$RUN_TMP"/pgid.*; do
     [ -f "$f" ] || continue
     pgid=$(cat "$f" 2>/dev/null || true)
     case "$pgid" in ''|*[!0-9]*) continue ;; esac
-    kill -- "-$pgid" 2>/dev/null || true
+    kill -s "$signal" -- "-$pgid" 2>/dev/null || true
   done
-  exit "${1:-130}"
+  exit "$status"
 }
-trap 'run_forward_signal 130' INT
-trap 'run_forward_signal 143' TERM
+trap 'run_forward_signal 130 INT' INT
+trap 'run_forward_signal 143 TERM' TERM
 
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)
@@ -1812,22 +1816,26 @@ record_script_result() {
 run_script_bounded() {  # <script> <out>
   local script=$1 out=$2 rc began elapsed
   local FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.serial"
+  local started="$RUN_TMP/started.serial"
+  rm -f "$started"
   began=$(now_ms)
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
     # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-    # Expansion is intentionally deferred to the child bash passed to -c.
+    # The first statement records that the bound did reach the script, which is
+    # what separates fm_run_timed's "never started" 125 from a script that
+    # exits 125 itself. Expansion is deferred to the child bash passed to -c.
     # shellcheck disable=SC2016
     fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
-      'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
+      ': >"$3"; bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out" "$started"
     rc=$?
   else
     bash "$script" 2>&1 | tee "$out"
     rc=${PIPESTATUS[0]}
   fi
+  # Serial output is streamed live and never re-read, so any explanation has to
+  # reach stdout here or the operator only ever sees a bare exit status.
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
     elapsed=$(( ($(now_ms) - began) / 1000 ))
-    # Serial output is streamed live and never re-read, so the explanation has
-    # to reach stdout here or the operator only ever sees a bare exit=124.
     # 124 is also an ordinary status a script may exit with on its own, so the
     # elapsed time decides which of the two happened - the same test the shared
     # bound owner uses to tell a natural 137 from its own kill-after escalation.
@@ -1838,6 +1846,12 @@ run_script_bounded() {  # <script> <out>
       printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
         "$script" "$elapsed" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
     fi
+  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 125 ] && [ ! -e "$started" ]; then
+    # 125 is the bound owner's "nothing was attempted" status. Without this the
+    # run records a silent exit=125 with no output, which reads as a test that
+    # failed rather than one that was never run.
+    printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
+      "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
   fi
   return "$rc"
 }
@@ -1966,7 +1980,12 @@ else
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-        fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$work/output" 2>&1
+        # The marker records that the bound reached the script, which is what
+        # separates fm_run_timed's "never started" 125 from a script that exits
+        # 125 itself. exec keeps the process tree the bound reaps unchanged.
+        # shellcheck disable=SC2016
+        fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+          ': >"$2"; exec bash "$1"' _ "$script" "$work/started" >"$work/output" 2>&1
       else
         bash "$script" >"$work/output" 2>&1
       fi
@@ -1984,6 +2003,9 @@ else
           printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
             "$script" "$((duration / 1000))" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
         fi
+      elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 125 ] && [ ! -e "$work/started" ]; then
+        printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
+          "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
       fi
       printf '%s\n' "$duration" >"$work/duration_ms"
       printf '%s\n' "$rc" >"$work/exit"

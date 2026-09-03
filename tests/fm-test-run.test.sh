@@ -875,7 +875,7 @@ SH
 # only thing an operator or CI wrapper can read to learn which signal stopped
 # the sweep, so INT and TERM must not report the same cause.
 test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
-  local tmp repo runner fixture sig expected pid rc waited
+  local tmp repo runner fixture sig expected pid rc waited relayed
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-signal.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -884,10 +884,19 @@ test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
   cp "$RUNNER" "$runner"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   chmod +x "$runner"
+  # The fixture distinguishes the two signals the way several suites in this
+  # repo do, so the relayed signal is observable and not just the runner's own
+  # exit status read back. It idles in `wait` rather than a foreground sleep:
+  # bash defers a trap until the foreground command returns, so a script parked
+  # directly in sleep can be killed by the bound owner's escalation before its
+  # handler ever runs, while wait is interrupted by the trap immediately.
   cat >"$repo/$fixture" <<'SH'
 #!/usr/bin/env bash
+trap 'printf INT >"$FM_SIGNAL_MARKER"; exit 130' INT
+trap 'printf TERM >"$FM_SIGNAL_MARKER"; exit 143' TERM
 echo "ok - signal fixture started"
-sleep 30
+sleep 30 &
+wait $!
 SH
   chmod +x "$repo/$fixture"
 
@@ -896,6 +905,8 @@ SH
       INT) expected=130 ;;
       TERM) expected=143 ;;
     esac
+    export FM_SIGNAL_MARKER="$tmp/$sig.marker"
+    rm -f "$FM_SIGNAL_MARKER"
     # Job control is required: a non-interactive shell otherwise makes an async
     # command ignore SIGINT, so the runner would never see the signal at all.
     set -m
@@ -919,12 +930,120 @@ SH
     rc=0
     wait "$pid" 2>/dev/null || rc=$?
     if [ "$rc" -ne "$expected" ]; then
+      unset FM_SIGNAL_MARKER
       rm -rf "$tmp"
       fail "a sweep stopped by SIG$sig reported $rc, not the conventional $expected"
     fi
+    # The bounded child is in its own group and is signalled as the runner
+    # leaves, so its handler can still be running when wait returns.
+    waited=0
+    while [ "$waited" -lt 60 ] && [ ! -s "$tmp/$sig.marker" ]; do
+      waited=$((waited + 1))
+      sleep 0.05
+    done
+    relayed=$(cat "$tmp/$sig.marker" 2>/dev/null || true)
+    if [ "$relayed" != "$sig" ]; then
+      unset FM_SIGNAL_MARKER
+      rm -rf "$tmp"
+      fail "a sweep stopped by SIG$sig relayed '${relayed:-nothing}' to the bounded script, not SIG$sig"
+    fi
   done
+  unset FM_SIGNAL_MARKER
   rm -rf "$tmp"
-  pass "a sweep stopped by a signal reports the status of the signal that stopped it"
+  pass "a sweep stopped by a signal reports and relays the signal that stopped it"
+}
+
+# fm_run_timed returns 125 when nothing was attempted - the bound could not be
+# armed and the script never ran. Recorded verbatim that is indistinguishable
+# from a test that failed silently, so both bounded paths must say which
+# happened, and must not say it when the script itself exits 125.
+test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run() {
+  local tmp repo runner fixture proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unarmed.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/unarmed.test.sh
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  # The bound owner's documented "no bounded runner could start" outcome, in
+  # the one file the runner sources to get it.
+  cat >"$repo/bin/fm-timeout-lib.sh" <<'SH'
+#!/usr/bin/env bash
+fm_run_timed() { return 125; }
+SH
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - unarmed fixture actually ran"
+SH
+  cp "$repo/$fixture" "$repo/$proven"
+  chmod +x "$repo/$fixture" "$repo/$proven"
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/serial.out" 2>"$tmp/serial.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script the bound could not be armed for must make the run red"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=125 " "$tmp/serial.out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/serial.out" || true)
+    rm -rf "$tmp"
+    fail "an unarmable bound was not recorded as exit=125: $diag"
+  fi
+  if ! grep -Fq "not ok - $fixture was not run: the 60s per-script bound could not be armed" "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the serial path recorded exit=125 without saying the script was never run: $diag"
+  fi
+  if grep -Fq 'ok - unarmed fixture actually ran' "$tmp/serial.out"; then
+    rm -rf "$tmp"
+    fail "the script ran after all, so 125 did not mean the bound was unarmable"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 60 "$proven" ) \
+    >"$tmp/jobs.out" 2>"$tmp/jobs.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "an unarmable bound under --jobs must make the run red"
+  fi
+  if ! grep -Fq "not ok - $proven was not run: the 60s per-script bound could not be armed" "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path recorded exit=125 without saying the script was never run: $diag"
+  fi
+
+  # With a real bound owner, a script that exits 125 itself must keep its own
+  # status and its own output, and must not be described as never run.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - self-inflicted 125 fixture ran"
+exit 125
+SH
+  chmod +x "$repo/$fixture"
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/self.out" 2>"$tmp/self.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 125 on its own must still make the run red"
+  fi
+  if ! grep -Fq 'ok - self-inflicted 125 fixture ran' "$tmp/self.out"; then
+    diag=$(cat "$tmp/self.out")
+    rm -rf "$tmp"
+    fail "the script that exited 125 on its own never ran: $diag"
+  fi
+  if grep -Fq 'could not be armed' "$tmp/self.out"; then
+    diag=$(cat "$tmp/self.out")
+    rm -rf "$tmp"
+    fail "a script that exited 125 on its own was reported as never run: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "a bound that could not be armed is reported as a script that never ran"
 }
 
 test_per_script_timeout_default_arms_for_standard_modes() {
@@ -1044,5 +1163,6 @@ test_per_script_timeout_bounds_a_hung_script_under_jobs
 test_per_script_timeout_zero_is_a_real_opt_out
 test_per_script_timeout_default_arms_for_standard_modes
 test_signal_relay_reports_the_signal_that_stopped_the_sweep
+test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run
 test_aggregate_json
 printf '\nall fm-test-run tests passed\n'

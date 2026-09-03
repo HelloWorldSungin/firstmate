@@ -12,10 +12,10 @@
 # bounded by FM_REMOTE_JOB_STDIN_TIMEOUT - always, never conditionally - and
 # reports that refusal instead. That bound is range-checked alongside every
 # other tunable, so an environment cannot restore the unbounded read by naming
-# a value the capture would never enforce. The
-# shape cannot be screened structurally: sshd hands the fixed entrypoint a pipe
-# for every remote command, so a pipe is the normal case here, not the faulty
-# one - only failing to reach EOF distinguishes them.
+# a value the capture would never enforce. The faulty caller's shape cannot be
+# screened structurally: sshd hands the fixed entrypoint a pipe for every
+# remote command, so a pipe is the normal case here, not the faulty one - only
+# failing to reach EOF distinguishes them.
 #
 # A job directory is mode 0700 and contains root, home, argv (NUL-delimited),
 # stdin, stdout, stderr, queue_deadline, timeout, deadline, exit, and state.
