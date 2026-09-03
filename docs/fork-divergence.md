@@ -127,6 +127,24 @@ The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so
 A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
+### Stricter merge-proof contract
+
+The fork keeps a merge proof that a deferred execution does not satisfy: a merge queue entry or a pending auto-merge is a refusal, never a landed outcome.
+Upstream's `kunchenguid/firstmate#3064` moved the other way, accepting a merge-queue entry as `verified: queued` on exit 0 and naming `--auto` in the retry it recommends.
+Firstmate decided on 2026-09-03, on the round-1 sync PR `HelloWorldSungin/firstmate#248`, that this fork keeps the stricter contract.
+
+Three reasons, recorded so the decision is not re-derived every round.
+This fleet has no merge queue for an enqueue to be deferred into, because fork `main` carries no branch protection and no rulesets, verified against the API on 2026-08-14; upstream's design accommodates a workflow this fork does not have, so adopting it would buy nothing while widening what counts as proof.
+Reporting an unproved merge as landed has actually happened here, and the standing practice built on that incident is to read the landed commit back rather than trust a merge return, so accepting a queued enqueue as proof moves against the discipline the rest of the fleet is built on.
+The tie-breaker is a rule rather than a preference: conforming to the more protective option needs nobody's permission while relaxing one does, and upstream's design is the relaxation, so it is the option that would have needed a captain decision.
+
+This entry records a decision that the code has not caught up to yet, which is the one thing to read carefully here.
+Round 1 merged `kunchenguid/firstmate#3064` faithfully, so [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) carries upstream's permissive read today and `AGENTS.md` section 7 states upstream's wording.
+The stricter implementation is fork PR `HelloWorldSungin/firstmate#241`, which is open and held on a separate matter; the reconciliation happens when that PR lands against the merged base, and it is not a sync round's work to rebase or re-express it.
+A future round must not read the merged permissive code as evidence that this fork chose upstream's contract, and must not silently resolve this collision toward upstream: the collision was predicted at round-1 intake and decided here.
+
+Retire this entry rather than defend it if the fork ever adopts branch protection with a merge queue, because the first reason above stops holding the moment a real queue exists.
+
 ### Upstream tracking mechanism
 
 This fork carries the optional drift detector, bootstrap diagnostic, sync-round skill and template, and this ledger.
