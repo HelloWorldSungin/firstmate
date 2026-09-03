@@ -11,19 +11,21 @@
 # The gh-axi merge abstraction always performs the merge; the outcome read that
 # follows it never becomes a prerequisite for reaching that abstraction. After
 # gh-axi returns success, GitHub's live state is read back and accepted only
-# when the pull request is merged; a queued request is REFUSED rather than
-# accepted, which is a deliberate fork divergence recorded in
-# docs/fork-divergence.md. gh's GraphQL API
+# when the pull request is merged or in the merge queue. gh's GraphQL API
 # supplies that queue-aware read when gh is on PATH; when gh is absent or its
 # read fails, gh-axi's own view still proves a landed merge, and every outcome
 # it cannot prove refuses, reporting the single failed read when gh is absent
-# and naming both failed reads when gh is present and its own read failed.
+# and naming both failed reads when gh is present and its own read failed;
+# neither degraded route accepts an outcome the gh-axi view cannot prove, so the
+# same evidence yields the same verdict whether gh is absent or merely broken.
 # If the pull request remains open and the base branch has an effective
-# merge_queue rule, the refusal names that requirement and says this fork
-# refuses deferred execution, then names a next step it can honour: land with an
-# immediate merge method, or retarget and re-run validation. It does NOT
-# advertise a --auto retry, because the forwarded-argument allow-list refuses
-# --auto by name, and a refusal must never name a step that cannot work.
+# merge_queue rule, the refusal names the queue's configured merge method and
+# the exact -- --auto --<method> retry flags, unless the caller already passed
+# that method with --auto to a merge command that returned success, in which
+# case it reports instead that the accepted request has not entered the queue
+# and the queue state has to be re-checked. Reporting a queued request as
+# upstream reports it is a captain decision of 2026-09-03 that RETIRED this
+# fork's earlier refusal of deferred execution; see docs/fork-divergence.md.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -39,6 +41,13 @@
 # command's own output, marked as the forge's text and kept apart from this
 # script's verdict, including the refusal for an outcome that cannot be read;
 # a merge command that failed keeps its original error surfaced raw and first.
+# GUARDED MERGING IS LIMITED TO THE REPOSITORY'S CURRENT DEFAULT BRANCH on
+# GitHub. A pull request targeting anything else is refused by name, naming both
+# branches, before any queue, auto-merge or method handling, so that refusal is
+# never pre-empted by a different one. The target and the default branch come
+# from the same GraphQL query, or from gh-axi's own api passthrough when gh is
+# degraded. GitLab carries no such contract yet; HelloWorldSungin/firstmate#257
+# tracks extending it.
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
@@ -750,7 +759,11 @@ github_read_outcome_with_gh_axi() {
 # side's rule is the wrong answer to the other side's question.
 #   outcome  asked AFTER the mutation. The degraded view cannot tell an OPEN
 #            pull request from a QUEUED one, so only a proved merge is legible
-#            at all; without that proof there is no outcome to report.
+#            at all; without that proof there is no outcome to report. This
+#            holds on BOTH degraded routes - gh absent entirely, and gh present
+#            with its own read failed - because the evidence is the same gh-axi
+#            view either way, and identical evidence must not yield two
+#            different verdicts depending on which tool happens to be installed.
 #   target   asked BEFORE the mutation. The question is which branch the pull
 #            request targets and which branch is the default, and the degraded
 #            reader gets both from its own api passthrough, so it ALSO accepts
@@ -770,7 +783,7 @@ github_degraded_view_answers() {
 
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
-    github_read_outcome_with_gh_axi && return 0
+    github_read_outcome_with_gh_axi && github_degraded_view_answers && return 0
     printf 'error: could not read the GitHub pull request outcome %s; PR metadata and merge poll remain recorded\n' \
       "${FM_PR_GITHUB_READ_PHASE:-after the merge attempt}" >&2
     return 1
@@ -920,21 +933,6 @@ github_caller_method_is() {
   esac
 }
 
-# Why a base branch that requires the merge queue is refused, and what to do
-# instead. It reads the SAME for every queue rule on purpose: this fork refuses
-# DEFERRED EXECUTION itself, so which method the queue is configured for, whether
-# several rules disagree, and whether the method is one this script recognises
-# change nothing about the verdict and must not be offered as its reason. No
-# queue rule ever yields retry flags here, so no branch may imply that naming
-# them was the obstacle. The divergence is filed for the captain and may still be
-# reversed, so the reason and the next step live in ONE place and reversing it is
-# one edit rather than three.
-github_report_queue_refusal() {
-  printf 'error: %s, and this fork refuses deferred execution because a queued merge lands later against a base nobody compared\n' \
-    "$1" >&2
-  printf 'action: land the pull request with an immediate merge method, or retarget it and re-run validation\n' >&2
-}
-
 github_report_queue_rules() {
   local queue_method methods_display
   github_read_queue_method
@@ -945,35 +943,33 @@ github_report_queue_rules() {
         SQUASH) queue_method=squash ;;
         REBASE) queue_method=rebase ;;
       esac
-      # The auto-requested branch below is unreachable in this fork: the
-      # forwarded-argument allow-list refuses --auto by name before the merge is
-      # attempted, so FM_PR_GITHUB_AUTO_REQUESTED cannot be true here. It is left
-      # in place rather than deleted so a future upstream merge conflicts on as
-      # little as possible; only the reachable guidance below is reworded.
+      # The auto-requested branch below is unreachable in this fork, and the
+      # reason is the forwarded-argument allow-list rather than anything about
+      # the merge queue: it refuses --auto by name before the merge is attempted,
+      # so FM_PR_GITHUB_AUTO_REQUESTED cannot be true here. The retry the
+      # else-branch names has the same standing - it is upstream's guidance,
+      # restored by the captain decision of 2026-09-03, and a caller who takes it
+      # is refused by that allow-list. It is left whole rather than reworded so a
+      # future upstream merge conflicts on as little as possible.
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
         && github_caller_method_is "$queue_method"; then
         printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        github_report_queue_refusal \
-          "base branch $FM_PR_GITHUB_BASE requires the merge queue ($queue_method)"
+        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s -- --auto --%s\n' \
+          "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
       fi
       ;;
     conflicting)
-      # The disagreement is still reported, because it is a real fact about the
-      # base branch the operator has to fix eventually. It is NOT the reason for
-      # this refusal: agreeing rules refuse identically.
-      github_report_queue_refusal \
-        "base branch $FM_PR_GITHUB_BASE has conflicting merge queue methods (${FM_PR_GITHUB_QUEUE_METHODS//,/, })"
+      printf 'error: base branch %s has conflicting merge queue methods (%s); exact retry flags are ambiguous\n' \
+        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" >&2
       ;;
     unrecognised)
       methods_display=${FM_PR_GITHUB_QUEUE_METHODS//,/, }
       [ -n "$methods_display" ] || methods_display='<none reported>'
-      # Same shape as above: the unrecognised method is named because it is worth
-      # knowing, not because recognising it would have changed the verdict.
-      github_report_queue_refusal \
-        "base branch $FM_PR_GITHUB_BASE requires the merge queue, but its configured merge method ($methods_display) is not one this script recognises"
+      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises, so exact retry flags cannot be named\n' \
+        "$FM_PR_GITHUB_BASE" "$methods_display" >&2
       ;;
     unreadable)
       printf 'error: the branch rules for base branch %s could not be read, so a merge queue requirement can be neither confirmed nor ruled out here\n' \
@@ -998,6 +994,11 @@ github_report_unmerged_outcome() {
         "$URL" >&2
     fi
   fi
+  # Unreachable in this fork for the same reason the auto branch above is: the
+  # degraded-view seam accepts no unmerged outcome from the gh-axi view on either
+  # degraded route, so every read that reaches here came from the queue-aware
+  # one. Left whole rather than deleted, so a future upstream merge conflicts on
+  # as little as possible.
   if [ "$FM_PR_GITHUB_QUEUE_OBSERVED" != true ]; then
     printf 'error: the merge queue could not be observed for %s because the queue-aware read was unavailable, so a pull request already in the merge queue cannot be told apart from one that never entered it; re-check the pull request'"'"'s merge queue state before retrying\n' \
       "$URL" >&2
@@ -1092,7 +1093,13 @@ case "$PROVIDER" in
   github)
     merge_output=
     merge_args=()
+    # Every landed observation this run makes, wherever it is made. The preflight
+    # target read can be the first of them - a retry, or a pull request someone
+    # merged by hand - and discarding that observation would let a later transient
+    # read failure exit non-zero on a merge this run already knew had landed.
+    github_landed_observed=false
     github_assert_default_target || exit 1
+    [ "$FM_PR_GITHUB_MERGED" != true ] || github_landed_observed=true
     if ! caller_has_merge_method "$@"; then
       merge_args=(--squash)
     fi
@@ -1106,7 +1113,7 @@ case "$PROVIDER" in
     else
       merge_status=$?
       [ -z "$merge_output" ] || printf '%s\n' "$merge_output" >&2
-      if github_read_outcome; then
+      if [ "$github_landed_observed" = true ] || github_read_outcome; then
         if [ "$FM_PR_GITHUB_MERGED" = true ]; then
           # The forge state is the authority, not the command status. A merge the
           # forge confirms LANDED is not a failed merge just because the command
@@ -1114,7 +1121,7 @@ case "$PROVIDER" in
           # instead of exiting non-zero and leaving the landed merge unrecorded.
           report_landed_after_failed_command \
             "state=$FM_PR_GITHUB_STATE, merged=$FM_PR_GITHUB_MERGED, isInMergeQueue=$FM_PR_GITHUB_QUEUED"
-          merge_command_failed_but_landed=true
+          github_landed_observed=true
         elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
           printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
             "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
@@ -1122,14 +1129,15 @@ case "$PROVIDER" in
           github_report_unmerged_outcome
         fi
       fi
-      [ "${merge_command_failed_but_landed:-false}" = true ] || exit "$merge_status"
+      [ "$github_landed_observed" = true ] || exit "$merge_status"
     fi
-    # A landed merge this run has ALREADY OBSERVED must not be re-read. Asking
-    # the forge a second time can fail transiently - a rate limit, a 5xx, a token
-    # blip between two back-to-back calls - and exiting on that would strand a
-    # merge that is already on the default branch with nothing recording it,
-    # which is the invariant this script asserts positively.
-    if [ "${merge_command_failed_but_landed:-false}" != true ] \
+    # A landed merge this run has ALREADY OBSERVED must not be re-read, whether
+    # the preflight target read or the post-failure read is what observed it.
+    # Asking the forge a second time can fail transiently - a rate limit, a 5xx,
+    # a token blip between two back-to-back calls - and exiting on that would
+    # strand a merge that is already on the default branch with nothing recording
+    # it, which is the invariant this script asserts positively.
+    if [ "$github_landed_observed" != true ] \
       && ! github_read_outcome; then
       github_report_forge_output "$merge_output"
       exit 1
@@ -1138,17 +1146,9 @@ case "$PROVIDER" in
       printf 'verified: %s is merged (state=%s, merged=%s, isInMergeQueue=%s)\n' \
         "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED"
     elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
-      # DELIBERATE FORK DIVERGENCE from upstream, recorded in docs/fork-divergence.md.
-      # Upstream reports a queued request as a verified outcome and exits zero.
-      # This fleet refuses deferred execution: a queued merge lands later against
-      # a base nobody compared, and we merge on judged evidence at a moment in
-      # time. Only the OUTCOME of this branch differs; the queue read, its
-      # vocabulary and its message shape are upstream's on purpose, so future
-      # sync rounds conflict as little as possible.
-      printf 'error: refusing to treat %s as merged because it is queued for deferred execution (state=%s, merged=%s, isInMergeQueue=%s); the merge poll remains armed\n' \
-        "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
-      printf 'action: land the pull request with an immediate merge method, or bring the branch up and re-run validation\n' >&2
-      exit 1
+      printf 'verified: %s is queued (state=%s, merged=%s, isInMergeQueue=%s)\n' \
+        "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED"
+      exit 0
     else
       github_report_forge_output "$merge_output"
       github_report_unmerged_outcome

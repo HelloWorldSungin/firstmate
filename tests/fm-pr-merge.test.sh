@@ -26,17 +26,14 @@
 #   (q) a GitLab refusal still leaves pr= recorded and the merge poll armed
 #   (r) GitHub success is accepted only after the PR is read back as merged
 #   (s) an open GitHub PR that is neither merged nor queued fails verification
-#   (t) a GitHub PR in the merge queue is REFUSED rather than reported as a
-#       verified outcome, which is this fork's deliberate divergence
-#   (u) a queue-required refusal says this fork refuses deferred execution and
-#       names a next step it can honour, never a --auto retry it would reject
+#   (t) a GitHub PR in the merge queue is reported as queued, not merged
+#   (u) a queue-required refusal names the exact compatible retry flags
 #   (v) a failed poll setup cannot be reported as a verified GitHub merge
 #   (w) a zero-exit queue-required refusal keeps merge semantics unchanged
 #   (x) an unreadable outcome after a successful merge call keeps the PR
 #       recorded and the merge poll armed
-#   (y) agreeing queue rules refuse exactly as one rule does
-#   (z) conflicting queue rules are named and refuse for the same reason as
-#       every other queue rule, not for being ambiguous
+#   (y) agreeing queue rules still produce exact retry flags
+#   (z) conflicting queue rules report ambiguous retry guidance
 #   (aa) gh-axi remains usable when gh is absent
 #   (ab) a landed merge whose fallback outcome read fails keeps its poll armed
 #   (ac) a successful merge in a secondmate home reports the landed PR upward
@@ -46,7 +43,7 @@
 #   (ae) a successful merge in a main home leaves a durable wake naming the PR
 #   (af) a secondmate home with no usable parent binding says so loudly instead
 #       of merging in silence
-#   (ag) a refused queued GitHub merge emits nothing and leaves its poll armed
+#   (ag) an accepted queued GitHub merge emits nothing and leaves its poll armed
 #   (ah) an accepted queued GitLab merge emits nothing and leaves its poll armed
 #   (ai) an uncommitted marker retry never loses the durable outcome
 #   (aj) distinct merged PRs for a reused task each survive queue deduplication
@@ -58,12 +55,13 @@
 #       apart from the wrapper's verdict and never leaked to stdout
 #   (ao) an outcome read that fails after a zero-exit merge still quotes the
 #       forge's own output, the only evidence left
-#   (ap) an unrecognised queue method names the queue requirement, guesses no
-#       method, and still refuses for this fork's own reason
+#   (ap) an unrecognised queue method still names the queue requirement and
+#       guesses no method
 #   (aq) unreadable branch rules are reported apart from a queue-less base
 #   (ar) a base branch with no queue rule says nothing about a merge queue
-#   (as) a refusal built on the gh-axi view says the merge queue could not be
-#       observed, and judges that view's state like the queue-aware one
+#   (as) identical degraded evidence reaches an identical verdict whether gh is
+#       absent or present but broken, so the outcome never depends on which of
+#       the two readers happened to be missing
 #   (at) an open recorded issue is closed after merge and linked to the PR
 #   (au) an already-closed recorded issue is left alone
 #   (av) issue-close failure reports the merge as successful and exits zero
@@ -80,7 +78,7 @@
 #       refresh named, bounded to one line, instead of only the symptom
 #   (bc) every --auto spelling is refused by name before any merge is attempted
 #   (bd) every path that observes a landed merge exits zero and records the
-#       outcome durably, over the six routes that reach such an observation,
+#       outcome durably, over the seven routes that reach such an observation,
 #       and on both forges a merge whose command failed says so against the
 #       readback that overrides it rather than exiting zero in silence
 #   (be) a pull request whose target is not the current default branch is
@@ -90,12 +88,14 @@
 #       reader reads the real target out of the api passthrough's own envelope,
 #       including when a broken gh is installed, and is accepted for the target
 #       question with no merged proof
-#   (bh) a landed merge this run already observed is never re-read
+#   (bh) a landed merge this run already observed is never re-read, including one
+#       the PRE-merge target read is what observed
 #   (bi) the GitLab automatic-rebase guard refuses only inside the window where
 #       project-level rebase can fire, and permits outside it
-#   (bj) the POST-merge half of that same seam: the degraded gh-axi view cannot
-#       answer the outcome question without a proved merge, and reports an
-#       outcome it could not read rather than a concrete not-merged verdict
+#   (bj) the POST-merge half of that same seam, on BOTH degraded routes: the
+#       degraded gh-axi view cannot answer the outcome question without a proved
+#       merge, and reports an outcome it could not read rather than a concrete
+#       not-merged verdict
 #   (bk) no argument position lets a refused flag reach the forge - every
 #       value-taking allow-list entry crossed with --auto in both orders - while
 #       the detached values the allow-list exists to carry still merge
@@ -983,16 +983,6 @@ test_github_unrecognised_queue_method_still_names_the_queue() {
   assert_grep 'base branch main requires the merge queue, but its configured merge method (FASTFORWARD) is not one this script recognises' \
     "$case_dir/stderr" \
     "github-unrecognised-queue-method: a readable queue rule produced no queue mention"
-  # This fork refuses DEFERRED EXECUTION, so an unrecognised method changes
-  # nothing about the verdict and must not be offered as its reason. The refusal
-  # carries the fork's own reason and a next step, exactly as a recognised one
-  # does, and never blames the method for retry flags it would not name anyway.
-  assert_grep 'this fork refuses deferred execution' "$case_dir/stderr" \
-    "github-unrecognised-queue-method: the refusal blamed the method instead of naming the fork's own reason"
-  assert_grep 'land the pull request with an immediate merge method' "$case_dir/stderr" \
-    "github-unrecognised-queue-method: the refusal named no next step the operator can take"
-  assert_no_grep 'retry flags' "$case_dir/stderr" \
-    "github-unrecognised-queue-method: the refusal still framed itself around retry flags"
   assert_no_grep 'retry with:' "$case_dir/stderr" \
     "github-unrecognised-queue-method: retry flags were named for a method nothing recognises"
   assert_no_grep '--auto --' "$case_dir/stderr" \
@@ -1063,63 +1053,6 @@ test_github_no_queue_rule_says_nothing_about_a_queue() {
   assert_no_grep 'merge queue' "$case_dir/stderr" \
     "github-no-queue-rule: a base with no queue rule was told it requires the merge queue"
   pass "fm-pr-merge says nothing about a merge queue when the base branch has no queue rule"
-}
-
-test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
-  local case_dir ghless_path rc
-  case_dir=$(make_case github-fallback-unobservable-queue)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 8686868686868686868686868686868686868686
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
-  "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
-  # The degraded reader establishes the merge target through this passthrough.
-  api\ *)
-    case " $* " in
-      *'{base:'*) ;;
-      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
-    esac
-    printf 'base: main\ndef: main\n'
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi"
-  rm "$case_dir/fakebin/gh"
-  ghless_path="$case_dir/path-without-gh"
-  mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
-  : > "$case_dir/gh-axi.log"
-
-  set +e
-  # --auto is dropped because the allow-list refuses it before the merge; this
-  # case is about the fallback view being unable to observe the queue, and the
-  # merge method beside it is incidental to reaching that subject.
-  PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/73 -- --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "github-fallback-unobservable-queue: an unproved merge must fail"
-  assert_grep 'isInMergeQueue=unknown' "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: refusal did not name the concrete observed state"
-  assert_grep 'the merge queue could not be observed for https://github.com/example/repo/pull/73' \
-    "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: the refusal implied an unqueued PR it could not see"
-  assert_grep "re-check the pull request's merge queue state" "$case_dir/stderr" \
-    "github-fallback-unobservable-queue: the refusal named no concrete next step"
-  # Upstream also asserted here that the fallback view's lowercase state still
-  # produced the auto-merge explanation. That explanation requires --auto to have
-  # been armed, which this fork refuses before the merge, so the assertion covers
-  # an unreachable path and is dropped rather than weakened. The half it shared a
-  # subject with - that the lowercase state is judged like the queue-aware read's
-  # uppercase enum - is still covered by the unknown-queue assertions above.
-  assert_no_grep 'verified: ' "$case_dir/stdout" \
-    "github-fallback-unobservable-queue: an unproved merge was reported as verified"
-  pass "fm-pr-merge says the merge queue was unobservable when only the gh-axi view answered"
 }
 
 test_github_unreadable_outcome_refusal_quotes_the_forge_output() {
@@ -1325,7 +1258,7 @@ SH
   pass "fm-pr-merge preserves bookkeeping when gh is absent and the fallback read fails"
 }
 
-test_github_zero_exit_queue_required_names_a_next_step() {
+test_github_zero_exit_queue_required_refuses_with_exact_retry() {
   local case_dir rc
   case_dir=$(make_case github-zero-exit-queue-required)
   mkdir -p "$case_dir/wt"
@@ -1346,10 +1279,8 @@ test_github_zero_exit_queue_required_names_a_next_step() {
     "github-zero-exit-queue-required: refusal did not name the concrete observed state"
   assert_grep 'base branch release/2026 requires the merge queue' "$case_dir/stderr" \
     "github-zero-exit-queue-required: refusal did not name the queue requirement"
-  assert_grep 'this fork refuses deferred execution' "$case_dir/stderr" \
-    "github-zero-exit-queue-required: refusal did not say why the queue is not used here"
-  assert_grep 'land the pull request with an immediate merge method' "$case_dir/stderr" \
-    "github-zero-exit-queue-required: refusal did not name a next step that works here"
+  assert_grep '-- --auto --rebase' "$case_dir/stderr" \
+    "github-zero-exit-queue-required: refusal did not name the exact compatible flags"
   assert_grep 'api --paginate repos/example/repo/rules/branches/release%2F2026' "$case_dir/gh.log" \
     "github-zero-exit-queue-required: queue rules were not read with pagination and encoded branch path"
   grep -qxF 'pr merge 56 --repo example/repo --squash' "$case_dir/gh-axi.log" \
@@ -1362,7 +1293,7 @@ test_github_zero_exit_queue_required_names_a_next_step() {
     "github-zero-exit-queue-required: the attempted merge lost its PR reference"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-zero-exit-queue-required: the attempted merge did not leave its poll armed"
-  pass "fm-pr-merge names a next step it can honour after a zero-exit false success"
+  pass "fm-pr-merge reports exact queue retry flags after a zero-exit false success"
 }
 
 test_github_closed_unqueued_outcome_omits_retry_flags() {
@@ -1396,7 +1327,37 @@ test_github_closed_unqueued_outcome_omits_retry_flags() {
 }
 
 
-test_github_queue_required_refusal_names_a_next_step() {
+test_github_queued_outcome_is_verified() {
+  local case_dir rc
+  case_dir=$(make_case github-verified-queued)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 3030303030303030303030303030303030303030
+  write_github_outcome "$case_dir" OPEN false true master
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  # Upstream reaches this outcome by passing -- --auto --merge. The queue verdict
+  # it asserts is upstream's and unchanged, but the ARGUMENTS are not available
+  # here: the forwarded-argument allow-list refuses --auto by name, which is a
+  # separate rule and was not retired with the queue refusal. The queue state the
+  # verdict is read from is the forge's, so the fixture supplies it directly.
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/53 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-verified-queued: a queued PR should succeed"
+  assert_grep 'verified: https://github.com/example/repo/pull/53 is queued' \
+    "$case_dir/stdout" "github-verified-queued: success was not reported as queued"
+  assert_no_grep 'merged:' "$case_dir/stdout" \
+    "github-verified-queued: the forge CLI's unverified merged report leaked through"
+  assert_grep 'pr=https://github.com/example/repo/pull/53' "$case_dir/state/task-x1.meta" \
+    "github-verified-queued: the queued PR was not recorded for teardown"
+  pass "fm-pr-merge accepts and accurately reports a GitHub merge-queue entry"
+}
+
+test_github_queue_required_refusal_names_retry_flags() {
   local case_dir rc
   case_dir=$(make_case github-queue-required)
   mkdir -p "$case_dir/wt"
@@ -1417,18 +1378,16 @@ test_github_queue_required_refusal_names_a_next_step() {
     "github-queue-required: the original forge failure was not preserved"
   assert_grep 'base branch master requires the merge queue' "$case_dir/stderr" \
     "github-queue-required: refusal did not name the queue requirement"
-  assert_grep 'this fork refuses deferred execution' "$case_dir/stderr" \
-    "github-queue-required: refusal did not say why the queue is not used here"
-  assert_grep 'land the pull request with an immediate merge method' "$case_dir/stderr" \
-    "github-queue-required: refusal did not name a next step that works here"
+  grep -F -- '-- --auto --merge' "$case_dir/stderr" >/dev/null \
+    || fail "github-queue-required: refusal did not name the exact compatible flags"
   grep -qxF 'pr merge 54 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "github-queue-required: the wrapper silently changed the attempted merge semantics"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-queue-required: the failed forge call did not leave the merge poll armed"
-  pass "fm-pr-merge names the queue requirement and a next step it can honour"
+  pass "fm-pr-merge explains how to retry with the required GitHub merge queue method"
 }
 
-test_github_agreeing_queue_rules_refuse_the_same_way() {
+test_github_agreeing_queue_rules_keep_retry_guidance() {
   local case_dir rc
   case_dir=$(make_case github-agreeing-queue-rules)
   mkdir -p "$case_dir/wt"
@@ -1447,12 +1406,10 @@ test_github_agreeing_queue_rules_refuse_the_same_way() {
   expect_code 1 "$rc" "github-agreeing-queue-rules: an unproved merge must fail"
   assert_grep 'base branch main requires the merge queue' "$case_dir/stderr" \
     "github-agreeing-queue-rules: refusal did not name the queue requirement"
-  assert_grep 'this fork refuses deferred execution' "$case_dir/stderr" \
-    "github-agreeing-queue-rules: refusal did not say why the queue is not used here"
-  assert_no_grep 'conflicting merge queue methods' "$case_dir/stderr" \
-    "github-agreeing-queue-rules: agreeing rules were reported as conflicting"
-  assert_grep 'land the pull request with an immediate merge method' "$case_dir/stderr" \
-    "github-agreeing-queue-rules: refusal named no next step the operator can take"
+  assert_grep '-- --auto --rebase' "$case_dir/stderr" \
+    "github-agreeing-queue-rules: agreeing rules omitted exact retry flags"
+  assert_no_grep 'exact retry flags are ambiguous' "$case_dir/stderr" \
+    "github-agreeing-queue-rules: agreeing rules were reported as ambiguous"
   pass "fm-pr-merge aggregates agreeing merge-queue rules"
 }
 
@@ -1477,23 +1434,13 @@ test_github_conflicting_queue_rules_report_ambiguity() {
   assert_grep 'base branch main has conflicting merge queue methods (MERGE, SQUASH)' \
     "$case_dir/stderr" \
     "github-conflicting-queue-rules: conflicting methods were not named"
-  # The disagreement is reported because it is a real fact about the base branch,
-  # but it is NOT the reason for the refusal: agreeing rules refuse identically,
-  # so the message carries the fork's own reason and a next step rather than
-  # blaming ambiguity for retry flags this fork never names for any rule.
-  assert_grep 'this fork refuses deferred execution' "$case_dir/stderr" \
-    "github-conflicting-queue-rules: the refusal blamed ambiguity instead of naming the fork's own reason"
-  assert_grep 'land the pull request with an immediate merge method' "$case_dir/stderr" \
-    "github-conflicting-queue-rules: the refusal named no next step the operator can take"
-  assert_no_grep 'retry flags' "$case_dir/stderr" \
-    "github-conflicting-queue-rules: the refusal still framed itself around retry flags"
   assert_no_grep '-- --auto --merge' "$case_dir/stderr" \
     "github-conflicting-queue-rules: an exact retry method was guessed"
   assert_no_grep '-- --auto --squash' "$case_dir/stderr" \
     "github-conflicting-queue-rules: an exact retry method was guessed"
   assert_no_grep 'SQUASH, SQUASH' "$case_dir/stderr" \
     "github-conflicting-queue-rules: a repeated queue method was named twice"
-  pass "fm-pr-merge refuses conflicting merge-queue rules for its own stated reason"
+  pass "fm-pr-merge reports ambiguity for conflicting merge-queue rules"
 }
 
 test_extra_merge_args_forwarded() {
@@ -2711,36 +2658,25 @@ test_main_home_merge_leaves_a_durable_wake() {
 }
 
 test_queued_github_merge_leaves_the_poll_armed() {
-  local case_dir url rc
+  local case_dir url
   url=https://github.com/example/repo/pull/66
   case_dir=$(make_home_case queued-github-merge)
   add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
   write_github_outcome "$case_dir" OPEN false true main
   : >"$case_dir/gh-axi.log"
 
-  # DELIBERATE FORK DIVERGENCE, recorded in docs/fork-divergence.md. Upstream
-  # reports a queued request as a verified outcome and exits zero. This fork
-  # refuses deferred execution, because a queued merge lands later against a base
-  # nobody compared. What the case still pins is unchanged: the queued request is
-  # never reported as landed and the poll is left to confirm it.
-  set +e
   FM_TEST_GH_MERGE_STATE=open FM_TEST_HOME="$case_dir/home" \
     run_pr_merge "$case_dir" task-x1 "$url" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
+      >"$case_dir/stdout" 2>"$case_dir/stderr" \
+    || fail "queued-github-merge: accepted merge command failed"
 
-  expect_code 1 "$rc" \
-    "queued-github-merge: a queued request must be refused, not accepted"
-  assert_grep 'queued for deferred execution' "$case_dir/stderr" \
-    "queued-github-merge: the refusal did not name the deferral it refused"
   assert_absent "$case_dir/state/.wake-queue" \
     "queued-github-merge: a queued merge was reported as landed"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
     || fail "queued-github-merge: the merge poll was not left armed"
   [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] \
     || fail "queued-github-merge: a queued merge was marked as reported"
-  pass "a queued GitHub merge is refused and left to the armed poll"
+  pass "a queued GitHub merge stays silent and leaves confirmation to the armed poll"
 }
 
 test_distinct_merged_prs_keep_distinct_wakes() {
@@ -2846,9 +2782,9 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
-test_github_zero_exit_queue_required_names_a_next_step
+test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
-test_github_agreeing_queue_rules_refuse_the_same_way
+test_github_agreeing_queue_rules_keep_retry_guidance
 test_github_conflicting_queue_rules_report_ambiguity
 test_verified_merge_records_pr_and_head
 test_pr_metadata_is_recorded_before_the_forge_call
@@ -2860,7 +2796,6 @@ test_github_unreadable_outcome_refusal_quotes_the_forge_output
 test_github_unrecognised_queue_method_still_names_the_queue
 test_github_unreadable_queue_rules_are_not_reported_as_no_queue
 test_github_no_queue_rule_says_nothing_about_a_queue
-test_github_fallback_view_refusal_says_the_queue_was_unobservable
 test_github_auto_merge_spellings_are_refused_before_the_merge
 test_no_argument_position_launders_a_refused_flag
 test_github_failed_gh_read_falls_back_to_gh_axi
@@ -2869,7 +2804,8 @@ test_github_without_gh_still_uses_gh_axi_merge
 test_github_without_gh_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
-test_github_queue_required_refusal_names_a_next_step
+test_github_queued_outcome_is_verified
+test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
@@ -2930,17 +2866,22 @@ test_secondmate_without_parent_binding_is_loud
 # test, and the architecture document by three separate routes, and an
 # enumeration of the paths that get it wrong cannot keep finding them.
 #
-# SIX routes, and the number is only worth its distinctness test: each route below
-# is separated from every other by ONE STATED SENTENCE, and any route that cannot
-# be distinguished in one sentence is not a route. An earlier version claimed
-# seven by listing a target-preflight case whose fixture was byte-identical to
-# post-mutation and which the implementation does not distinguish either - when
-# the preflight observes MERGED it returns 0 and the merge is still attempted, so
-# the landed observation always comes from a later read. Adding a genuinely new
-# way to observe a landed merge means adding one line here AND its sentence.
+# SEVEN routes, and the number is only worth its distinctness test: each route
+# below is separated from every other by ONE STATED SENTENCE, and any route that
+# cannot be distinguished in one sentence is not a route. An earlier version
+# listed six and dismissed the target preflight, on the reasoning that when it
+# observes MERGED it returns 0 and the merge is still attempted, so the landed
+# observation always comes from a later read. That held only while the later read
+# succeeded: the preflight's observation is now CARRIED FORWARD, so it is a route
+# in its own right and its fixture is no longer byte-identical to post-mutation.
+# Adding a genuinely new way to observe a landed merge means adding one line here
+# AND its sentence.
 #
 #   github|post-mutation           the merge command succeeds and the readback
 #                                  confirms it
+#   github|preflight-landed        the pull request was ALREADY merged when this
+#                                  run started, so the PRE-merge target read is
+#                                  the only read that ever proves it
 #   github|command-error           the merge command FAILS and the readback
 #                                  confirms it landed anyway
 #   github|degraded-no-gh          gh is absent entirely and the gh-axi view is
@@ -2959,6 +2900,7 @@ test_every_landed_observation_reaches_outcome_reporting() {
   local case_dir number=700 provider route spec url rc run_path
   for spec in \
     github\|post-mutation \
+    github\|preflight-landed \
     github\|command-error \
     github\|degraded-no-gh \
     github\|degraded-gh-failed \
@@ -2977,6 +2919,39 @@ test_every_landed_observation_reaches_outcome_reporting() {
       : >"$case_dir/gh-axi.log"
       write_github_outcome "$case_dir" MERGED true false main
       case "$route" in
+        preflight-landed)
+          # Already merged before this run: the pre-merge target read answers
+          # once and every read after it fails, on both readers. Only the
+          # observation the preflight carried forward can reach outcome
+          # reporting, so this route fails outright if that observation is
+          # discarded rather than carried.
+          cat >"$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+case "${1:-} ${2:-}" in
+  "api graphql")
+    count_file="$FM_TEST_GH_OUTCOME.reads"
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    [ "$count" -ge 2 ] && { echo 'error: transient forge failure' >&2; exit 1; }
+    cat "$FM_TEST_GH_OUTCOME"
+    ;;
+esac
+exit 0
+SH
+          chmod +x "$case_dir/fakebin/gh"
+          cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr view") exit 1 ;;
+esac
+exit 0
+SH
+          chmod +x "$case_dir/fakebin/gh-axi"
+          ;;
         command-error)
           # The merge command fails; the forge still reports the merge landed.
           cat >"$case_dir/fakebin/gh-axi" <<'SH'
@@ -3084,6 +3059,12 @@ SH
     # and being turned away. Without this, a real gh leaking in from the host
     # collapses the first into the second and nothing notices.
     case "$route" in
+      preflight-landed)
+        # The merge is still ATTEMPTED on this route; the preflight short-circuits
+        # the outcome READ, not the mutation.
+        assert_grep 'pr merge' "$case_dir/gh-axi.log" \
+          "landed-invariant github/preflight-landed: the merge was skipped rather than attempted"
+        ;;
       command-error)
         # Exiting zero is only half of this route's contract. The forge CLI has
         # just printed its own error, so a run that then exits zero saying
@@ -3411,6 +3392,10 @@ test_degraded_target_reads_a_quoted_branch_name
 # transient failure on that second read would strand a merge that is already on
 # the default branch with nothing recording it. Fails if the second read is
 # reinstated for the already-observed case.
+#
+# The FIRST read here is the pre-merge target read, and every read after it
+# fails, so this case also fails if that read's landed observation is discarded
+# instead of carried forward to the outcome decision.
 test_observed_landed_merge_is_not_reread() {
   local case_dir rc url
   url=https://github.com/example/repo/pull/94
@@ -3418,8 +3403,8 @@ test_observed_landed_merge_is_not_reread() {
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
   write_github_outcome "$case_dir" MERGED true false main
-  # The merge command fails, the first read confirms the merge landed, and every
-  # read after that fails. The outcome must still be recorded.
+  # The merge command fails, the pre-merge target read confirms the merge landed,
+  # and every read after that fails. The outcome must still be recorded.
   cat >"$case_dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
@@ -3429,7 +3414,7 @@ case "${1:-} ${2:-}" in
     count=$(cat "$count_file" 2>/dev/null || echo 0)
     count=$((count + 1))
     printf '%s\n' "$count" > "$count_file"
-    [ "$count" -ge 3 ] && { echo 'error: transient forge failure' >&2; exit 1; }
+    [ "$count" -ge 2 ] && { echo 'error: transient forge failure' >&2; exit 1; }
     cat "$FM_TEST_GH_OUTCOME"
     ;;
 esac
@@ -3528,7 +3513,7 @@ test_gitlab_auto_rebase_guard_refuses_and_permits() {
 
 test_gitlab_auto_rebase_guard_refuses_and_permits
 
-# THE OTHER HALF OF THE DEGRADED-VIEW SEAM.
+# THE OTHER HALF OF THE DEGRADED-VIEW SEAM, OVER BOTH DEGRADED ROUTES.
 #
 # The pre-merge target check accepts the degraded gh-axi view when it supplies a
 # base and a default, because that is the question being asked of it. The
@@ -3537,19 +3522,26 @@ test_gitlab_auto_rebase_guard_refuses_and_permits
 # anything else must be reported as an outcome that could not be READ rather than
 # as a concrete not-merged verdict.
 #
+# BOTH DEGRADED ROUTES ARE RUN, and that is the point of the loop rather than a
+# second case for tidiness. The evidence is the same gh-axi view whether gh is
+# ABSENT or PRESENT AND BROKEN, so a verdict that differs between them is a
+# verdict about which tool happens to be installed. The seam used to be consulted
+# on the gh-failed route only, and the gh-absent route answered the same evidence
+# with a concrete state=open verdict instead.
+#
 # Without this case, dropping the merged proof on the post-merge side leaves the
 # suite green and the seam collapses back into the single rule it replaced.
 test_degraded_view_cannot_answer_the_post_merge_question() {
-  local case_dir rc url
-  url=https://github.com/example/repo/pull/95
-  case_dir=$(make_case degraded-post-merge-unanswerable)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
-  write_github_outcome "$case_dir" OPEN false false main
-  # gh answers the pre-merge target read and then fails, so the post-merge read
-  # falls back to a gh-axi view that reports the request still OPEN.
-  add_gh_mock_outcome_read_fails_from "$case_dir" ffffffffffffffffffffffffffffffffffffffff 2
-  cat >"$case_dir/fakebin/gh-axi" <<'SH'
+  local case_dir rc url route run_path number=95
+  for route in gh-failed no-gh; do
+    number=$((number + 1))
+    url="https://github.com/example/repo/pull/$number"
+    case_dir=$(make_case "degraded-post-merge-unanswerable-$route")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+    write_github_outcome "$case_dir" OPEN false false main
+    run_path=
+    cat >"$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
@@ -3565,21 +3557,47 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  chmod +x "$case_dir/fakebin/gh-axi"
-  : >"$case_dir/gh-axi.log"
+    chmod +x "$case_dir/fakebin/gh-axi"
+    if [ "$route" = gh-failed ]; then
+      # gh answers the pre-merge target read and then fails, so the post-merge
+      # read falls back to a gh-axi view that reports the request still OPEN.
+      add_gh_mock_outcome_read_fails_from "$case_dir" ffffffffffffffffffffffffffffffffffffffff 2
+    else
+      # gh is absent entirely, so the same gh-axi view answers both reads.
+      # Removing this case's own mock is not enough: run_pr_merge prepends
+      # fakebin to the INHERITED PATH, so on a host that ships gh the real binary
+      # resolves and this route quietly becomes the other one.
+      rm -f "$case_dir/fakebin/gh"
+      run_path="$case_dir/path-without-gh"
+      mirror_path_without "$run_path" gh "$case_dir/fakebin"
+      ! PATH="$case_dir/fakebin:$run_path" command -v gh >/dev/null 2>&1 \
+        || fail "degraded-post-merge-unanswerable/no-gh: the search path this case runs on still resolves gh"
+    fi
+    : >"$case_dir/gh-axi.log"
 
-  set +e
-  run_pr_merge "$case_dir" task-x1 "$url" >"$case_dir/stdout" 2>"$case_dir/stderr"
-  rc=$?
-  set -e
+    set +e
+    if [ -n "$run_path" ]; then
+      PATH="$run_path" run_pr_merge "$case_dir" task-x1 "$url" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+    else
+      run_pr_merge "$case_dir" task-x1 "$url" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+    fi
+    rc=$?
+    set -e
 
-  expect_code 1 "$rc" \
-    "degraded-post-merge-unanswerable: an unanswerable outcome must refuse"
-  assert_grep 'could not read the GitHub pull request outcome' "$case_dir/stderr" \
-    "degraded-post-merge-unanswerable: an unreadable outcome was reported as a concrete verdict"
-  assert_no_grep 'verified: ' "$case_dir/stdout" \
-    "degraded-post-merge-unanswerable: an unproved merge was reported as verified"
-  pass "the degraded view cannot answer the post-merge outcome question without a proved merge"
+    expect_code 1 "$rc" \
+      "degraded-post-merge-unanswerable/$route: an unanswerable outcome must refuse"
+    assert_grep 'could not read the GitHub pull request outcome' "$case_dir/stderr" \
+      "degraded-post-merge-unanswerable/$route: an unreadable outcome was reported as a concrete verdict"
+    # The concrete verdict is what the gh-absent route used to print for exactly
+    # this evidence, which is the divergence between the two routes being closed.
+    assert_no_grep 'GitHub merge outcome was not successful' "$case_dir/stderr" \
+      "degraded-post-merge-unanswerable/$route: an outcome nothing proved was stated as a not-merged verdict"
+    assert_no_grep 'verified: ' "$case_dir/stdout" \
+      "degraded-post-merge-unanswerable/$route: an unproved merge was reported as verified"
+  done
+  pass "neither degraded route answers the post-merge outcome question without a proved merge"
 }
 
 test_degraded_view_cannot_answer_the_post_merge_question

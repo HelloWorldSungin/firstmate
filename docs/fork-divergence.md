@@ -179,35 +179,36 @@ The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so
 A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
-### Stricter merge-proof contract
+### Merge-proof contract: one divergence accepted, one retired
 
-The fork keeps a merge proof that a deferred execution does not satisfy: a merge queue entry or a pending auto-merge is a refusal, never a landed outcome.
-Upstream's `kunchenguid/firstmate#3064` moved the other way, accepting a merge-queue entry as `verified: queued` on exit 0 and naming `--auto` in the retry it recommends.
-Firstmate decided on 2026-09-03, on the round-1 sync PR `HelloWorldSungin/firstmate#248`, that this fork keeps the stricter contract.
+This entry carries TWO differences in the same subsystem, and their statuses are no longer the same.
+Read the status line on each before acting on either; they are recorded together because they were decided together, not because they stand or fall together.
 
-Three reasons, recorded so the decision is not re-derived every round.
-This fleet has no merge queue for an enqueue to be deferred into, because fork `main` carries no branch protection and no rulesets, verified against the API on 2026-08-14; upstream's design accommodates a workflow this fork does not have, so adopting it would buy nothing while widening what counts as proof.
-Reporting an unproved merge as landed has actually happened here, and the standing practice built on that incident is to read the landed commit back rather than trust a merge return, so accepting a queued enqueue as proof moves against the discipline the rest of the fleet is built on.
-The tie-breaker is a rule rather than a preference: conforming to the more protective option needs nobody's permission while relaxing one does, and upstream's design is the relaxation, so it is the option that would have needed a captain decision.
+#### RETIRED BY CAPTAIN DECISION on 2026-09-03: refusing a queued request
 
-The code has now caught up, which is the part of this entry that changed.
-[`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) implements the stricter contract directly: a queued request is refused rather than reported as `verified: queued`, and the queue-required refusal no longer advertises `--auto`, which the forwarded-argument allow-list refuses by name.
-That allow-list is additive rather than divergent - it constrains what a caller may pass, admitting merge-method selectors, message arguments, post-execution branch cleanup, and head-binding arguments, each recorded with why it cannot defer execution.
+The fork briefly refused a merge-queue entry outright, where upstream's `kunchenguid/firstmate#3064` accepts one as `verified: queued` on exit 0 and names `--auto` in the retry it recommends.
+The captain retired that divergence on 2026-09-03: [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) reports a queued request exactly as upstream reports it, and the queue-required guidance carries upstream's concrete retry flags again rather than this fork's reworded refusal.
+The reasons the stricter contract was argued for are kept because they explain the reversal rather than contradict it: this fleet has no merge queue for an enqueue to be deferred into, because fork `main` carries no branch protection and no rulesets, verified against the API on 2026-08-14.
+A guarantee nothing in this fleet can reach buys nothing while widening the gap a future sync round has to reconcile, which is what decided it.
 Fork PR `HelloWorldSungin/firstmate#241` was the earlier attempt and is superseded: the round-1 sync rebuilt this merge path underneath it, so the work was re-expressed against upstream's shape rather than reconciled hunk by hunk.
-A future round must not read a permissive read as evidence that this fork chose upstream's contract, and must not silently resolve this collision toward upstream: the collision was predicted at round-1 intake and decided here.
+A future round must take upstream's queue behaviour unchanged rather than re-deriving this refusal; reopening it needs a fresh captain decision and a real merge queue to point at.
 
-A SECOND divergence in the same subsystem is decided the same way and shares this entry rather than opening its own.
+One consequence is left standing deliberately and is the thing to read before "fixing" it.
+The forwarded-argument allow-list still refuses `--auto` by name, which is a separate rule about what a caller may hand the forge and not a claim about merge queues, so upstream's restored retry guidance names flags this script would itself turn away.
+That allow-list is additive rather than divergent - it constrains what a caller may pass, admitting merge-method selectors, message arguments, post-execution branch cleanup, and head-binding arguments, each recorded with why it cannot defer execution.
+Reconciling the two, by retiring that allow-list entry as well or by rewording the guidance a second time, is open work left to the captain who ordered the restoration; no issue tracks it yet, and `HelloWorldSungin/firstmate#259` is the allow-list's own open issue rather than a record of this.
+
+#### ACCEPTED and standing: a failed command whose readback confirms the merge landed
+
 Upstream fails the wrapper whenever the merge command exits non-zero, even when the forge then confirms the merge LANDED; this fork exits zero on that path and records the outcome.
 The command's exit status reports whether the CALL succeeded, while the forge's own state reports whether the MERGE HAPPENED, and only the second is the question anyone acts on; when they disagree the forge is the system of record and the command status is a transport detail.
 The failure modes are not symmetric, which is what decides it: exiting non-zero on a landed merge is a false negative that leaves work on the default branch while everything downstream reasons it is not, whereas exiting zero is only wrong if the forge lied about its own merged flag.
 [`tests/fm-pr-merge.test.sh`](../tests/fm-pr-merge.test.sh) pins both directions, and `bin/fm-pr-merge.sh`'s header carries an explicit warning against "correcting" it back, because an inverted form of this rule has already propagated into a test and into `docs/architecture.md` once.
+Retiring the queue half above must not disturb this one: they were argued together and decided apart.
 
-THE TWO DIFFER IN REACHABILITY, and a reader deciding later whether to keep them needs this more than any other fact here.
-The queue refusal is UNREACHABLE in this fleet today, because no project here uses a merge queue; it is a guarantee rather than a response to an observed failure.
-The landed-merge verdict is REACHABLE IN ORDINARY USE: any transport or response failure after a merge lands takes that path, on any repository, with no special configuration.
-
-Retire the queue half of this entry rather than defend it if the fork ever adopts branch protection with a merge queue, because the first reason above stops holding the moment a real queue exists.
-The landed-merge verdict is not tied to that condition and would survive it.
+REACHABILITY, which is what separated the two verdicts and is why it stays recorded.
+The retired queue refusal was UNREACHABLE in this fleet, because no project here uses a merge queue; it was a guarantee rather than a response to an observed failure.
+This verdict is REACHABLE IN ORDINARY USE: any transport or response failure after a merge lands takes that path, on any repository, with no special configuration.
 
 ### Upstream tracking mechanism
 
