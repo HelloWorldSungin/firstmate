@@ -335,6 +335,20 @@ wait_for_exit() {
     i=$((i + 1))
   done
   kill "$pid" 2>/dev/null || true
+  # The target may disarm TERM while it runs cleanup (see bin/fm-watch.sh:1481,
+  # which ignores HUP/INT/TERM for the whole of watcher_cleanup and treats
+  # SIGKILL as the escape hatch), so a plain TERM can be ignored and the
+  # unbounded `wait` that used to follow would itself wedge the suite - the
+  # bound this helper is meant to enforce would then be a false result (fork
+  # issue #250). Poll briefly for exit, then escalate to KILL, which cannot be
+  # trapped or ignored. The 124 sentinel, the pid/limit signature, and the
+  # 50-poll default are preserved for every existing caller.
+  i=0
+  while [ "$i" -lt 5 ] && is_live_non_zombie "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   return 124
 }
