@@ -535,7 +535,7 @@ FIELDS
 
 github_read_outcome_with_gh_axi() {
   local output state
-  if ! output=$(gh-axi pr view "$PR_NUMBER" --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" 2>/dev/null); then
+  if ! output=$(gh-axi pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" 2>/dev/null); then
     return 1
   fi
   if ! state=$(printf '%s\n' "$output" | awk '
@@ -563,12 +563,25 @@ github_read_outcome_with_gh_axi() {
   # own base ref and that base repository's default branch.
   FM_PR_GITHUB_BASE=
   FM_PR_GITHUB_DEFAULT=
-  local target_fields
-  if target_fields=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+  # gh-axi api wraps a non-JSON --jq result in a TOON envelope. Captured live
+  # rather than written from memory, the exact output is three lines:
+  #   api_response:
+  #     body: <base> <default>
+  #     truncated: false
+  # so the value must be taken from the body LINE. An earlier version stripped to
+  # the last ": " in the whole string and got "false" from the trailing line,
+  # which made base and default equal and the contract vacuous on this path.
+  local target_raw target_fields
+  if target_raw=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
     --jq '.base.ref + " " + .base.repo.default_branch' 2>/dev/null); then
-    target_fields=${target_fields##*: }
-    FM_PR_GITHUB_BASE=${target_fields%% *}
-    FM_PR_GITHUB_DEFAULT=${target_fields##* }
+    target_fields=$(printf '%s\n' "$target_raw" \
+      | sed -n 's/^[[:space:]]*body:[[:space:]]*//p' | head -1)
+    case "$target_fields" in
+      *' '*)
+        FM_PR_GITHUB_BASE=${target_fields%% *}
+        FM_PR_GITHUB_DEFAULT=${target_fields##* }
+        ;;
+    esac
   fi
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
@@ -859,7 +872,7 @@ case "$PROVIDER" in
       FM_PR_GITHUB_AUTO_REQUESTED=true
     fi
     FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
-    if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$FM_PR_HOST/$PR_OWNER/$PR_REPO" \
+    if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
       "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
     else

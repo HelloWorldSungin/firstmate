@@ -110,7 +110,7 @@ case "${1:-} ${2:-}" in
   # The guarded merge establishes its target through this passthrough before
   # mutating, so the default-target contract holds on the degraded path too.
   api\ *)
-    printf 'api_response:\n  body: %s %s\n' \
+    printf 'api_response:\n  body: %s %s\n  truncated: false\n' \
       "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
     ;;
 esac
@@ -591,7 +591,7 @@ test_valid_recording_and_merge_derivation() {
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
-  grep -qxF 'pr merge 37 --repo github.com/my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
+  grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   # A merge this home performed leaves its own durable outcome, so the poll's
   # confirmation is no longer the first the captain hears of it. Acknowledge that
