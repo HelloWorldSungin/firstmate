@@ -9,7 +9,8 @@
 #
 # Staging captures the caller's stdin to EOF. A caller that hands over a stream
 # it never closes would otherwise block staging forever, so the capture is
-# bounded by FM_REMOTE_JOB_STDIN_TIMEOUT and reports that refusal instead. The
+# bounded by FM_REMOTE_JOB_STDIN_TIMEOUT - always, never conditionally - and
+# reports that refusal instead. The
 # shape cannot be screened structurally: sshd hands the fixed entrypoint a pipe
 # for every remote command, so a pipe is the normal case here, not the faulty
 # one - only failing to reach EOF distinguishes them.
@@ -61,10 +62,17 @@
 # orphaned that way.
 
 _FM_REMOTE_JOB_LIB_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-if [ -r "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh" ]; then
-  # shellcheck source=bin/fm-timeout-lib.sh
-  . "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh"
-fi
+# Required, not optional: the stdin capture below must never run unbounded, so
+# a missing bound owner is a loud failure rather than a silent downgrade to the
+# blocking read that issue #178 reported.
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh" || {
+  printf 'fm-remote-job-lib.sh: required bound owner not found: %s\n' \
+    "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh" >&2
+  # shellcheck disable=SC2317 # Reached only when the source above fails.
+  return 1 2>/dev/null || exit 1
+}
 
 FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
@@ -485,13 +493,8 @@ fm_remote_job_read_deadline() { # <job-dir>
 
 fm_remote_job_capture_stdin() {  # <destination>
   local dest=$1
-  if [ "$FM_REMOTE_JOB_STDIN_TIMEOUT" -gt 0 ] 2>/dev/null &&
-    command -v fm_run_timed >/dev/null 2>&1; then
-    fm_run_timed "$FM_REMOTE_JOB_STDIN_TIMEOUT" \
-      head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$dest"
-    return $?
-  fi
-  head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$dest"
+  fm_run_timed "$FM_REMOTE_JOB_STDIN_TIMEOUT" \
+    head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$dest"
 }
 
 fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdin is captured
@@ -529,6 +532,11 @@ fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdi
     124)
       rm -rf -- "$stage"
       FM_REMOTE_JOB_ERROR="remote job stdin never reached EOF within ${FM_REMOTE_JOB_STDIN_TIMEOUT}s; the caller must close the stream it hands over"
+      return 1
+      ;;
+    125)
+      rm -rf -- "$stage"
+      FM_REMOTE_JOB_ERROR="remote job stdin capture could not be bounded (FM_REMOTE_JOB_STDIN_TIMEOUT=$FM_REMOTE_JOB_STDIN_TIMEOUT)"
       return 1
       ;;
     *)

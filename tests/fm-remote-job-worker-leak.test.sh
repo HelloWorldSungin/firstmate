@@ -116,7 +116,7 @@ build_remote_root() { # <dir>
   local root=$1 worker_source
   worker_source=${FM_REMOTE_JOB_WORKER_UNDER_TEST:-$ROOT/bin/fm-remote-job-worker.sh}
   mkdir -p "$root/bin"
-  cp "$ROOT/bin/fm-remote-job-lib.sh" "$root/bin/"
+  cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-timeout-lib.sh" "$root/bin/"
   cp "$worker_source" "$root/bin/fm-remote-job-worker.sh"
   chmod +x "$root/bin"/*.sh
   printf 'fixture\n' > "$root/AGENTS.md"

@@ -137,9 +137,13 @@ fi
 if ! fm_remote_job_ensure_worker "$ROOT" "$ACCOUNT_HOME"; then
   die "${FM_REMOTE_JOB_ERROR:-remote job worker is unavailable; run fm-on.sh <route> fm-remote-doctor.sh --fix}"
 fi
-if ! JOB_ID=$(fm_remote_job_stage "$ACCOUNT_HOME" "$ROOT" "$HOME_PATH" "$COMMAND" "${ARGV[@]:1}"); then
+# Staged through the sourceable FM_REMOTE_JOB_ID API rather than a command
+# substitution: a subshell would discard FM_REMOTE_JOB_ERROR and reduce every
+# staging failure to the bare fallback below.
+if ! fm_remote_job_stage "$ACCOUNT_HOME" "$ROOT" "$HOME_PATH" "$COMMAND" "${ARGV[@]:1}" >/dev/null; then
   die "${FM_REMOTE_JOB_ERROR:-cannot stage remote job}" 70
 fi
+JOB_ID=$FM_REMOTE_JOB_ID
 if ! fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID"; then
   die "${FM_REMOTE_JOB_ERROR:-remote job did not complete}" 70
 fi

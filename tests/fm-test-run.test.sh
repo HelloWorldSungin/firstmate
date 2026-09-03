@@ -15,6 +15,17 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+# ruby and python3 are both optional here: bin/fm-bootstrap.sh installs neither.
+# A case that cannot run without one announces the missing precondition as a TAP
+# skip naming it, so a sweep on a host that simply lacks the interpreter loses
+# that case rather than the whole verdict. Emitted per case, never file-level,
+# so the cases that do run still report individually.
+skip_without() {  # <interpreter> <case-title>
+  command -v "$1" >/dev/null 2>&1 && return 1
+  printf 'ok - %s # skip %s not found (optional interpreter, not installed by bin/fm-bootstrap.sh)\n' \
+    "$2" "$1"
+}
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -201,6 +212,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
 }
 
 test_empty_selection_emits_summary() {
+  skip_without python3 "empty changed selection emits deterministic text and JSON summaries" && return 0
   local tmp repo out json
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-empty.XXXXXX")
   repo="$tmp/repo"
@@ -223,6 +235,7 @@ assert doc["families"] == []
 }
 
 test_timing_markers_and_json() {
+  skip_without python3 "timing markers and JSON artifact are valid" && return 0
   local tmp fixture out json begin_n end_n summary
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timing.XXXXXX")
   fixture="$tmp/ok.test.sh"
@@ -298,6 +311,7 @@ SH
 }
 
 test_gate_skip_accounting() {
+  skip_without python3 "gate-skip accounting is honest and non-failing" && return 0
   local tmp skip_f out json
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
   skip_f="$tmp/skip.test.sh"
@@ -542,6 +556,7 @@ test_jobs_requires_proven_isolated() {
 }
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
+  skip_without python3 "jobs scheduler runs proven scripts; failure propagates; non-proven refused" && return 0
   local tmp repo runner evidence fake_bin a b c d rc begin_n end_n
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-sched.XXXXXX")
   repo="$tmp/repo"
@@ -675,9 +690,8 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
   local title='Herdr CI family-run step times out at 20 min under a 75 min job backstop'
-  command -v ruby >/dev/null 2>&1 \
-    || { printf 'ok - %s # skip ruby not found (optional YAML parser is not installed by bin/fm-bootstrap.sh)\n' \
-         "$title"; return 0; }
+  skip_without ruby "$title" && return 0
+  skip_without python3 "$title" && return 0
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -908,6 +922,7 @@ SH
 }
 
 test_aggregate_json() {
+  skip_without python3 "aggregate-json merges lane timing artifacts" && return 0
   local tmp a b
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
   cat >"$tmp/a.json" <<'JSON'
