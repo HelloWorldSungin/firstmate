@@ -150,10 +150,14 @@ PER_SCRIPT_TIMEOUT_SECS=0
 PER_SCRIPT_TIMEOUT_SET=
 # Bound applied automatically to every standard-mode sweep. What settles it is
 # the family WALL, not the average. The real-Herdr family is 12 scripts inside
-# a ~7 min healthy wall (.github/workflows/ci.yml), so no single script in it
-# can exceed ~420s - a hard constraint rather than a statistical one, and it
-# sits under 480s. The portable lanes' measured worst case is the 210s
-# tests/fm-watch-triage.test.sh, so 480s is better than 2x there.
+# a ~7 min healthy wall (.github/workflows/ci.yml), so its mean slot is ~35s.
+# That wall is a measurement, not a ceiling: the only bound that lane enforces
+# is the family-run step's 1200s, and the family's slowest measured script is
+# the 341s presentation E2E. So 480s is 1.41x over that script - materially
+# thinner than the 2x+ the portable lanes get over their 210s
+# tests/fm-watch-triage.test.sh worst case, and a Herdr E2E running 1.41x
+# slower than measured turns red as exit=124 on a required lane. That margin
+# is accepted rather than widened (HelloWorldSungin/firstmate#256).
 #
 # Below, the arithmetic is replacement, not addition: a hung script spends the
 # bound INSTEAD of its own healthy slot. portable-serial is a ~434s shard wall
@@ -163,13 +167,14 @@ PER_SCRIPT_TIMEOUT_SET=
 # bootstrap steps. What that buys an operator there is usually - not always -
 # exit=124 attribution; when the hung slot sits late in the shard and setup
 # overhead runs high, the job cap cancels the lane first and the attribution
-# is lost. real-Herdr is 420s less that slot plus 480s, well inside the 1200s
-# step cap. portable-parallel is tighter still: a ~1 min measured shard wall
-# plus 480s plus that lane's setup steps sits at or just over its 600s cap, so
-# it loses per-script attribution to a job cancellation more often than
-# occasionally. That is an honest cost of the bound, not a claim against
-# it - raising the bound past a lane cap would only guarantee it never fires,
-# which is the defect it exists to replace, so no lane raises it.
+# is lost. real-Herdr is 420s less its ~35s slot plus 480s, well inside the
+# 1200s step cap. portable-parallel is tighter still: the lane runs serially in
+# CI, so its measured shard wall is ~134s (~2.2 min), and ~134s less its ~12s
+# mean slot plus 480s is ~602s - already past its 600s cap before that lane's
+# setup steps, so it loses per-script attribution to a job cancellation more
+# often than occasionally. That is an honest cost of the bound, not a claim
+# against it - raising the bound past a lane cap would only guarantee it never
+# fires, which is the defect it exists to replace, so no lane raises it.
 #
 # It is a guard, not a speed control: a HUNG script becomes a bounded failure
 # instead of an unbounded suite, which is the shape that silently outruns a

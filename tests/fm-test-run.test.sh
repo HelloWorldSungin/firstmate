@@ -837,7 +837,7 @@ test_concurrent_runs_are_ordered_longest_first() {
 # finishes. A hung script has to become a bounded failure, because an unbounded
 # suite is exactly what silently outruns its caller's invocation budget.
 test_per_script_timeout_bounds_a_hang() {
-  local tmp repo runner hang rc began ended grandchild_pid grandchild waited
+  local tmp repo runner hang rc began ended grandchild_pid grandchild waited duration
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-hang.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -869,6 +869,11 @@ SH
     || fail "the terminated script was not named: $(cat "$tmp/out")"
   grep -Eq 'FM_TEST_END .* exit=124 ' "$tmp/out" \
     || fail "a terminated script must be recorded as exit 124: $(cat "$tmp/out")"
+  # The fixture sleeps 600s, so a recorded duration anywhere near that means it
+  # was waited out rather than terminated.
+  duration=$(sed -n 's/^FM_TEST_END .* duration_ms=\([0-9]*\) .*/\1/p' "$tmp/out")
+  [ -n "$duration" ] && [ "$duration" -lt 60000 ] \
+    || fail "bounded kill recorded ${duration:-no} ms; the script was not actually terminated"
   # The run still completes and accounts for the script, rather than dying.
   grep -Fq 'FM_TEST_SUMMARY total=1 failed=1' "$tmp/out" \
     || fail "the bounded run did not report a complete summary: $(cat "$tmp/out")"
@@ -1125,49 +1130,6 @@ puts JSON.generate(
 
 # A per-script bound only earns its keep if a stuck script becomes an ordinary
 # red. These drive the runner's real CLI over fixtures that genuinely hang.
-test_per_script_timeout_bounds_a_hung_script() {
-  local tmp fixture out rc duration diag
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-bound.XXXXXX")
-  fixture="$tmp/hang.test.sh"
-  out="$tmp/out.txt"
-  cat >"$fixture" <<'SH'
-#!/usr/bin/env bash
-echo "ok - hung fixture started"
-sleep 600
-SH
-  chmod +x "$fixture"
-  rc=0
-  "$RUNNER" --per-script-timeout-secs 2 "$fixture" >"$out" 2>"$tmp/err.txt" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    rm -rf "$tmp"
-    fail "a script killed by the bound must make the run red"
-  fi
-  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=124 duration_ms=[0-9]+ gate_skip=false\$" "$out"; then
-    diag=$(grep '^FM_TEST_END' "$out" || true)
-    rm -rf "$tmp"
-    fail "bounded kill was not recorded as exit=124: $diag"
-  fi
-  if ! grep -Fq "not ok - $fixture exceeded the per-script bound of 2s and was terminated" "$out"; then
-    diag=$(cat "$out")
-    rm -rf "$tmp"
-    fail "the bound annotation never reached stdout: $diag"
-  fi
-  if ! grep -q '^FM_TEST_SUMMARY total=1 failed=1 ' "$out"; then
-    diag=$(grep '^FM_TEST_SUMMARY' "$out" || true)
-    rm -rf "$tmp"
-    fail "bounded kill missing from summary: $diag"
-  fi
-  # The fixture sleeps 600s, so a recorded duration anywhere near that means it
-  # was waited out rather than terminated.
-  duration=$(sed -n 's/^FM_TEST_END .* duration_ms=\([0-9]*\) .*/\1/p' "$out")
-  if [ -z "$duration" ] || [ "$duration" -ge 60000 ]; then
-    rm -rf "$tmp"
-    fail "bounded kill recorded ${duration:-no} ms; the script was not actually terminated"
-  fi
-  rm -rf "$tmp"
-  pass "a script over the per-script bound is terminated and recorded as exit=124"
-}
-
 test_per_script_timeout_bounds_a_hung_script_under_jobs() {
   local tmp repo runner proven rc diag
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-bound-jobs.XXXXXX")
@@ -1698,7 +1660,6 @@ test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
-test_per_script_timeout_bounds_a_hung_script
 test_per_script_timeout_bounds_a_hung_script_under_jobs
 test_per_script_timeout_zero_is_a_real_opt_out
 test_per_script_timeout_default_arms_for_standard_modes
