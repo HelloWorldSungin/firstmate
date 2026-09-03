@@ -56,6 +56,8 @@ zellij_pane_id=<pane-id>
 
 Recorded pane ids are numeric and are never trusted alone after a session recreation.
 Metadata-routed operations also verify the owning tab's expected scoped or unambiguous legacy title.
+Endpoint-existence checks that carry the recorded `zellij_tab_id` - watcher liveness classification, the fleet snapshot, the session-start endpoint digest, and the control plane's interrupt - additionally require the pane to still live in that exact recorded tab, because a reused pane id under a bare legacy title that is unambiguous again can otherwise pass as a live endpoint for the wrong task.
+A task recorded before tab-id binding supplies no id to compare and keeps label-only identity.
 An explicit raw `session:pane` target remains a pane-existence-only operator escape hatch.
 
 ## Current operation and safety

@@ -77,6 +77,32 @@ test_predicate_queue_pending_flag() {
   pass "fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue"
 }
 
+test_predicate_queue_pending_needs_supervision() {
+  local state="$TMP_ROOT/pred-queue-needs/state"
+  mkdir -p "$state"
+  printf 'record\n' > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "queue-only home must have zero in-flight tasks"
+  [ "$FM_SUP_SOURCES" -eq 0 ] || fail "queue-only home must have zero sources"
+  [ ! -f "$state/x-watch.check.sh" ] || fail "queue-only home must have no relay poll"
+  [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "a non-empty wake queue must read as pending"
+  [ "$FM_SUP_NEEDED" = true ] || fail "a pending wake queue on an idle home must make supervision needed"
+  pass "fm_supervision_status: pending wake queue makes supervision needed on an idle home"
+}
+
+test_predicate_queue_pending_drained_no_longer_needs_supervision() {
+  local state="$TMP_ROOT/pred-queue-drained/state"
+  mkdir -p "$state"
+  printf 'record\n' > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_NEEDED" = true ] || fail "pending queue should make supervision needed before drain"
+  : > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "empty wake queue must not read as pending"
+  [ "$FM_SUP_NEEDED" = false ] || fail "an acknowledged/empty queue must not keep supervision needed"
+  pass "fm_supervision_status: draining the queue clears the supervision need"
+}
+
 test_predicate_x_mode_needs_supervision() {
   local state="$TMP_ROOT/pred-x-mode/state"
   mkdir -p "$state"
@@ -386,6 +412,24 @@ test_hook_x_mode_reason_sources_cadence() {
   expect_code 2 "$status" "hook must block when in-flight X-mode work has no live watcher"
   assert_contains "$out" "source '$home/config/x-mode.env' first" "block reason must source the effective X-mode cadence"
   pass "fm-turnend-guard: X-mode repair reason sources the cadence config"
+}
+
+# Issue 234's queue-only home: no in-flight meta, no event source, no X-mode
+# relay poll, just wake records nobody drained. The block is correct, but the
+# banner has to name the real cause instead of blaming Relay polling on a home
+# that never opted into X mode, and the repair line has to say to drain first.
+test_hook_queue_only_block_names_the_pending_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-queue-only")
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$dir/state/.wake-queue"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "a queue-only home must block a blind turn"
+  assert_contains "$out" "Queued wakes are pending" "a queue-only block must name the pending wake queue"
+  assert_not_contains "$out" "X-mode relay polling needs supervision" \
+    "a home with no X-mode relay poll must not be told Relay polling needs supervision"
+  assert_contains "$out" "After draining queued wakes" \
+    "a queue-only block must tell the operator to drain before repairing supervision"
+  pass "fm-turnend-guard: a queue-only blind turn names the pending wake queue as its cause"
 }
 
 test_hook_x_mode_only_blocks_in_default_mode() {
@@ -1575,6 +1619,25 @@ test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
   pass "fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating"
 }
 
+# The attended fail-open is the ONE alarm an operator sees for the episode, so
+# its named cause has to survive a queue-only need exactly like the block banner
+# does - a home with no state/*.meta, no event source and no config/x-mode.env,
+# armed solely by an undrained state/.wake-queue.
+test_hook_claude_mode_queue_only_fail_open_names_the_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-queue-alarm")
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$dir/state/.wake-queue"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a queue-only verified failure must still take the bounded attended fail-open"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN: queued wakes pending' \
+    "the attended alarm must name the pending wake queue as the supervision need"
+  assert_not_contains "$out" 'X-mode relay polling active' \
+    "a home with no X-mode relay poll must not be told Relay polling is the need"
+  pass "fm-turnend-guard --claude: a queue-only attended fail-open names the pending wake queue"
+}
+
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch() {
   local no_notice notice_only out status
   no_notice=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-notice")
@@ -1683,6 +1746,8 @@ test_predicate_unhealthy_no_beacon
 test_predicate_unhealthy_stale_beacon
 test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
+test_predicate_queue_pending_needs_supervision
+test_predicate_queue_pending_drained_no_longer_needs_supervision
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
 test_hook_silent_when_no_work_in_flight
@@ -1696,6 +1761,7 @@ test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
+test_hook_queue_only_block_names_the_pending_queue
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry
@@ -1740,6 +1806,7 @@ test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
+test_hook_claude_mode_queue_only_fail_open_names_the_queue
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget

@@ -372,14 +372,23 @@ fm_backend_zellij_parse_target() {  # <target>
 
 # fm_backend_zellij_target_ready: parse the target and verify its session and
 # pane are alive. When the caller knows the owning firstmate task label, verify
-# the pane belongs to that named tab before trusting the numeric pane id.
-fm_backend_zellij_target_ready() {  # <target> [expected-label]
-  local expected_label=${2:-} tab_id
+# the pane belongs to that named tab before trusting the numeric pane id. When
+# the caller also knows the owning tab id (recorded in task metadata), verify
+# the pane still lives in that exact tab: zellij pane ids are reused, so a
+# pane id alone is not an identity. Legacy panes that predate tab-id recording
+# continue to work through label-only identity.
+fm_backend_zellij_target_ready() {  # <target> [expected-label] [expected-tab-id]
+  local expected_label=${2:-} expected_tab_id=${3:-} tab_id
   fm_backend_zellij_parse_target "$1" || return 1
   fm_backend_zellij_session_exists "$FM_BACKEND_ZELLIJ_SESSION" || return 1
-  if [ -n "$expected_label" ]; then
+  if [ -n "$expected_label" ] || [ -n "$expected_tab_id" ]; then
     tab_id=$(fm_backend_zellij_tab_for_pane "$FM_BACKEND_ZELLIJ_SESSION" "$FM_BACKEND_ZELLIJ_PANE" 2>/dev/null)
     [ -n "$tab_id" ] || return 1
+  fi
+  if [ -n "$expected_tab_id" ] && [ "$tab_id" != "$expected_tab_id" ]; then
+    return 1
+  fi
+  if [ -n "$expected_label" ]; then
     fm_backend_zellij_tab_matches_label "$FM_BACKEND_ZELLIJ_SESSION" "$tab_id" "$expected_label"
     return $?
   fi

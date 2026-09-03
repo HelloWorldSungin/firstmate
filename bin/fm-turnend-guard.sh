@@ -172,12 +172,15 @@ if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
 fi
 
 block_stop() {
-  local afk x_mode reason rule
+  local afk x_mode queue_arg reason rule
   afk=0
   [ -e "$STATE/.afk" ] && afk=1
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
-  reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
+  queue_arg=0
+  [ "$FM_SUP_QUEUE_PENDING" = true ] && queue_arg=1
+  reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" \
+    --queue-pending "$queue_arg" --repair-line 2>/dev/null \
     || printf '%s\n' 'tasks in flight, no live watcher - repair missing watcher supervision according to the session-start operating block before ending the turn')
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
@@ -187,6 +190,8 @@ block_stop() {
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
+    elif [ "$FM_SUP_QUEUE_PENDING" = true ]; then
+      printf '●  Queued wakes are pending and need supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi
@@ -401,6 +406,8 @@ if [ "$terminal_status" -eq 0 ]; then
     NEED_DESC="$FM_SUP_IN_FLIGHT task(s) in flight"
   elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
     NEED_DESC="$FM_SUP_SOURCES process-event source(s) registered"
+  elif [ "$FM_SUP_QUEUE_PENDING" = true ]; then
+    NEED_DESC="queued wakes pending"
   else
     NEED_DESC="X-mode relay polling active"
   fi
