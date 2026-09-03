@@ -765,6 +765,68 @@ SH
   pass "a watcher stopped inside the push event wait reaps its stream reader and removes its fifo directory"
 }
 
+test_watcher_cleanup_warning_survives_the_interrupted_redirection() {
+  # watcher_cleanup emits exactly one operator-facing warning: the one that says
+  # this watcher deliberately left its singleton lock on disk because it could
+  # not persist recovery evidence first. An operator who never sees it has no
+  # idea why a stale lock is there.
+  #
+  # Stop signals take their default disposition, so bash enters the EXIT trap
+  # from inside whatever command the signal interrupted, and the watcher's normal
+  # stop point is `wait "$sleep_pid" 2>/dev/null` in interruptible_sleep. That
+  # command's redirection is still in force there, so a bare `>&2` in the trap
+  # writes the warning to /dev/null - verified directly by running this same case
+  # against a build with `>&2` in place of the `>&4` below, which sees an empty
+  # stderr. The warning is therefore written to fd 4, a copy of stderr taken at
+  # startup, which no interrupted command can have pointed elsewhere.
+  #
+  # Force the failure deterministically rather than waiting for a real one:
+  # _fm_recovery_marker_publish rejects a downtime marker path that is a
+  # directory, which is the exact "could not be persisted" branch. Park the
+  # watcher in its cycle wait first, because that is the redirection context this
+  # case is about.
+  local dir state fakebin out err pid sleeper i status
+  dir=$(make_case cleanup-warning)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  err="$dir/watch.err"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 150 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    || fail "watcher did not take the lock before the cleanup-warning check"
+  sleeper=
+  i=0
+  while [ "$i" -lt 150 ]; do
+    sleeper=$(ps -axo pid=,ppid=,comm= 2>/dev/null \
+      | awk -v parent="$pid" '$2 == parent && $3 ~ /(^|\/)sleep$/ { print $1; exit }')
+    [ -n "$sleeper" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$sleeper" ] \
+    || fail "watcher never reached its cycle wait, so this case would not exercise the interrupted redirection"
+  rm -f "$state/.watcher-down" 2>/dev/null || true
+  mkdir -p "$state/.watcher-down" \
+    || fail "could not make the downtime marker unpersistable"
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the watcher"
+  wait_for_exit "$pid" 100
+  status=$?
+  [ "$status" -ne 124 ] || fail "watcher ignored TERM for its whole poll interval"
+  grep -q 'retaining stale lock evidence' "$err" 2>/dev/null \
+    || fail "watcher retained a stale lock without telling the operator: its cleanup warning was swallowed by the redirection of the command the stop signal interrupted"
+  [ -e "$state/.watch.lock/pid" ] \
+    || fail "watcher warned that it was retaining stale lock evidence but released the lock anyway"
+  pass "the retained-stale-lock warning reaches the operator through the interrupted command's redirection"
+}
+
 test_watch_restart_hands_over_within_its_own_budget() {
   # The consequence the prompt-exit property exists for. --restart signals this
   # home's watcher, then waits only 50 * 0.1s for it to exit before forking a
@@ -1476,6 +1538,7 @@ test_watcher_self_evicts_on_lock_takeover
 test_watcher_stop_is_kernel_delivered_and_still_cleans_up
 test_watcher_stop_burst_during_cleanup_still_releases_lock
 test_watcher_stop_releases_its_event_wait_reader
+test_watcher_cleanup_warning_survives_the_interrupted_redirection
 test_watch_restart_hands_over_within_its_own_budget
 test_watcher_liveness_beacon_survives_interruptible_waits
 test_arm_self_eviction_is_loud_without_successor
