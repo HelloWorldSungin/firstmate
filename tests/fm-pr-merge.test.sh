@@ -80,15 +80,22 @@
 #       refresh named, bounded to one line, instead of only the symptom
 #   (bc) every --auto spelling is refused by name before any merge is attempted
 #   (bd) every path that observes a landed merge exits zero and records the
-#       outcome durably, over the six routes that reach such an observation
+#       outcome durably, over the six routes that reach such an observation,
+#       and on both forges a merge whose command failed says so against the
+#       readback that overrides it rather than exiting zero in silence
 #   (be) a pull request whose target is not the current default branch is
 #       refused by name, before any queue or method handling
 #   (bf) a target that could not be established refuses rather than permitting
-#   (bg) the degraded gh-axi reader reads the real target out of the api
-#       passthrough's own envelope, including when a broken gh is installed
+#   (bg) the PRE-merge half of the degraded-view seam: the degraded gh-axi
+#       reader reads the real target out of the api passthrough's own envelope,
+#       including when a broken gh is installed, and is accepted for the target
+#       question with no merged proof
 #   (bh) a landed merge this run already observed is never re-read
 #   (bi) the GitLab automatic-rebase guard refuses only inside the window where
 #       project-level rebase can fire, and permits outside it
+#   (bj) the POST-merge half of that same seam: the degraded gh-axi view cannot
+#       answer the outcome question without a proved merge, and reports an
+#       outcome it could not read rather than a concrete not-merged verdict
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -2976,6 +2983,15 @@ SH
     # and being turned away. Without this, a real gh leaking in from the host
     # collapses the first into the second and nothing notices.
     case "$route" in
+      command-error)
+        # Exiting zero is only half of this route's contract. The forge CLI has
+        # just printed its own error, so a run that then exits zero saying
+        # nothing reads as an unexplained success. Asserted for BOTH forges from
+        # one place: the silence being closed here existed on GitLab alone
+        # precisely because only one forge's message was ever written.
+        assert_grep 'but the forge reads it back as landed' "$case_dir/stderr" \
+          "landed-invariant $provider/$route: a failed merge command that landed exited zero without reconciling the two"
+        ;;
       degraded-no-gh)
         [ ! -s "$case_dir/gh.log" ] \
           || fail "landed-invariant github/degraded-no-gh: gh was consulted on a route that must have none"

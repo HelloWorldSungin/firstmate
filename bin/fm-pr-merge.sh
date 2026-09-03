@@ -76,6 +76,11 @@
 # destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
+# A merge command that FAILED while the forge's own readback confirms the merge
+# landed exits zero on both forges, and both say so through one shared line
+# (report_landed_after_failed_command), because a run that exits zero in silence
+# straight after the forge CLI printed its own error reads as an unexplained
+# success.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
 set -eu
 
@@ -949,6 +954,18 @@ github_report_unmerged_outcome() {
   github_report_queue_rules
 }
 
+# The ONE place either forge reconciles a merge command that failed with its own
+# readback confirming the merge LANDED - the reachable half of the fork
+# divergence recorded in docs/fork-divergence.md. Both forges reach that verdict,
+# so both must state it from here: while GitHub and GitLab each wrote their own
+# line, GitHub reconciled the two facts and GitLab exited zero in silence right
+# after the operator had seen glab's own error, which is what two hand-written
+# messages drift into. Reversing or rewording the verdict is one edit here.
+report_landed_after_failed_command() {
+  printf 'actionable: the merge command for %s failed, but the forge reads it back as landed (%s), so the forge state is the authority and the command status is not; the landed merge is recorded and this run exits zero\n' \
+    "$URL" "$1" >&2
+}
+
 gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
@@ -1038,18 +1055,19 @@ case "$PROVIDER" in
       merge_status=$?
       [ -z "$merge_output" ] || printf '%s\n' "$merge_output" >&2
       if github_read_outcome; then
-        if [ "$FM_PR_GITHUB_MERGED" != true ] && [ "$FM_PR_GITHUB_QUEUED" != true ]; then
-          github_report_unmerged_outcome
-        else
-          printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
-            "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
+        if [ "$FM_PR_GITHUB_MERGED" = true ]; then
           # The forge state is the authority, not the command status. A merge the
           # forge confirms LANDED is not a failed merge just because the command
           # reporting it failed, so this falls through to outcome reporting
           # instead of exiting non-zero and leaving the landed merge unrecorded.
-          if [ "$FM_PR_GITHUB_MERGED" = true ]; then
-            merge_command_failed_but_landed=true
-          fi
+          report_landed_after_failed_command \
+            "state=$FM_PR_GITHUB_STATE, merged=$FM_PR_GITHUB_MERGED, isInMergeQueue=$FM_PR_GITHUB_QUEUED"
+          merge_command_failed_but_landed=true
+        elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
+          printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
+            "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
+        else
+          github_report_unmerged_outcome
         fi
       fi
       [ "${merge_command_failed_but_landed:-false}" = true ] || exit "$merge_status"
@@ -1114,6 +1132,9 @@ case "$PROVIDER" in
         "$URL" >&2
       printf 'action: bring the branch up to the current default branch and re-run validation\n' >&2
       exit 1
+    fi
+    if [ "$gitlab_merge_rc" -ne 0 ] && [ "$gitlab_confirm_rc" -eq 0 ]; then
+      report_landed_after_failed_command 'state=merged'
     fi
     [ "$gitlab_confirm_rc" -eq 0 ] || exit 0
     ;;
