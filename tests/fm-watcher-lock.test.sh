@@ -928,10 +928,13 @@ test_arm_hup_cleans_child_and_temp_output() {
   grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  # Wait for the arm's HUP exit itself.
-  # wait_for_exit kills the arm after a poll clock and returns 124.
-  # That 124 is the helper's kill sentinel, not a HUP status.
-  wait "$armpid"
+  # Bound the HUP-exit wait: wait_for_exit kills the arm after a poll clock and
+  # returns 124 when it does. The arm's own handle_arm_signal does an unbounded
+  # 'wait' on its TERMed child, so under load the child may not reap and the
+  # arm can fail to exit on HUP at all; without a bound the bare 'wait' on the
+  # arm wedged this entire suite forever (fork issue #250). 80 polls matches the
+  # attached-arm TERM and post-confirm exit-bound cases in this same file.
+  wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0
