@@ -29,7 +29,8 @@ The entrypoint accepts encoded argv for genuine executable `bin/fm-*.sh` files o
 It never accepts a shell command string.
 The readiness-owning doctor runs over this plain SSH bootstrap so read-only mode can report worker gaps and `--fix` can install or repair the worker.
 The entrypoint authorizes that bootstrap with normal git tracking when git resolves and with its pinned doctor digest when doctor must report that git itself is missing.
-After setup, every other command verifies Firstmate's account-owned remote job worker, stages the encoded argv and stdin bytes, waits for its result, and relays stdout, stderr, and the exit status separately.
+After setup, every other command verifies Firstmate's account-owned remote job worker, stages the encoded argv and, when `--stdin` is passed, the caller's stdin bytes, waits for its result, and relays stdout, stderr, and the exit status separately.
+Without `--stdin` the remote command receives `/dev/null`, so a payload piped into `fm-on.sh` without that flag is discarded rather than staged.
 On macOS the worker is `dev.firstmate.remote-job`, an Aqua-scoped LaunchAgent at `~/Library/LaunchAgents/dev.firstmate.remote-job.plist` with logs under `~/Library/Logs/`.
 After that bootstrap every non-doctor `fm-on.sh` target runs through that worker in the remote account's GUI session, never in the SSH process or a Herdr pane.
 The worker runs one staged job at a time and preempts a running reply long-poll as soon as any command other than another reply long-poll is queued, so interactive commands and startup checks are never serialized behind a poll window.

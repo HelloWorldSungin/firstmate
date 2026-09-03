@@ -15,16 +15,6 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
-# ruby is the only optional interpreter here: it parses the CI workflow YAML for
-# a single case and bin/fm-bootstrap.sh does not install it. python3 is not
-# optional - bin/fm-test-run.sh requires it for --json and --aggregate-json - so
-# its absence is a real failure and is never announced as a skip. Announcing the
-# ruby shortfall on the first output line lets bin/fm-test-run.sh's
-# detect_gate_skip record this file as a gate skip instead of an
-# indistinguishable full pass; every other case still runs below.
-command -v ruby >/dev/null 2>&1 \
-  || printf 'skip: ruby not found (optional YAML parser for the CI workflow contract case)\n'
-
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)

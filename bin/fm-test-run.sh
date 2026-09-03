@@ -1688,16 +1688,17 @@ trap 'rm -rf "$RUN_TMP"' EXIT
 # The bound runs each script in its own process group, which is what lets it
 # reap a hung script's whole descendant tree - but it also means a terminal
 # Ctrl-C, which reaches only this runner's group, leaves the in-flight script
-# and everything it spawned running until the deadline. The bounded runners
-# record their group id under $RUN_TMP while a script is in flight, so relay
-# the interrupt there before leaving.
+# and everything it spawned running until the deadline. The shell that starts a
+# bounded script names a private slot under $RUN_TMP for the bounded runner to
+# record its group id in, so relay the interrupt there before leaving. That
+# slot is never exported: a test script that bounds its own work through the
+# same helper would otherwise inherit the name and overwrite the slot with its
+# inner group, leaving nothing to relay to once that inner call returned.
 #
 # Best-effort: the trap may be silently skipped on some bash versions. That
 # trades a guarantee for never regressing below the status quo - if it is
 # dropped the developer sees today's behaviour, a stalled script surviving
 # Ctrl-C, which the deadline still bounds.
-FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.serial"
-export FM_TIMEOUT_PGID_FILE
 # shellcheck disable=SC2329 # Registered by the INT and TERM traps below.
 run_forward_signal() {
   local f pgid
@@ -1794,6 +1795,7 @@ record_script_result() {
 # would leak errexit to the caller and turn a failing test into a script exit.
 run_script_bounded() {  # <script> <out>
   local script=$1 out=$2 rc
+  local FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.serial"
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
     # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
     # Expansion is intentionally deferred to the child bash passed to -c.
@@ -1932,7 +1934,7 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      export FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.w$worker_n"
+      FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.w$worker_n"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
