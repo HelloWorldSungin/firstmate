@@ -388,7 +388,7 @@ SH
 
 test_empty_selection_emits_summary() {
   skip_without python3 "empty changed selection emits deterministic text and JSON summaries" && return 0
-  local tmp repo out json
+  local tmp repo out json rc fake_bin real_git
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-empty.XXXXXX")
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
@@ -1206,7 +1206,7 @@ SH
 }
 
 test_per_script_timeout_zero_is_a_real_opt_out() {
-  local tmp repo runner fixture rc diag
+  local tmp repo runner fixture rc diag changed_repo changed_script
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optout.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -1269,6 +1269,57 @@ SH
     rm -rf "$tmp"
     fail "the bound fired despite the explicit opt-out"
   fi
+
+  # --changed carries its own automatic bound, so the opt-out has to be read
+  # from the flag there too rather than from a zero that also means "unset".
+  # The stub helper kills every bounded script, so the script's own marker is
+  # what separates a bounded run from an unbounded one.
+  changed_repo="$tmp/changed"
+  changed_script=tests/fm-calm-pi-extension.test.sh
+  mkdir -p "$changed_repo/bin" "$changed_repo/tests"
+  cp "$RUNNER" "$changed_repo/bin/fm-test-run.sh"
+  cat >"$changed_repo/bin/fm-timeout-lib.sh" <<'SH'
+fm_run_timed() {
+  return 124
+}
+SH
+  cat >"$changed_repo/$changed_script" <<'SH'
+#!/usr/bin/env bash
+touch ran-unbounded
+echo "ok - unbounded changed script"
+SH
+  chmod +x "$changed_repo/bin/fm-test-run.sh" "$changed_repo/$changed_script"
+  git -C "$changed_repo" init -q
+  git -C "$changed_repo" add .
+  git -C "$changed_repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+  printf '\n' >>"$changed_repo/$changed_script"
+
+  rc=0
+  ( cd "$changed_repo" && bin/fm-test-run.sh --changed --base HEAD ) \
+    >"$tmp/changed-armed.out" 2>"$tmp/changed-armed.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "--changed must still arm its automatic bound when no flag is given"
+  fi
+  if [ -e "$changed_repo/ran-unbounded" ]; then
+    rm -rf "$tmp"
+    fail "--changed bypassed its automatic bound"
+  fi
+
+  rc=0
+  ( cd "$changed_repo" && bin/fm-test-run.sh --changed --base HEAD --per-script-timeout-secs 0 ) \
+    >"$tmp/changed-optout.out" 2>"$tmp/changed-optout.err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/changed-optout.err")
+    rm -rf "$tmp"
+    fail "--changed --per-script-timeout-secs 0 must run unbounded: $diag"
+  fi
+  if [ ! -e "$changed_repo/ran-unbounded" ]; then
+    diag=$(cat "$tmp/changed-optout.out")
+    rm -rf "$tmp"
+    fail "--changed rearmed its default bound despite the explicit opt-out: $diag"
+  fi
+
   rm -rf "$tmp"
   pass "--per-script-timeout-secs 0 is a real opt-out, not the default in disguise"
 }

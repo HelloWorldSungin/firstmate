@@ -58,11 +58,14 @@
 #                   unproven remainder runs serially after that group.
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
-#                   record it as exit 124 (0 disables, the default). The
-#                   --changed applies 900s automatically: no real script
-#                   approaches it, so it only converts a HUNG
-#                   script into a bounded failure. --max-wall-ms is checked
-#                   after the run and so cannot catch a hang on its own.
+#                   record it as exit 124. A bound is applied automatically
+#                   when this flag is absent: 480s on a standard-mode sweep,
+#                   900s on --changed, and none when --max-wall-ms is given.
+#                   N overrides whichever would apply, and 0 is the opt-out
+#                   that runs unbounded. No real script approaches either
+#                   automatic bound, so it only converts a HUNG script into a
+#                   bounded failure. --max-wall-ms is checked after the run
+#                   and so cannot catch a hang on its own.
 #                   External interruption cleanup is outside this runner's
 #                   guarantee; configured per-script bounds remain authoritative.
 #   --max-wall-ms N fail the run when its measured invocation wall clock exceeds
@@ -151,9 +154,9 @@ PER_SCRIPT_TIMEOUT_SET=
 # tests/fm-watch-triage.test.sh, so 480s is better than 2x there.
 #
 # Below, the arithmetic is replacement, not addition: a hung script spends the
-# bound INSTEAD of its own healthy slot. portable-serial is a ~429s shard wall
-# (3431s over PORTABLE_SERIAL_SHARDS; docs/fm-test-portable-shards.md owns that
-# measurement) less the ~23s mean slot plus 480s, so ~886s against the 900s
+# bound INSTEAD of its own healthy slot. portable-serial is a ~434s shard wall
+# (3471s over PORTABLE_SERIAL_SHARDS; docs/fm-test-portable-shards.md owns that
+# measurement) less the ~23s mean slot plus 480s, so ~891s against the 900s
 # cap: thin but still inside, and thin BEFORE the lane's own checkout and
 # bootstrap steps. What that buys an operator there is usually - not always -
 # exit=124 attribution; when the hung slot sits late in the shard and setup
@@ -1896,17 +1899,12 @@ done
 if [ -z "$PER_SCRIPT_TIMEOUT_SET" ] && [ "${MODE:-}" != changed ] && [ -z "$MAX_WALL_MS" ]; then
   PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
 fi
-if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-  [ -r "$ROOT/bin/fm-timeout-lib.sh" ] || die "per-script timeout helper not found: bin/fm-timeout-lib.sh"
-  # shellcheck source=bin/fm-timeout-lib.sh
-  . "$ROOT/bin/fm-timeout-lib.sh"
-fi
 
 # Plain --changed uses the bounded representative-suite scheduler; numeric
 # --jobs retains the strict all-script admission rule below.
 AUTO_CONCURRENCY=0
 if [ "$MODE" = changed ] && [ "$JOBS_EXPLICIT" -eq 0 ]; then
-  if [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
+  if [ "${#SCRIPTS[@]}" -gt 0 ] && [ -z "$PER_SCRIPT_TIMEOUT_SET" ]; then
     PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
   fi
   auto_admissible=0
@@ -2027,9 +2025,6 @@ run_forward_signal() {  # <exit-status> <signal>
 }
 trap 'run_forward_signal 130 INT' INT
 trap 'run_forward_signal 143 TERM' TERM
-
-RUN_STARTED_ISO=$(now_iso)
-RUN_STARTED_MS=$(now_ms)
 
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
