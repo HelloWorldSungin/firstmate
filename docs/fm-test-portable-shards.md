@@ -127,5 +127,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 Timeouts are hang tripwires rather than expected healthy durations.
 `.github/workflows/ci.yml` owns the exact numbers.
 
-Inside each lane, `bin/fm-test-run.sh` applies its own default per-script bound, so a hung script usually turns red with per-script attribution before the job cap cancels the lane; its `--help` owns that bound's value and opt-out.
-The portable parallel cap is the tight one, and a hang there can still reach the job timeout first.
+Inside each lane, `bin/fm-test-run.sh` applies its own default per-script bound, so a hung script usually turns red with per-script attribution before the job cap cancels the lane; its `--help` owns that bound's value and opt-out, and the rationale beside `DEFAULT_PER_SCRIPT_TIMEOUT_SECS` owns the per-lane margin arithmetic.
+Neither portable lane has room to spare, because a hung script spends the bound instead of its own healthy slot.
+On a serial shard the result lands just inside the 15-minute cap on script time alone, before this lane's checkout and bootstrap: expect per-script `exit=124` in the usual case, and the job timeout first when the hung slot sits late in the shard and setup overhead runs high.
+The portable parallel cap is tighter still, and a hang there reaches the job timeout first more often than occasionally.

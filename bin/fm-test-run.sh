@@ -110,14 +110,18 @@ PER_SCRIPT_TIMEOUT_SET=
 # tests/fm-watch-triage.test.sh, so 480s is better than 2x there.
 #
 # Below, the arithmetic is replacement, not addition: a hung script spends the
-# bound INSTEAD of its own healthy slot. portable-serial is a 429s shard wall
+# bound INSTEAD of its own healthy slot. portable-serial is a ~429s shard wall
 # (3431s over PORTABLE_SERIAL_SHARDS; docs/fm-test-portable-shards.md owns that
-# measurement) less that slot plus 480s, inside the 900s cap but no longer by
-# much. real-Herdr is 420s less that slot plus 480s, well
-# inside the 1200s step cap. portable-parallel is the tight one: a ~1 min
-# measured shard wall plus 480s plus this lane's setup steps sits at or just
-# over its 600s cap, so that lane can still lose per-script attribution to a
-# job cancellation. That is an honest cost of the bound, not a claim against
+# measurement) less the ~23s mean slot plus 480s, so ~886s against the 900s
+# cap: thin but still inside, and thin BEFORE the lane's own checkout and
+# bootstrap steps. What that buys an operator there is usually - not always -
+# exit=124 attribution; when the hung slot sits late in the shard and setup
+# overhead runs high, the job cap cancels the lane first and the attribution
+# is lost. real-Herdr is 420s less that slot plus 480s, well inside the 1200s
+# step cap. portable-parallel is tighter still: a ~1 min measured shard wall
+# plus 480s plus that lane's setup steps sits at or just over its 600s cap, so
+# it loses per-script attribution to a job cancellation more often than
+# occasionally. That is an honest cost of the bound, not a claim against
 # it - raising the bound past a lane cap would only guarantee it never fires,
 # which is the defect it exists to replace, so no lane raises it.
 #
