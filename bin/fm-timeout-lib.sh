@@ -17,6 +17,12 @@
 #
 # Every runner places the command in its own process group and reaps the whole
 # group after the polite timeout signal, so a hung descendant cannot survive.
+# That group is also unreachable by a signal aimed at the caller's group, and a
+# caller wanting to relay a terminal SIGINT into it has no other way to learn
+# the id, so when FM_TIMEOUT_PGID_FILE names a writable path the timeout and
+# bash arms record the group id there for the duration of the call and truncate
+# it after. The perl arm keeps the id inside perl and publishes nothing, so a
+# relaying caller simply finds no id and leaves that group to the deadline.
 # FM_TIMEOUT_KILL_GRACE is the positive whole-number delay between TERM and KILL
 # and defaults to 1 second.
 #
@@ -41,6 +47,11 @@ fm_call_bound() {  # <per-call-default>
   else
     printf '%s\n' "$default"
   fi
+}
+
+fm_timeout_publish_pgid() {  # <pgid-or-empty>
+  [ -n "${FM_TIMEOUT_PGID_FILE:-}" ] || return 0
+  printf '%s\n' "${1:-}" >"$FM_TIMEOUT_PGID_FILE" 2>/dev/null || true
 }
 
 fm_timeout_mechanism() {
@@ -79,6 +90,7 @@ fm_run_bash_timeout() {  # <seconds> <grace> <command...>
     exit "$command_rc"
   ) &
   child_pid=$!
+  fm_timeout_publish_pgid "$child_pid"
   (
     set +m
     sleep "$seconds"
@@ -106,6 +118,7 @@ fm_run_bash_timeout() {  # <seconds> <grace> <command...>
     case "$recorded_rc" in ''|*[!0-9]*) ;; *) command_rc=$recorded_rc ;; esac
   fi
   rm -f "$command_status" "$deadline_status" 2>/dev/null || true
+  fm_timeout_publish_pgid ''
   return "$command_rc"
 }
 
@@ -124,6 +137,7 @@ fm_run_external_timeout() {  # <runner> <seconds> <grace> <command...>
   # empty a piped payload (bin/fm-forge-lib.sh feeds curl its config on stdin).
   "$runner" -k "$grace" "$seconds" "$@" <&0 &
   runner_pid=$!
+  fm_timeout_publish_pgid "$runner_pid"
   # 2>/dev/null matches fm_run_bash_timeout: the shell otherwise prints its own
   # "Killed" job notice when a reaped async job died on a signal.
   if wait "$runner_pid" 2>/dev/null; then
@@ -132,6 +146,7 @@ fm_run_external_timeout() {  # <runner> <seconds> <grace> <command...>
     runner_rc=$?
   fi
   elapsed=$((SECONDS - started))
+  fm_timeout_publish_pgid ''
   case "$runner_rc" in
     124)
       kill -KILL -- "-$runner_pid" 2>/dev/null || true
