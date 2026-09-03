@@ -875,7 +875,13 @@ SH
 # only thing an operator or CI wrapper can read to learn which signal stopped
 # the sweep, so INT and TERM must not report the same cause.
 test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
-  local tmp repo runner fixture sig expected pid rc waited relayed
+  local tmp repo runner fixture sig expected pid rc waited relayed mechanism
+  # Only an arm that publishes a process-group id can be relayed to at all:
+  # bin/fm-timeout-lib.sh documents the perl arm as keeping the id inside perl
+  # and publishing nothing, so on a host that selects it - stock macOS without
+  # coreutils - the relay correctly finds no id and leaves that group to the
+  # deadline. The exit status is what every arm owes; the marker is not.
+  mechanism=$(. "$ROOT/bin/fm-timeout-lib.sh" && fm_timeout_mechanism)
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-signal.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -933,6 +939,11 @@ SH
       unset FM_SIGNAL_MARKER
       rm -rf "$tmp"
       fail "a sweep stopped by SIG$sig reported $rc, not the conventional $expected"
+    fi
+    if [ "$mechanism" = perl ]; then
+      printf 'ok - a sweep stopped by SIG%s relays it to the bounded script # skip the perl bound arm publishes no process-group id to relay to\n' \
+        "$sig"
+      continue
     fi
     # The bounded child is in its own group and is signalled as the runner
     # leaves, so its handler can still be running when wait returns.

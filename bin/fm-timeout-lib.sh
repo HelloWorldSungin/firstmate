@@ -88,7 +88,7 @@ fm_run_bash_timeout() {  # <seconds> <grace> <command...>
     command_rc=$?
     printf '%s\n' "$command_rc" > "$command_status"
     exit "$command_rc"
-  ) &
+  ) <&0 &
   child_pid=$!
   fm_timeout_publish_pgid "$child_pid"
   (

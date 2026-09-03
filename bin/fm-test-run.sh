@@ -1806,6 +1806,35 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+# Both run paths must give the same account of a bound outcome, so the account
+# lives here once and each caller supplies its own sink. 124 and 125 are both
+# statuses a script may also exit with on its own, so the two facts the bound
+# owner's contract leaves for the caller decide which happened: elapsed time
+# against the bound tells a real bound kill from a self-inflicted 124, and the
+# marker the bounded command writes before exec tells an unarmable bound from a
+# self-inflicted 125. Prints nothing when the status needs no gloss.
+run_bound_outcome_note() {  # <script> <rc> <elapsed-secs> <bound> <started-marker>
+  local script=$1 rc=$2 elapsed=$3 bound=$4 started=$5
+  [ "$bound" -gt 0 ] || return 0
+  case "$rc" in
+    124)
+      if [ "$elapsed" -ge "$bound" ]; then
+        printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+          "$script" "$bound"
+      else
+        printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
+          "$script" "$elapsed" "$bound"
+      fi
+      ;;
+    125)
+      if [ ! -e "$started" ]; then
+        printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
+          "$script" "$bound"
+      fi
+      ;;
+  esac
+}
+
 # Run <script>, capturing output to <out>. When PER_SCRIPT_TIMEOUT_SECS is
 # positive, a script that outruns it is terminated and reported as exit 124:
 # a hung script must become a bounded failure rather than an unbounded suite,
@@ -1834,25 +1863,9 @@ run_script_bounded() {  # <script> <out>
   fi
   # Serial output is streamed live and never re-read, so any explanation has to
   # reach stdout here or the operator only ever sees a bare exit status.
-  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
-    elapsed=$(( ($(now_ms) - began) / 1000 ))
-    # 124 is also an ordinary status a script may exit with on its own, so the
-    # elapsed time decides which of the two happened - the same test the shared
-    # bound owner uses to tell a natural 137 from its own kill-after escalation.
-    if [ "$elapsed" -ge "$PER_SCRIPT_TIMEOUT_SECS" ]; then
-      printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-        "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
-    else
-      printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
-        "$script" "$elapsed" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
-    fi
-  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 125 ] && [ ! -e "$started" ]; then
-    # 125 is the bound owner's "nothing was attempted" status. Without this the
-    # run records a silent exit=125 with no output, which reads as a test that
-    # failed rather than one that was never run.
-    printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
-      "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
-  fi
+  elapsed=$(( ($(now_ms) - began) / 1000 ))
+  run_bound_outcome_note "$script" "$rc" "$elapsed" "$PER_SCRIPT_TIMEOUT_SECS" "$started" \
+    | tee -a "$out"
   return "$rc"
 }
 
@@ -1995,18 +2008,8 @@ else
       if [ "$duration" -lt 0 ]; then
         duration=0
       fi
-      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
-        if [ "$((duration / 1000))" -ge "$PER_SCRIPT_TIMEOUT_SECS" ]; then
-          printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-            "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
-        else
-          printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
-            "$script" "$((duration / 1000))" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
-        fi
-      elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 125 ] && [ ! -e "$work/started" ]; then
-        printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
-          "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
-      fi
+      run_bound_outcome_note "$script" "$rc" "$((duration / 1000))" \
+        "$PER_SCRIPT_TIMEOUT_SECS" "$work/started" >>"$work/output"
       printf '%s\n' "$duration" >"$work/duration_ms"
       printf '%s\n' "$rc" >"$work/exit"
       exit 0
