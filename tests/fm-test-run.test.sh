@@ -15,19 +15,15 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
-# The CI workflow contract case parses YAML with ruby and reads the result with
-# python3, neither of which bin/fm-bootstrap.sh installs. Announce the shortfall
-# on the first output line so bin/fm-test-run.sh's detect_gate_skip records this
-# file as a gate skip instead of an indistinguishable full pass. Every case that
-# does not need those interpreters still runs below.
-OPTIONAL_INTERPRETERS_MISSING=
-for interp in ruby python3; do
-  command -v "$interp" >/dev/null 2>&1 && continue
-  OPTIONAL_INTERPRETERS_MISSING="${OPTIONAL_INTERPRETERS_MISSING:+$OPTIONAL_INTERPRETERS_MISSING }$interp"
-done
-[ -z "$OPTIONAL_INTERPRETERS_MISSING" ] || printf \
-  'skip: optional interpreters not installed (%s); the CI workflow contract case does not run\n' \
-  "$OPTIONAL_INTERPRETERS_MISSING"
+# ruby is the only optional interpreter here: it parses the CI workflow YAML for
+# a single case and bin/fm-bootstrap.sh does not install it. python3 is not
+# optional - bin/fm-test-run.sh requires it for --json and --aggregate-json - so
+# its absence is a real failure and is never announced as a skip. Announcing the
+# ruby shortfall on the first output line lets bin/fm-test-run.sh's
+# detect_gate_skip record this file as a gate skip instead of an
+# indistinguishable full pass; every other case still runs below.
+command -v ruby >/dev/null 2>&1 \
+  || printf 'skip: ruby not found (optional YAML parser for the CI workflow contract case)\n'
 
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
@@ -692,9 +688,6 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   command -v ruby >/dev/null 2>&1 \
     || { printf 'ok - %s # skip ruby not found (optional YAML parser is not installed by bin/fm-bootstrap.sh)\n' \
          "$title"; return 0; }
-  command -v python3 >/dev/null 2>&1 \
-    || { printf 'ok - %s # skip python3 not found (optional JSON reader is not installed by bin/fm-bootstrap.sh)\n' \
-         "$title"; return 0; }
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -721,6 +714,207 @@ puts JSON.generate(
   [ "$step_timeout" -lt "$job_timeout" ] \
     || fail "family-run step timeout must be below the job backstop"
   pass "$title"
+}
+
+# A per-script bound only earns its keep if a stuck script becomes an ordinary
+# red. These drive the runner's real CLI over fixtures that genuinely hang.
+test_per_script_timeout_bounds_a_hung_script() {
+  local tmp fixture out rc duration diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-bound.XXXXXX")
+  fixture="$tmp/hang.test.sh"
+  out="$tmp/out.txt"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - hung fixture started"
+sleep 600
+SH
+  chmod +x "$fixture"
+  rc=0
+  "$RUNNER" --per-script-timeout-secs 2 "$fixture" >"$out" 2>"$tmp/err.txt" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script killed by the bound must make the run red"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=124 duration_ms=[0-9]+ gate_skip=false\$" "$out"; then
+    diag=$(grep '^FM_TEST_END' "$out" || true)
+    rm -rf "$tmp"
+    fail "bounded kill was not recorded as exit=124: $diag"
+  fi
+  if ! grep -Fq "not ok - $fixture exceeded the per-script bound of 2s and was terminated" "$out"; then
+    diag=$(cat "$out")
+    rm -rf "$tmp"
+    fail "the bound annotation never reached stdout: $diag"
+  fi
+  if ! grep -q '^FM_TEST_SUMMARY total=1 failed=1 ' "$out"; then
+    diag=$(grep '^FM_TEST_SUMMARY' "$out" || true)
+    rm -rf "$tmp"
+    fail "bounded kill missing from summary: $diag"
+  fi
+  # The fixture sleeps 600s, so a recorded duration anywhere near that means it
+  # was waited out rather than terminated.
+  duration=$(sed -n 's/^FM_TEST_END .* duration_ms=\([0-9]*\) .*/\1/p' "$out")
+  if [ -z "$duration" ] || [ "$duration" -ge 60000 ]; then
+    rm -rf "$tmp"
+    fail "bounded kill recorded ${duration:-no} ms; the script was not actually terminated"
+  fi
+  rm -rf "$tmp"
+  pass "a script over the per-script bound is terminated and recorded as exit=124"
+}
+
+test_per_script_timeout_bounds_a_hung_script_under_jobs() {
+  local tmp repo runner proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-bound-jobs.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  cat >"$repo/$proven" <<'SH'
+#!/usr/bin/env bash
+echo "ok - hung parallel fixture started"
+sleep 600
+SH
+  chmod +x "$runner" "$repo/$proven"
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 2 "$proven" ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a bounded kill under --jobs must make the run red"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $proven exit=124 " "$tmp/out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/out" || true)
+    rm -rf "$tmp"
+    fail "parallel bounded kill not recorded as exit=124: $diag"
+  fi
+  if ! grep -Fq "not ok - $proven exceeded the per-script bound of 2s and was terminated" "$tmp/out"; then
+    diag=$(cat "$tmp/out")
+    rm -rf "$tmp"
+    fail "parallel bound annotation never reached stdout: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "the per-script bound also terminates and reports a hung script under --jobs"
+}
+
+test_per_script_timeout_zero_is_a_real_opt_out() {
+  local tmp repo runner fixture rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optout.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/slow.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+sleep 3
+echo "ok - slow but healthy fixture"
+SH
+  chmod +x "$repo/$fixture"
+
+  # No timeout helper is installed next to this runner, so an armed bound must
+  # refuse the run. That refusal is what distinguishes a genuinely disabled
+  # bound from one silently rearmed at the default.
+  rc=0
+  ( cd "$repo" && "$runner" "$fixture" ) >"$tmp/armed.out" 2>"$tmp/armed.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "the default bound must refuse to run without its timeout helper"
+  fi
+  if ! grep -Fq 'per-script timeout helper not found' "$tmp/armed.err"; then
+    diag=$(cat "$tmp/armed.err")
+    rm -rf "$tmp"
+    fail "unset bound did not arm: $diag"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 0 "$fixture" ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/err")
+    rm -rf "$tmp"
+    fail "--per-script-timeout-secs 0 must disable the bound entirely: $diag"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=0 " "$tmp/out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/out" || true)
+    rm -rf "$tmp"
+    fail "opt-out run did not complete normally: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/out"; then
+    rm -rf "$tmp"
+    fail "the bound fired despite the explicit opt-out"
+  fi
+
+  # With the helper available the opt-out still runs unbounded rather than
+  # quietly falling back to the default.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 0 "$fixture" ) \
+    >"$tmp/out2" 2>"$tmp/err2" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/err2")
+    rm -rf "$tmp"
+    fail "opt-out must stay green with the helper present: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/out2"; then
+    rm -rf "$tmp"
+    fail "the bound fired despite the explicit opt-out"
+  fi
+  rm -rf "$tmp"
+  pass "--per-script-timeout-secs 0 is a real opt-out, not the default in disguise"
+}
+
+test_per_script_timeout_default_arms_for_standard_modes() {
+  local tmp repo runner fixture mode rc out diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-default-arm.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - fixture"
+SH
+  chmod +x "$repo/$fixture"
+
+  # The helper is absent, so every mode that arms the default must refuse.
+  # A mode that silently ran here would be a mode the bound never covers.
+  for mode in "$fixture" "--all" "--family pure-contract-unit"; do
+    rc=0
+    # shellcheck disable=SC2086 # $mode intentionally supplies multiple words.
+    ( cd "$repo" && "$runner" $mode ) >"$tmp/out" 2>"$tmp/err" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -rf "$tmp"
+      fail "the default bound did not arm for mode: $mode"
+    fi
+    if ! grep -Fq 'per-script timeout helper not found' "$tmp/err"; then
+      diag=$(cat "$tmp/err")
+      rm -rf "$tmp"
+      fail "mode $mode did not arm the default bound: $diag"
+    fi
+  done
+
+  # And with the helper present the armed default leaves healthy work alone.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  rc=0
+  out="$tmp/green.out"
+  ( cd "$repo" && "$runner" "$fixture" ) >"$out" 2>"$tmp/green.err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/green.err")
+    rm -rf "$tmp"
+    fail "the armed default must not disturb a healthy script: $diag"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=0 " "$out"; then
+    diag=$(grep '^FM_TEST_END' "$out" || true)
+    rm -rf "$tmp"
+    fail "healthy script under the default bound was not green: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "the per-script bound default arms for every standard mode without a flag"
 }
 
 test_aggregate_json() {
@@ -783,5 +977,9 @@ test_coverage_guard_is_collation_independent
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
+test_per_script_timeout_bounds_a_hung_script
+test_per_script_timeout_bounds_a_hung_script_under_jobs
+test_per_script_timeout_zero_is_a_real_opt_out
+test_per_script_timeout_default_arms_for_standard_modes
 test_aggregate_json
 printf '\nall fm-test-run tests passed\n'

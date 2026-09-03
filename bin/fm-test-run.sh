@@ -45,11 +45,12 @@
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
 #                   record it as exit 124 (0 disables the default). Every
-#                   standard-mode sweep applies 900s automatically: no real
+#                   standard-mode sweep applies 480s automatically: no real
 #                   script approaches it, so it only converts a HUNG script
 #                   into a bounded failure. A hung suite is the shape that
 #                   silently outruns a caller's invocation budget, so the
-#                   bound is a guard, not a speed control.
+#                   bound is a guard, not a speed control. A lane whose
+#                   scripts legitimately run longer raises it explicitly.
 #   -h, --help      print this header
 #
 # Per-script machine-parseable markers (stdout):
@@ -100,15 +101,16 @@ PER_SCRIPT_TIMEOUT_SECS=0
 # Set by --per-script-timeout-secs so an explicit 0 is a real opt-out rather
 # than indistinguishable from an unset bound.
 PER_SCRIPT_TIMEOUT_SET=
-# Bound applied automatically to every standard-mode sweep, derived from
-# measured healthy runtimes with margin rather than picked: the slowest
-# measured behavior test is the 341s Herdr presentation E2E, and 900s leaves
-# roughly 2.6x headroom over the slowest real script, so this can only ever
-# fire on a script that is genuinely stuck. It is a guard, not a speed
-# control: a HUNG script becomes a bounded failure instead of an unbounded
-# suite, which is the shape that silently outruns a caller's invocation
-# budget.
-DEFAULT_PER_SCRIPT_TIMEOUT_SECS=900
+# Bound applied automatically to every standard-mode sweep, sized against both
+# ends rather than picked: the slowest measured portable script is the 210s
+# tests/fm-watch-triage.test.sh, so 480s leaves better than 2x headroom over
+# real work, while staying under the CI job caps (600s parallel, 900s serial)
+# so a stuck script yields a per-script exit=124 instead of a bare job
+# timeout with no attribution. A lane whose scripts legitimately run longer
+# than this raises it explicitly. It is a guard, not a speed control: a HUNG
+# script becomes a bounded failure instead of an unbounded suite, which is
+# the shape that silently outruns a caller's invocation budget.
+DEFAULT_PER_SCRIPT_TIMEOUT_SECS=480
 
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
@@ -1652,11 +1654,12 @@ done
 # A hung script is what silently outruns the caller's invocation budget, so
 # every standard-mode sweep applies a generous per-script bound by default.
 # The bound is opt-out (--per-script-timeout-secs 0) and authoritative when
-# set; 900s leaves roughly 2.6x headroom over the slowest measured healthy
-# script (the 341s Herdr presentation E2E), so this only ever fires on a
-# script that is genuinely stuck. It is a guard, not a speed control: a HUNG
-# script becomes a bounded failure instead of an unbounded suite, which is
-# the shape that stalled full sweeps for over six minutes in issue #178.
+# set; 480s leaves better than 2x headroom over the slowest measured healthy
+# portable script and still fires inside the CI job caps, so this only ever
+# fires on a script that is genuinely stuck. It is a guard, not a speed
+# control: a HUNG script becomes a bounded failure instead of an unbounded
+# suite, which is the shape that stalled full sweeps for over six minutes in
+# issue #178.
 if [ -z "$PER_SCRIPT_TIMEOUT_SET" ]; then
   PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
 fi
