@@ -349,6 +349,10 @@ wait_for_exit() {
     i=$((i + 1))
   done
   kill -KILL "$pid" 2>/dev/null || true
+  # Termination guarantee, not a graceful-shutdown window: this escape is only
+  # reached after the call-site budget has already expired. Sizing the grace
+  # against healthy cleanup duration would re-import an unbounded wait into the
+  # path that exists to bound one.
   wait "$pid" 2>/dev/null || true
   return 124
 }
