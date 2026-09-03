@@ -3314,4 +3314,54 @@ test_gitlab_auto_rebase_guard_refuses_and_permits() {
 
 test_gitlab_auto_rebase_guard_refuses_and_permits
 
+# THE OTHER HALF OF THE DEGRADED-VIEW SEAM.
+#
+# The pre-merge target check accepts the degraded gh-axi view when it supplies a
+# base and a default, because that is the question being asked of it. The
+# POST-merge outcome question is different: the degraded view cannot tell an open
+# pull request from a queued one, so only a proved merge makes it answerable, and
+# anything else must be reported as an outcome that could not be READ rather than
+# as a concrete not-merged verdict.
+#
+# Without this case, dropping the merged proof on the post-merge side leaves the
+# suite green and the seam collapses back into the single rule it replaced.
+test_degraded_view_cannot_answer_the_post_merge_question() {
+  local case_dir rc url
+  url=https://github.com/example/repo/pull/95
+  case_dir=$(make_case degraded-post-merge-unanswerable)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+  write_github_outcome "$case_dir" OPEN false false main
+  # gh answers the pre-merge target read and then fails, so the post-merge read
+  # falls back to a gh-axi view that reports the request still OPEN.
+  add_gh_mock_outcome_read_fails_from "$case_dir" ffffffffffffffffffffffffffffffffffffffff 2
+  cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
+  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+  : >"$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" \
+    "degraded-post-merge-unanswerable: an unanswerable outcome must refuse"
+  assert_grep 'could not read the GitHub pull request outcome' "$case_dir/stderr" \
+    "degraded-post-merge-unanswerable: an unreadable outcome was reported as a concrete verdict"
+  assert_no_grep 'verified: ' "$case_dir/stdout" \
+    "degraded-post-merge-unanswerable: an unproved merge was reported as verified"
+  pass "the degraded view cannot answer the post-merge outcome question without a proved merge"
+}
+
+test_degraded_view_cannot_answer_the_post_merge_question
+
 printf '\nall fm-pr-merge tests passed\n'
