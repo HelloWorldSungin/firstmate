@@ -110,9 +110,10 @@ PER_SCRIPT_TIMEOUT_SET=
 # tests/fm-watch-triage.test.sh, so 480s is better than 2x there.
 #
 # Below, the arithmetic is replacement, not addition: a hung script spends the
-# bound INSTEAD of its own healthy slot. portable-serial is a 363s shard wall
-# (2903s over PORTABLE_SERIAL_SHARDS) less that slot plus 480s, near 800s
-# against the 900s cap. real-Herdr is 420s less that slot plus 480s, well
+# bound INSTEAD of its own healthy slot. portable-serial is a 429s shard wall
+# (3431s over PORTABLE_SERIAL_SHARDS; docs/fm-test-portable-shards.md owns that
+# measurement) less that slot plus 480s, inside the 900s cap but no longer by
+# much. real-Herdr is 420s less that slot plus 480s, well
 # inside the 1200s step cap. portable-parallel is the tight one: a ~1 min
 # measured shard wall plus 480s plus this lane's setup steps sits at or just
 # over its 600s cap, so that lane can still lose per-script attribution to a
