@@ -695,14 +695,20 @@ github_report_queue_rules() {
         SQUASH) queue_method=squash ;;
         REBASE) queue_method=rebase ;;
       esac
+      # The auto-requested branch below is unreachable in this fork: the
+      # forwarded-argument allow-list refuses --auto by name before the merge is
+      # attempted, so FM_PR_GITHUB_AUTO_REQUESTED cannot be true here. It is left
+      # in place rather than deleted so a future upstream merge conflicts on as
+      # little as possible; only the reachable guidance below is reworded.
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
         && github_caller_method_is "$queue_method"; then
         printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s -- --auto --%s\n' \
-          "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
+        printf 'error: base branch %s requires the merge queue (%s), and this fork refuses deferred execution because a queued merge lands later against a base nobody compared\n' \
+          "$FM_PR_GITHUB_BASE" "$queue_method" >&2
+        printf 'action: land the pull request with an immediate merge method, or retarget it and re-run validation\n' >&2
       fi
       ;;
     conflicting)
