@@ -190,12 +190,24 @@ This fleet has no merge queue for an enqueue to be deferred into, because fork `
 Reporting an unproved merge as landed has actually happened here, and the standing practice built on that incident is to read the landed commit back rather than trust a merge return, so accepting a queued enqueue as proof moves against the discipline the rest of the fleet is built on.
 The tie-breaker is a rule rather than a preference: conforming to the more protective option needs nobody's permission while relaxing one does, and upstream's design is the relaxation, so it is the option that would have needed a captain decision.
 
-This entry records a decision that the code has not caught up to yet, which is the one thing to read carefully here.
-Round 1 merged `kunchenguid/firstmate#3064` faithfully, so [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) carries upstream's permissive read today and `AGENTS.md` section 7 states upstream's wording.
-The stricter implementation is fork PR `HelloWorldSungin/firstmate#241`, which is open and held on a separate matter; the reconciliation happens when that PR lands against the merged base, and it is not a sync round's work to rebase or re-express it.
-A future round must not read the merged permissive code as evidence that this fork chose upstream's contract, and must not silently resolve this collision toward upstream: the collision was predicted at round-1 intake and decided here.
+The code has now caught up, which is the part of this entry that changed.
+[`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) implements the stricter contract directly: a queued request is refused rather than reported as `verified: queued`, and the queue-required refusal no longer advertises `--auto`, which the forwarded-argument allow-list refuses by name.
+That allow-list is additive rather than divergent - it constrains what a caller may pass, admitting merge-method selectors, message arguments, post-execution branch cleanup, and head-binding arguments, each recorded with why it cannot defer execution.
+Fork PR `HelloWorldSungin/firstmate#241` was the earlier attempt and is superseded: the round-1 sync rebuilt this merge path underneath it, so the work was re-expressed against upstream's shape rather than reconciled hunk by hunk.
+A future round must not read a permissive read as evidence that this fork chose upstream's contract, and must not silently resolve this collision toward upstream: the collision was predicted at round-1 intake and decided here.
 
-Retire this entry rather than defend it if the fork ever adopts branch protection with a merge queue, because the first reason above stops holding the moment a real queue exists.
+A SECOND divergence in the same subsystem is decided the same way and shares this entry rather than opening its own.
+Upstream fails the wrapper whenever the merge command exits non-zero, even when the forge then confirms the merge LANDED; this fork exits zero on that path and records the outcome.
+The command's exit status reports whether the CALL succeeded, while the forge's own state reports whether the MERGE HAPPENED, and only the second is the question anyone acts on; when they disagree the forge is the system of record and the command status is a transport detail.
+The failure modes are not symmetric, which is what decides it: exiting non-zero on a landed merge is a false negative that leaves work on the default branch while everything downstream reasons it is not, whereas exiting zero is only wrong if the forge lied about its own merged flag.
+[`tests/fm-pr-merge.test.sh`](../tests/fm-pr-merge.test.sh) pins both directions, and `bin/fm-pr-merge.sh`'s header carries an explicit warning against "correcting" it back, because an inverted form of this rule has already propagated into a test and into `docs/architecture.md` once.
+
+THE TWO DIFFER IN REACHABILITY, and a reader deciding later whether to keep them needs this more than any other fact here.
+The queue refusal is UNREACHABLE in this fleet today, because no project here uses a merge queue; it is a guarantee rather than a response to an observed failure.
+The landed-merge verdict is REACHABLE IN ORDINARY USE: any transport or response failure after a merge lands takes that path, on any repository, with no special configuration.
+
+Retire the queue half of this entry rather than defend it if the fork ever adopts branch protection with a merge queue, because the first reason above stops holding the moment a real queue exists.
+The landed-merge verdict is not tied to that condition and would survive it.
 
 ### Upstream tracking mechanism
 
@@ -257,18 +269,6 @@ A merge must also keep the dashboard off the fleet's critical path as [`dashboar
 That rule has one granted exception that [`dashboard-events.md`](dashboard-events.md) owns and [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) emits: a `ReadWritePaths` grant for `data/gbrain/`, because a GBrain search updates the index it reads.
 The grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and a merge must not read that grant as a violation of the rule above and narrow it away.
 This entry and the GBrain entry above are bridged by the dashboard surfaces that read the home's brain read-only rather than duplicating it - the Knowledge view and health strip served behind [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) from `assets/dashboard/gbrain.js`, the read-only snapshot [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) takes, the capture status the History view reads off each outcome record, and the `tests/fm-dashboard-gbrain.test.sh` and `tests/fm-dashboard-gbrain-ui.test.sh` suites that pin them - alongside the `data/gbrain/` grant above that lets a search write the index it reads.
-
-### Guarded merges refuse deferred execution
-
-`bin/fm-pr-merge.sh` refuses a merge that the forge has queued rather than executed, where upstream reports the queued request as a verified outcome and exits zero.
-The divergence is one branch of one function: upstream's merge-queue read, its field names, and its message shape are kept deliberately so future sync rounds conflict as little as possible, and only the decision that branch reaches differs.
-The reason is that this fleet merges on judged green evidence at a moment in time, and a queued merge lands later against a base nobody compared, which is the same shape of failure as a green check that never saw the current base.
-Upstream's queue-awareness is descriptive and correct for a fleet that uses merge queues; ours is prescriptive because we do not.
-The forwarded-argument allow-list in the same script is additive rather than divergent: it constrains what a caller may pass, admitting merge-method selectors, commit-message arguments, and post-execution branch cleanup, and refusing `--auto` by name because it requests deferral outright.
-No project in this fleet currently uses a merge queue, so this refusal is unreachable in practice today; it is a guarantee rather than a response to an observed failure.
-**Reopen condition:** if this fleet ever adopts merge queues, revisit this divergence rather than defending it - the refusal would then be blocking a workflow the fleet had chosen, and upstream's behaviour would be the correct one to adopt.
-
-## Retired divergences
 
 ### Separate decision-hold lifecycle - retired 2026-08-24
 

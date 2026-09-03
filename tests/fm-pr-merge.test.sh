@@ -713,7 +713,12 @@ test_github_unreadable_outcome_keeps_pr_bookkeeping() {
   case_dir=$(make_case github-outcome-read-fails)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 3131313131313131313131313131313131313131
-  add_gh_mock_outcome_read_fails "$case_dir" 3131313131313131313131313131313131313131
+  # Read-specific: the pre-mutation target read succeeds so this case reaches the
+  # post-merge unreadable outcome it asserts. Before the messages named their
+  # phase, a failure here produced the same wording pre- and post-merge and this
+  # assertion passed against a message the target check had emitted instead.
+  write_github_outcome "$case_dir" OPEN false false main
+  add_gh_mock_outcome_read_fails_from "$case_dir" 3131313131313131313131313131313131313131 2
   add_gh_axi_mock_view_fails "$case_dir"
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/gh.log"
@@ -3117,5 +3122,62 @@ test_degraded_path_reads_the_real_target() {
 test_non_default_target_is_refused_by_name
 test_unestablished_target_is_refused
 test_degraded_path_reads_the_real_target
+
+# A landed merge this run already observed must never be re-read, because a
+# transient failure on that second read would strand a merge that is already on
+# the default branch with nothing recording it. Fails if the second read is
+# reinstated for the already-observed case.
+test_observed_landed_merge_is_not_reread() {
+  local case_dir rc url
+  url=https://github.com/example/repo/pull/94
+  case_dir=$(make_home_case landed-no-second-read)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  write_github_outcome "$case_dir" MERGED true false main
+  # The merge command fails, the first read confirms the merge landed, and every
+  # read after that fails. The outcome must still be recorded.
+  cat >"$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+case "${1:-} ${2:-}" in
+  "api graphql")
+    count_file="$FM_TEST_GH_OUTCOME.reads"
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    [ "$count" -ge 3 ] && { echo 'error: transient forge failure' >&2; exit 1; }
+    cat "$FM_TEST_GH_OUTCOME"
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
+  cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr merge") echo "simulated transport failure after the merge landed" >&2; exit 1 ;;
+  "pr view") exit 1 ;;
+  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+  : >"$case_dir/gh-axi.log"
+
+  set +e
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" \
+    "landed-no-second-read: an already-observed landed merge must not fail on a later read"
+  assert_grep "$url" "$case_dir/state/.wake-queue" \
+    "landed-no-second-read: the observed landed merge never reached outcome reporting"
+  pass "an already-observed landed merge is not re-read and still records its outcome"
+}
+
+test_observed_landed_merge_is_not_reread
 
 printf '\nall fm-pr-merge tests passed\n'

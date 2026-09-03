@@ -137,12 +137,20 @@ shift 2
 #   --sha --sha=*                 head-binding: constrains the mutation to the
 #                                 exact state this run verified. It cannot defer
 #                                 execution and makes the merge strictly
-#                                 narrower - a push landing between validation
-#                                 and merge makes the forge REFUSE rather than
-#                                 merge something nobody checked. This is the
-#                                 allow-list's own guarantee expressed as an
-#                                 argument, and the GitLab path already relies on
-#                                 it internally for exactly that binding.
+#                                 narrower, so it is admitted on principle.
+#                                 INERT ON BOTH FORGES TODAY, and the entry says
+#                                 so rather than reading as a working control:
+#                                 on GitLab reject_head_overrides refuses a
+#                                 caller --sha earlier by design, because this
+#                                 script supplies its own verified --sha; on
+#                                 GitHub `gh-axi pr merge --help` lists its
+#                                 supported flags as --method, --merge, --squash,
+#                                 --rebase, --auto, --delete-branch, --body,
+#                                 --body-file and --subject, with no --sha, so a
+#                                 forwarded one would be rejected by the tool
+#                                 rather than binding anything. Head binding on
+#                                 GitHub is achieved by the merge-boundary
+#                                 identity check instead, not by this argument.
 #
 # Deliberately NOT admitted, each for a stated reason:
 #   --auto                        requests deferred execution outright.
@@ -317,6 +325,7 @@ fi
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
 # returns non-zero after reporting every condition that failed.
 FM_PR_MERGE_HEAD=
+FM_PR_GITLAB_ACCEPTANCE=
 # GitLab can rebase the source branch onto the target AT MERGE TIME, which lands
 # commits whose pipeline never ran and strands the attestation this fleet merges
 # on. Refusal is bounded to the window where that can actually happen, because a
@@ -589,7 +598,8 @@ github_read_outcome_with_gh_axi() {
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
     github_read_outcome_with_gh_axi && return 0
-    echo "error: could not read the GitHub pull request outcome after the merge attempt; PR metadata and merge poll remain recorded" >&2
+    printf 'error: could not read the GitHub pull request outcome %s; PR metadata and merge poll remain recorded\n' \
+      "${FM_PR_GITHUB_READ_PHASE:-after the merge attempt}" >&2
     return 1
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
@@ -600,7 +610,8 @@ github_read_outcome() {
   if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
     return 0
   fi
-  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
+  printf 'error: could not read the GitHub pull request outcome %s: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded\n' \
+    "${FM_PR_GITHUB_READ_PHASE:-after the merge attempt}" >&2
   return 1
 }
 
@@ -806,15 +817,15 @@ gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab %s for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "${FM_PR_GITLAB_ACCEPTANCE:-accepted the merge request}" "$URL" >&2
     return 2
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab %s for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "${FM_PR_GITLAB_ACCEPTANCE:-accepted the merge request}" "$URL" >&2
     return 2
   fi
   [ "$state" = merged ]
@@ -835,6 +846,10 @@ record_pr_metadata || exit 1
 # check runs before any queue, auto-merge, or method handling so its message is
 # never pre-empted by a different rejection reaching the operator first.
 github_assert_default_target() {
+  # This runs BEFORE any mutation, so the shared reader must not report its
+  # failure as having happened "after the merge attempt" - the operator's next
+  # decision depends on knowing no merge was tried.
+  local FM_PR_GITHUB_READ_PHASE='before the merge was attempted'
   if ! github_read_outcome; then
     printf 'error: refusing to merge %s because its target branch could not be read, and an unread target does not prove it is the default branch\n' \
       "$URL" >&2
@@ -895,7 +910,13 @@ case "$PROVIDER" in
       fi
       [ "${merge_command_failed_but_landed:-false}" = true ] || exit "$merge_status"
     fi
-    if ! github_read_outcome; then
+    # A landed merge this run has ALREADY OBSERVED must not be re-read. Asking
+    # the forge a second time can fail transiently - a rate limit, a 5xx, a token
+    # blip between two back-to-back calls - and exiting on that would strand a
+    # merge that is already on the default branch with nothing recording it,
+    # which is the invariant this script asserts positively.
+    if [ "${merge_command_failed_but_landed:-false}" != true ] \
+      && ! github_read_outcome; then
       github_report_forge_output "$merge_output"
       exit 1
     fi
@@ -935,7 +956,14 @@ case "$PROVIDER" in
     gitlab_merge_rc=0
     GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
       --sha "$FM_PR_MERGE_HEAD" --yes "$@" || gitlab_merge_rc=$?
+    # Before the command status was captured, set -e guaranteed the merge command
+    # had succeeded whenever this ran, so "accepted the merge request" was always
+    # true. It is not any more, and a confirm that claims acceptance on a failed
+    # command contradicts the refusal printed immediately after it.
     gitlab_confirm_rc=0
+    if [ "$gitlab_merge_rc" -ne 0 ]; then
+      FM_PR_GITLAB_ACCEPTANCE='rejected the merge command'
+    fi
     gitlab_confirm_merged || gitlab_confirm_rc=$?
     if [ "$gitlab_confirm_rc" -ne 0 ] && [ "$gitlab_merge_rc" -ne 0 ]; then
       printf 'error: refusing to treat %s as merged because the merge command failed and the forge does not confirm it landed; the merge poll remains armed\n' \
