@@ -543,6 +543,65 @@ Not reproduced, and recorded so a later reader does not chase it: upstream `kunc
 Neither `fm_signal_defer` nor `trap -p` exists in `bin/` at this fork's HEAD, at upstream `d22318ea`, or at the merge base `60bedde5`.
 The minimal reproduction above carries no `eval` and no dynamically built handler and still produces the identical message, so that mechanism is not required to explain it.
 
+### Watcher stop disposition: burst window, abandoned event wait, cleanup diagnostic
+
+Measured on 2026-09-03 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`.
+This entry supersedes one claim in the 2026-09-02 entry above and the `Current limit` paragraph in the 2026-08-01 entry above.
+Both originals stay exactly as recorded.
+
+Correction 1: issue #160's burst case does NOT still hold unchanged, as the 2026-09-02 entry claimed.
+Default disposition narrows that window rather than preserving it.
+`watcher_cleanup`'s `trap '' HUP INT TERM` covers only signals arriving after that statement has executed.
+A second stop signal delivered between the kernel delivering the first and that statement running makes bash take its `_exit(128+sig)` path and abandon the EXIT trap where it stands.
+
+Re-measured with an EXIT trap whose ignore is preceded by a delay, placing the second TERM on either side of it:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' \
+  'cleanup() { echo CLEANUP_ENTER >>"$LOG"; sleep 0.3; trap "" HUP INT TERM; sleep 0.3; echo CLEANUP_DONE >>"$LOG"; }' \
+  'trap cleanup EXIT' 'echo READY >>"$LOG"' 'sleep 30' > /tmp/probe-burst.sh
+# start it, send one TERM after 0.3s, then a second TERM 0.1s later (before the
+# ignore) and, in a second run, 0.5s later (after the ignore)
+```
+
+The comparison arm restores the design this change replaced, a stop handler that disarms and exits, over the same script:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' \
+  'cleanup() { echo CLEANUP_ENTER >>"$LOG"; sleep 0.3; trap "" HUP INT TERM; sleep 0.3; echo CLEANUP_DONE >>"$LOG"; }' \
+  'stop_signal() { trap "" HUP INT TERM; exit 1; }' \
+  'trap cleanup EXIT' 'trap stop_signal HUP INT TERM' 'echo READY >>"$LOG"' 'sleep 30 & wait $!' > /tmp/probe-burst-handler.sh
+```
+
+| second TERM | default disposition | previous `watcher_stop_signal` handler |
+| --- | --- | --- |
+| before the ignore | `CLEANUP_ENTER` only, status 143 | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 1 |
+| after the ignore | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 143 | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 1 |
+
+The handler design absorbed the second delivery at both offsets, through bash's in-progress-trap guard.
+Inside the narrowed window the dead-pid lock reclaim backstops the LOCK ONLY.
+Sleep-child reaping, event-wait release, active check process-group stop, private check-output removal and custom check snapshot removal have no backstop there.
+The burst case in `tests/fm-watcher-lock.test.sh` does not cover this window either, because it SIGSTOPs the sleep child on purpose to place its second signal INSIDE cleanup.
+
+Correction 2: the `Current limit` paragraph in the 2026-08-01 entry no longer describes the code.
+The herdr push path in `event_wait_or_sleep` is now interrupted by a stop signal like every other wait, so a push-capable home is no longer up to `FM_POLL` deaf to its own stop signal.
+The fifo directory and reader child that paragraph says the reader removes on its own return path were never safe there: a `SIGKILL` or a crash of the watcher abandoned that command substitution and leaked both long before stop signals took their default disposition.
+The watcher therefore allocates that directory itself, exports it as `FM_BACKEND_EVENT_WAIT_DIR`, and releases it plus the reader pid the backend records inside it from `watcher_cleanup`.
+
+Observable: a watcher stopped while blocked in the event wait leaves no `fm-*eventwait.*` directory under `TMPDIR` and no live reader process.
+`tests/fm-watcher-lock.test.sh` pins it against a real watcher process with a fake herdr and a fake stream reader, and fails if either survives the stop.
+
+Correction 3, recorded because it changes what an operator sees rather than what the watcher does: an EXIT trap entered from a signal inherits the interrupted command's redirections.
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' 'cleanup() { echo CLEANUP_DIAG >&2; }' 'trap cleanup EXIT' \
+  'sleep 30 & SPID=$!' 'echo READY >&2' 'wait "$SPID" 2>/dev/null || true' > /tmp/probe-stderr.sh
+```
+
+Signalling that probe with TERM yields status 143 with `READY` on stderr and `CLEANUP_DIAG` nowhere, because the interrupted `wait` still carried `2>/dev/null`.
+The watcher's normal stop point is exactly that shape, so `watcher_cleanup`'s retained-stale-lock warning now writes to fd 4, a copy of stderr saved at startup, rather than to a bare `>&2`.
+The `2>/dev/null` on the wait itself stays, because `interruptible_sleep_stop` can legitimately report that the sleep child is not a child of this shell.
+
 ### Recovery-loop continuity
 
 The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.

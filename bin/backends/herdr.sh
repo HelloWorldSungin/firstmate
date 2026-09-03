@@ -3732,6 +3732,24 @@ fm_backend_herdr_clear_transition() {  # <state_dir> <window>
   rm -f "$marker" 2>/dev/null || true
 }
 
+# fm_backend_herdr_eventwait_release: drop one bounded wait's scratch state.
+# The reader-pid record always goes first, because it is the caller's only
+# handle on a reader this call may have abandoned: once this call has reaped the
+# reader that pid is stale and must never be signalled again. The directory
+# itself is removed only when this call created it. A directory supplied through
+# FM_BACKEND_EVENT_WAIT_DIR belongs to the caller, which removes it from a scope
+# that survives this call being abandoned mid-wait.
+fm_backend_herdr_eventwait_release() {  # <fifo_dir> <owns_dir>
+  local fifo_dir=$1 owns_dir=$2
+  [ -n "$fifo_dir" ] || return 0
+  rm -f "$fifo_dir/reader.pid" 2>/dev/null || true
+  if [ "$owns_dir" = 1 ]; then
+    rm -rf "$fifo_dir" 2>/dev/null || true
+  else
+    rm -f "$fifo_dir/events" 2>/dev/null || true
+  fi
+}
+
 # fm_backend_herdr_wait_transition: the bounded event wait. Blocks up to
 # <timeout_secs> for one of <pane_window...> ("<session>:<pane_id>") to reach a
 # fresh `blocked` edge, then prints the normalized record and returns 0.
@@ -3740,6 +3758,13 @@ fm_backend_herdr_clear_transition() {  # <state_dir> <window>
 # and 2 when the event path is unusable (not capable, socket unresolved, reader
 # failed to run/subscribe - the caller sleeps the budget itself, the fail-closed
 # backstop). See the header block above for the full contract.
+#
+# A caller that cannot guarantee this call is allowed to return - the watcher
+# runs it inside a command substitution a stop signal or a crash can abandon -
+# passes FM_BACKEND_EVENT_WAIT_DIR, an existing directory it owns. This call
+# then stages its fifo there and records its reader's pid in
+# <dir>/reader.pid, removing that record as soon as it has reaped the reader,
+# so the owning caller can release both from a scope that outlives this one.
 fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pane_window...>
   local session=$1 timeout=$2 state=$3
   shift 3
@@ -3774,18 +3799,27 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
   [ "${#reader[@]}" -gt 0 ] || return 2
 
   local fifo_dir fifo reader_pid line ws status agent raw record hit rc=1 reader_rc=0
-  fifo_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-eventwait.XXXXXX") || return 2
+  local owns_fifo_dir=1
+  if [ -n "${FM_BACKEND_EVENT_WAIT_DIR:-}" ] && [ -d "${FM_BACKEND_EVENT_WAIT_DIR:-}" ]; then
+    fifo_dir=$FM_BACKEND_EVENT_WAIT_DIR
+    owns_fifo_dir=0
+  else
+    fifo_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-eventwait.XXXXXX") || return 2
+  fi
   fifo="$fifo_dir/events"
   if ! mkfifo "$fifo" 2>/dev/null; then
-    rm -rf "$fifo_dir" 2>/dev/null || true
+    fm_backend_herdr_eventwait_release "$fifo_dir" "$owns_fifo_dir"
     return 2
   fi
   "${reader[@]}" "$sock" "$timeout" "${pane_ids[@]}" > "$fifo" 2>/dev/null &
   reader_pid=$!
+  # Publish the reader to the caller BEFORE anything can block, so a caller that
+  # supplied the directory can reap this child even when this call never returns.
+  printf '%s\n' "$reader_pid" > "$fifo_dir/reader.pid" 2>/dev/null || true
   if ! exec 9< "$fifo"; then
     kill "$reader_pid" 2>/dev/null || true
     wait "$reader_pid" 2>/dev/null || true
-    rm -rf "$fifo_dir" 2>/dev/null || true
+    fm_backend_herdr_eventwait_release "$fifo_dir" "$owns_fifo_dir"
     return 2
   fi
   if ! IFS= read -r -u 9 line || [ "$line" != "@subscribed" ]; then
@@ -3849,7 +3883,7 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
   # runtime-disable threshold).
   wait "$reader_pid" 2>/dev/null || reader_rc=$?
   exec 9<&-
-  rm -rf "$fifo_dir" 2>/dev/null || true
+  fm_backend_herdr_eventwait_release "$fifo_dir" "$owns_fifo_dir"
   [ "$rc" -eq 0 ] && return 0
   [ "$rc" -eq 2 ] && return 2
   [ "$reader_rc" -eq 0 ] && return 1

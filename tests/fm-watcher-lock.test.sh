@@ -673,6 +673,98 @@ test_watcher_stop_burst_during_cleanup_still_releases_lock() {
   pass "a stop-signal burst during cleanup still releases the singleton lock"
 }
 
+test_watcher_stop_releases_its_event_wait_reader() {
+  # A push-capable (herdr) home spends its cycle wait inside a command
+  # substitution, and the fifo directory plus child stream reader that wait
+  # needs are allocated by the subshell running it. Nothing guarantees that
+  # subshell reaches its own return path: a SIGKILL or a crash of the watcher
+  # has always abandoned it, and a stop signal does now too. Those resources
+  # belong to the watcher, so the watcher's own EXIT cleanup must release them.
+  # Park a real watcher in that wait with a fake stream reader that subscribes
+  # and then blocks, stop it, and require that neither the reader nor the fifo
+  # directory outlives it.
+  local dir state fakebin tmp out pid readerpid i status reader_alive leftover
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "skip: jq not found (the herdr adapter needs it to resolve a session socket)"
+    return 0
+  fi
+  dir=$(make_case event-wait-stop)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  tmp="$dir/tmp"
+  out="$dir/watch.out"
+  mkdir -p "$tmp"
+  mark_pr_check_migration_complete "$state"
+  fm_write_meta "$state/evt.meta" "window=fmlab:pane1" "backend=herdr" "kind=ship"
+
+  # Answers only the session-socket lookup the event wait needs; every other
+  # herdr call fails, which is the adapter's own fall-through and keeps this
+  # case about the stop path rather than about pane capture.
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = session ] && [ "${2:-}" = list ]; then
+  printf '{"sessions":[{"name":"fmlab","socket_path":"/dev/null"}]}\n'
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+
+  # Acknowledges the subscription so the wait commits to its stream, then blocks
+  # past any budget this case can reach. It execs the block, so the pid it
+  # records names the process that must not survive the watcher.
+  cat > "$fakebin/fake-event-reader.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$$" > "$FM_FAKE_EVENT_READER_PID"
+printf '@subscribed\n'
+exec sleep 600
+SH
+  chmod +x "$fakebin/fake-event-reader.sh"
+
+  PATH="$fakebin:$PATH" TMPDIR="$tmp" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_BACKEND_HERDR_EVENTS_FORCE=1 \
+    FM_BACKEND_HERDR_EVENT_READER="$fakebin/fake-event-reader.sh" \
+    FM_FAKE_EVENT_READER_PID="$dir/reader.pid" \
+    "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  readerpid=
+  i=0
+  while [ "$i" -lt 150 ]; do
+    readerpid=$(cat "$dir/reader.pid" 2>/dev/null || true)
+    [ -n "$readerpid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$readerpid" ] \
+    || fail "watcher never parked in the herdr event wait, so this case proves nothing: $(cat "$out" 2>/dev/null || true)"
+  is_live_non_zombie "$readerpid" || fail "the fake stream reader was not running before the stop signal"
+  kill -TERM "$pid" 2>/dev/null || fail "could not send the stop signal"
+  wait_for_exit "$pid" 100
+  status=$?
+  # The release signals the reader, so give it the same bounded settle every
+  # other process assertion in this suite uses before reading liveness.
+  i=0
+  while [ "$i" -lt 50 ] && is_live_non_zombie "$readerpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reader_alive=0
+  is_live_non_zombie "$readerpid" && reader_alive=1
+  # Never leave a 600s sleep behind, whatever the assertions below decide.
+  kill -KILL "$readerpid" 2>/dev/null || true
+  leftover=$(find "$tmp" -maxdepth 1 -type d -name 'fm-*eventwait.*' 2>/dev/null | head -1)
+  rm -rf "${tmp:?}"/fm-*eventwait.* 2>/dev/null || true
+  [ "$status" -ne 124 ] || fail "watcher parked in the herdr event wait ignored its stop signal"
+  [ "$reader_alive" -eq 0 ] \
+    || fail "stopped watcher abandoned its herdr event-stream reader (pid $readerpid still running)"
+  [ -z "$leftover" ] || fail "stopped watcher leaked its event-wait fifo directory: $leftover"
+  [ ! -e "$state/.watch.lock/pid" ] || fail "watcher stopped in the event wait left its singleton lock claimed"
+  pass "a watcher stopped inside the push event wait reaps its stream reader and removes its fifo directory"
+}
+
 test_watch_restart_hands_over_within_its_own_budget() {
   # The consequence the prompt-exit property exists for. --restart signals this
   # home's watcher, then waits only 50 * 0.1s for it to exit before forking a
@@ -1383,6 +1475,7 @@ test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_watcher_stop_is_kernel_delivered_and_still_cleans_up
 test_watcher_stop_burst_during_cleanup_still_releases_lock
+test_watcher_stop_releases_its_event_wait_reader
 test_watch_restart_hands_over_within_its_own_budget
 test_watcher_liveness_beacon_survives_interruptible_waits
 test_arm_self_eviction_is_loud_without_successor

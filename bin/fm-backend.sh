@@ -991,6 +991,9 @@ fm_backend_events_capable() {  # <backend> <session>
 # edge; returns 1 on a clean timeout (the caller has effectively already slept);
 # returns 2 when the event path is unusable (the caller sleeps the budget
 # itself). Non-push backends always return 2.
+# A caller that may be killed while this blocks exports FM_BACKEND_EVENT_WAIT_DIR
+# naming a directory it owns; the backend stages its per-wait scratch and its
+# reader-pid record there so the caller can release both from its own exit path.
 fm_backend_wait_transition() {  # <backend> <session> <timeout_secs> <state_dir> <pane_window...>
   local backend=$1
   shift
