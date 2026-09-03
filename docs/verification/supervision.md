@@ -609,8 +609,9 @@ The `2>/dev/null` on the wait itself stays, because `interruptible_sleep_stop` c
 ### Watcher stop disposition: the trap parse is relocated, not removed
 
 Measured on 2026-09-03 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`.
-This entry supersedes the rationale recorded for default disposition, which claimed that it removes the trap parse and that the kernel terminates the process.
-Both halves of that claim are false.
+The claim this entry corrects was never recorded in this file, so do not look above for it: it was the rationale comment in `bin/fm-watch.sh` introduced by the commit whose subject is `fix(bin): stop the watcher on default signal disposition`, which read "Default disposition removes the parse entirely - the kernel terminates the process - while bash still runs the EXIT trap below".
+Both halves of that claim are false, and that comment was corrected on this same branch.
+This entry records the measurement behind that correction rather than superseding anything above it.
 The 2026-08-01, 2026-09-02 and preceding 2026-09-03 entries above stay exactly as recorded.
 
 The kernel does not terminate the process.
