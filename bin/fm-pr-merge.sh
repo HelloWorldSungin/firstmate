@@ -132,6 +132,25 @@ shift 2
 # it cannot defer execution. A flag whose safety justification cannot be written
 # honestly does not belong here.
 #
+# WHICH ENTRIES ARE INERT ON GITHUB TODAY, disclosed for the same reason the
+# --sha entry discloses it: an admitted flag must not read as a working control
+# when the tool behind it has no such flag. As OBSERVED FROM `gh-axi pr merge
+# --help` AT gh-axi 0.1.34 - a version-observed fact, not a permanent property of
+# the tool - gh-axi accepts exactly --method <merge|squash|rebase>, --merge,
+# --squash, --rebase, --auto, --delete-branch, --body <text>, --body-file <path>
+# and --subject: NO short options at all, and no --remove-source-branch. So on
+# GitHub -s, -m, -t, -b, -F, -d, -r and --remove-source-branch are inert exactly
+# as --sha is - a forwarded one is REJECTED BY THE TOOL rather than doing
+# anything. They stay admitted because the allow-list records what this script
+# considers safe to forward, which is a judgement about deferral and not a claim
+# about any one CLI's current spelling; the failure mode is a loud command
+# rejection, never a silent one. Mirror-image on GitLab: --delete-branch is
+# glab's wrong spelling there, where the same cleanup is --remove-source-branch.
+# One consequence worth stating where it is, so it is not read as a bug:
+# caller_has_merge_method recognises only the long spellings, so `-- -s` still
+# gets --squash prepended. That is harmless while the short forms are inert, and
+# is the thing to revisit first if gh-axi ever grows them.
+#
 #   --squash --merge -s -m        merge-method selectors: choose how the merge
 #                                 commit is formed, not when it happens.
 #   --method --method=*           the same selection by name.
@@ -669,6 +688,29 @@ github_read_outcome_with_gh_axi() {
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
 
+# WHAT THE DEGRADED VIEW HAS TO SUPPLY, and it is not the same for both readers
+# of this function. THE SEAM IS DELIBERATE; do not re-collapse it, because each
+# side's rule is the wrong answer to the other side's question.
+#   outcome  asked AFTER the mutation. The degraded view cannot tell an OPEN
+#            pull request from a QUEUED one, so only a proved merge is legible
+#            at all; without that proof there is no outcome to report.
+#   target   asked BEFORE the mutation. The question is which branch the pull
+#            request targets and which branch is the default, and the degraded
+#            reader gets both from its own api passthrough, so it ALSO accepts
+#            those two fields. Strictly WIDER than the outcome rule, never
+#            narrower: a proved merge still answers this question too, because a
+#            landed merge has no target left to refuse. Requiring the merge here
+#            would refuse every OPEN pull request on a host carrying a broken
+#            gh, saying the target could not be read moments after it was.
+FM_PR_GITHUB_DEGRADED_ANSWERS=outcome
+github_degraded_view_answers() {
+  [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
+  case "$FM_PR_GITHUB_DEGRADED_ANSWERS" in
+    target) [ -n "$FM_PR_GITHUB_BASE" ] && [ -n "$FM_PR_GITHUB_DEFAULT" ] ;;
+    *) return 1 ;;
+  esac
+}
+
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
     github_read_outcome_with_gh_axi && return 0
@@ -678,10 +720,11 @@ github_read_outcome() {
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
   # pull request as neither merged nor queued is a concrete outcome, not a
-  # missing one, so it keeps its own refusal. The gh-axi view cannot observe the
-  # merge queue, so it can only turn this into a proved merge or into a refusal.
+  # missing one, so it keeps its own refusal. What the fallback then has to
+  # prove depends on which question is being asked of it; see
+  # FM_PR_GITHUB_DEGRADED_ANSWERS above.
   github_read_outcome_with_gh && return 0
-  if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
+  if github_read_outcome_with_gh_axi && github_degraded_view_answers; then
     return 0
   fi
   printf 'error: could not read the GitHub pull request outcome %s: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded\n' \
@@ -820,6 +863,21 @@ github_caller_method_is() {
   esac
 }
 
+# Why a base branch that requires the merge queue is refused, and what to do
+# instead. It reads the SAME for every queue rule on purpose: this fork refuses
+# DEFERRED EXECUTION itself, so which method the queue is configured for, whether
+# several rules disagree, and whether the method is one this script recognises
+# change nothing about the verdict and must not be offered as its reason. No
+# queue rule ever yields retry flags here, so no branch may imply that naming
+# them was the obstacle. The divergence is filed for the captain and may still be
+# reversed, so the reason and the next step live in ONE place and reversing it is
+# one edit rather than three.
+github_report_queue_refusal() {
+  printf 'error: %s, and this fork refuses deferred execution because a queued merge lands later against a base nobody compared\n' \
+    "$1" >&2
+  printf 'action: land the pull request with an immediate merge method, or retarget it and re-run validation\n' >&2
+}
+
 github_report_queue_rules() {
   local queue_method methods_display
   github_read_queue_method
@@ -841,20 +899,24 @@ github_report_queue_rules() {
         printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        printf 'error: base branch %s requires the merge queue (%s), and this fork refuses deferred execution because a queued merge lands later against a base nobody compared\n' \
-          "$FM_PR_GITHUB_BASE" "$queue_method" >&2
-        printf 'action: land the pull request with an immediate merge method, or retarget it and re-run validation\n' >&2
+        github_report_queue_refusal \
+          "base branch $FM_PR_GITHUB_BASE requires the merge queue ($queue_method)"
       fi
       ;;
     conflicting)
-      printf 'error: base branch %s has conflicting merge queue methods (%s); exact retry flags are ambiguous\n' \
-        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" >&2
+      # The disagreement is still reported, because it is a real fact about the
+      # base branch the operator has to fix eventually. It is NOT the reason for
+      # this refusal: agreeing rules refuse identically.
+      github_report_queue_refusal \
+        "base branch $FM_PR_GITHUB_BASE has conflicting merge queue methods (${FM_PR_GITHUB_QUEUE_METHODS//,/, })"
       ;;
     unrecognised)
       methods_display=${FM_PR_GITHUB_QUEUE_METHODS//,/, }
       [ -n "$methods_display" ] || methods_display='<none reported>'
-      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises, so exact retry flags cannot be named\n' \
-        "$FM_PR_GITHUB_BASE" "$methods_display" >&2
+      # Same shape as above: the unrecognised method is named because it is worth
+      # knowing, not because recognising it would have changed the verdict.
+      github_report_queue_refusal \
+        "base branch $FM_PR_GITHUB_BASE requires the merge queue, but its configured merge method ($methods_display) is not one this script recognises"
       ;;
     unreadable)
       printf 'error: the branch rules for base branch %s could not be read, so a merge queue requirement can be neither confirmed nor ruled out here\n' \
@@ -924,6 +986,14 @@ github_assert_default_target() {
   # failure as having happened "after the merge attempt" - the operator's next
   # decision depends on knowing no merge was tried.
   local FM_PR_GITHUB_READ_PHASE='before the merge was attempted'
+  # This check consumes the BASE and DEFAULT branches, which the degraded gh-axi
+  # reader supplies directly, so it also accepts that reader on those two fields
+  # with no proved merge - unlike the post-merge outcome read, where a proved
+  # merge is the only thing that makes the degraded view legible at all, because
+  # it cannot tell an open pull request from a queued one. Without this seam a
+  # broken gh would refuse a target the degraded reader had just established.
+  # See FM_PR_GITHUB_DEGRADED_ANSWERS.
+  local FM_PR_GITHUB_DEGRADED_ANSWERS=target
   if ! github_read_outcome; then
     printf 'error: refusing to merge %s because its target branch could not be read, and an unread target does not prove it is the default branch\n' \
       "$URL" >&2
