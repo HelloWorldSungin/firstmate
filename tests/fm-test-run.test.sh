@@ -1057,6 +1057,74 @@ SH
   pass "a bound that could not be armed is reported as a script that never ran"
 }
 
+# 124 is also a status a script may choose for itself, and the bound owner's
+# own contract leaves the caller to tell the two apart. A script that exits 124
+# well inside its bound was never terminated, so reporting it as a bound kill
+# would send an operator hunting a hang that never happened.
+test_a_script_that_exits_124_itself_is_not_reported_as_a_bound_kill() {
+  local tmp repo runner fixture proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-self124.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/self124.test.sh
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - self-inflicted 124 fixture ran"
+exit 124
+SH
+  cp "$repo/$fixture" "$repo/$proven"
+  chmod +x "$repo/$fixture" "$repo/$proven"
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/serial.out" 2>"$tmp/serial.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 124 on its own must still make the run red"
+  fi
+  if ! grep -Fq 'ok - self-inflicted 124 fixture ran' "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the script that exited 124 on its own never ran: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "a script that exited 124 on its own was reported as terminated by the bound: $diag"
+  fi
+  if ! grep -Eq "^not ok - $fixture exited 124 on its own after [0-9]+s; the 60s per-script bound did not fire\$" "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the serial path never said the 124 came from the script itself: $diag"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 60 "$proven" ) \
+    >"$tmp/jobs.out" 2>"$tmp/jobs.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 124 on its own under --jobs must still make the run red"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path reported a self-inflicted 124 as a bound kill: $diag"
+  fi
+  if ! grep -Eq "^not ok - $proven exited 124 on its own after [0-9]+s; the 60s per-script bound did not fire\$" "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path never said the 124 came from the script itself: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "a script that exits 124 on its own is not reported as killed by the bound"
+}
+
 test_per_script_timeout_default_arms_for_standard_modes() {
   local tmp repo runner fixture mode rc out diag
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-default-arm.XXXXXX")
@@ -1175,5 +1243,6 @@ test_per_script_timeout_zero_is_a_real_opt_out
 test_per_script_timeout_default_arms_for_standard_modes
 test_signal_relay_reports_the_signal_that_stopped_the_sweep
 test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run
+test_a_script_that_exits_124_itself_is_not_reported_as_a_bound_kill
 test_aggregate_json
 printf '\nall fm-test-run tests passed\n'

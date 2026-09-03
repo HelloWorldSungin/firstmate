@@ -106,8 +106,9 @@ EOF
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, optional local `--jobs` for the proven-isolated set only, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, optional local `--jobs` for the proven-isolated set only, the default per-script hang bound, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
+Every sweep bounds each script by default, so a stuck script becomes an ordinary red (exit 124) instead of stalling the run; `--help` owns that bound's value and its opt-out.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the Phase 2 concurrent isolation proof and the exact proven candidate set; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
@@ -119,6 +120,7 @@ A fixture may shorten a production timeout to keep a failure path prompt, but ne
 Where a case's assertion is not about the timeout itself, give that window headroom over the measured loaded cost, and bound the test's own waiting with iteration-counted poll loops, which stretch under load where a wall-clock budget does not.
 Waiting on a process the case spawned needs that same bound: a bare `wait <pid>` has none, so one child that never exits stalls the whole run, while `wait_for_exit` in `tests/wake-helpers.sh` polls, terminates a target that outlives its budget, and returns a 124 sentinel the case can assert on.
 Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests and live harness regressions) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools, and those opt-in live tests stay outside portable lanes entirely.
+A portable test that needs an optional interpreter `bin/fm-bootstrap.sh` does not install, such as `ruby` or `python3`, announces that missing precondition as a skip instead of failing - a whole-script gate skip when every case needs it, a per-case skip otherwise - so a host without the interpreter loses only the affected coverage rather than the suite's verdict.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 
 ## Questions

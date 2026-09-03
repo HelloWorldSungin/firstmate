@@ -889,18 +889,36 @@ for CAPTURE_ARM in default perl bash; do
   esac
   [ "$(fm_timeout_mechanism)" != timeout ] || [ "$CAPTURE_ARM" = default ] \
     || fail "the $CAPTURE_ARM arm did not select a distinct mechanism"
-  fm_remote_job_stage \
-    "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
-    < "$TMP_ROOT/capture-payload" > /dev/null \
-    || fail "staging a finite payload failed under the $CAPTURE_ARM arm: $FM_REMOTE_JOB_ERROR"
-  CAPTURE_JOB="$STATE_ROOT/jobs/$FM_REMOTE_JOB_ID"
-  cmp -s "$TMP_ROOT/capture-payload" "$CAPTURE_JOB/stdin" \
-    || fail "the $CAPTURE_ARM arm did not stage the payload byte for byte (got $(wc -c <"$CAPTURE_JOB/stdin") bytes)"
-  rm -rf -- "$CAPTURE_JOB"
+  # Both shapes matter and only one of them is the safe one by accident. A
+  # bounded runner that backgrounds the read without an explicit `<&0` still
+  # inherits the caller's stdin at top level, but a non-interactive shell
+  # points an async command's stdin at /dev/null inside a command
+  # substitution, which is exactly how bin/fm-remote-doctor.sh calls staging.
+  for CAPTURE_SHAPE in direct substitution; do
+    case "$CAPTURE_SHAPE" in
+      direct)
+        fm_remote_job_stage \
+          "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+          < "$TMP_ROOT/capture-payload" > /dev/null \
+          || fail "staging a finite payload failed under the $CAPTURE_ARM arm: $FM_REMOTE_JOB_ERROR"
+        CAPTURE_JOB="$STATE_ROOT/jobs/$FM_REMOTE_JOB_ID"
+        ;;
+      substitution)
+        CAPTURE_SUB_ID=$(fm_remote_job_stage \
+          "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+          < "$TMP_ROOT/capture-payload") \
+          || fail "staging a finite payload from a command substitution failed under the $CAPTURE_ARM arm"
+        CAPTURE_JOB="$STATE_ROOT/jobs/$CAPTURE_SUB_ID"
+        ;;
+    esac
+    cmp -s "$TMP_ROOT/capture-payload" "$CAPTURE_JOB/stdin" \
+      || fail "the $CAPTURE_ARM arm did not stage the payload byte for byte in the $CAPTURE_SHAPE shape (got $(wc -c <"$CAPTURE_JOB/stdin") bytes)"
+    rm -rf -- "$CAPTURE_JOB"
+  done
 done
 FM_TIMEOUT_FORCE_FALLBACK=0
 FM_TIMEOUT_MECHANISM_OVERRIDE=
-pass "a finite payload survives the stdin bound byte for byte on every mechanism arm"
+pass "a finite payload survives the stdin bound byte for byte on every mechanism arm and call shape"
 
 # A bound the capture could never enforce is a settings error, so it is refused
 # by the same validator that owns every other tunable rather than reaching the
