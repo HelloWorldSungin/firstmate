@@ -902,20 +902,45 @@ FM_TIMEOUT_FORCE_FALLBACK=0
 FM_TIMEOUT_MECHANISM_OVERRIDE=
 pass "a finite payload survives the stdin bound byte for byte on every mechanism arm"
 
+# A bound the capture could never enforce is a settings error, so it is refused
+# by the same validator that owns every other tunable rather than reaching the
+# capture at all. Zero is included deliberately: it would disable the bound,
+# which is the whole point of the issue-178 fix.
+for CAPTURE_BAD in 0 3601 999999 abc -1 ''; do
+  set +e
+  FM_REMOTE_JOB_STDIN_TIMEOUT="$CAPTURE_BAD" fm_remote_job_stage \
+    "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+    < /dev/null > /dev/null
+  CAPTURE_RC=$?
+  set -e
+  [ "$CAPTURE_RC" -ne 0 ] \
+    || fail "staging accepted the unusable stdin bound '$CAPTURE_BAD'"
+  assert_contains "$FM_REMOTE_JOB_ERROR" "bounds or timeout are invalid" \
+    "the stdin bound '$CAPTURE_BAD' was not refused as an invalid setting"
+  STRAY_STAGE=$(find "$STATE_ROOT/jobs" -maxdepth 1 -name '.stage.*' 2>/dev/null || true)
+  [ -z "$STRAY_STAGE" ] \
+    || fail "the refused staging left a partial job behind: $STRAY_STAGE"
+done
+pass "an out-of-range stdin bound is refused by the shared settings validator"
+
+# The remaining way the capture can end up unbounded is a bounded runner that
+# cannot start at all. That must also refuse rather than fall through to the
+# unbounded read.
 set +e
-FM_REMOTE_JOB_STDIN_TIMEOUT=0 fm_remote_job_stage \
+TMPDIR="$TMP_ROOT/capture-missing-tmpdir" FM_TIMEOUT_MECHANISM_OVERRIDE=bash \
+  fm_remote_job_stage \
   "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
   < /dev/null > /dev/null
 CAPTURE_RC=$?
 set -e
 [ "$CAPTURE_RC" -ne 0 ] \
-  || fail "staging accepted an unusable stdin bound instead of refusing it"
+  || fail "staging accepted a capture no bounded runner could start"
 assert_contains "$FM_REMOTE_JOB_ERROR" "could not be bounded" \
-  "an unusable stdin bound was not reported as such"
+  "a capture that could not be bounded was not reported as such"
 STRAY_STAGE=$(find "$STATE_ROOT/jobs" -maxdepth 1 -name '.stage.*' 2>/dev/null || true)
 [ -z "$STRAY_STAGE" ] \
   || fail "the refused staging left a partial job behind: $STRAY_STAGE"
-pass "an unusable stdin bound is refused rather than silently skipped"
+pass "a capture no bounded runner could start is refused rather than silently skipped"
 
 # The bound owner is a requirement, not an enhancement: without it the capture
 # would fall back to the unbounded read that issue 178 reported.

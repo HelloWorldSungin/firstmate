@@ -870,6 +870,63 @@ SH
   pass "--per-script-timeout-secs 0 is a real opt-out, not the default in disguise"
 }
 
+# The bound puts each script in its own process group, so the runner relays a
+# terminal interrupt there before leaving. The status it leaves with is the
+# only thing an operator or CI wrapper can read to learn which signal stopped
+# the sweep, so INT and TERM must not report the same cause.
+test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
+  local tmp repo runner fixture sig expected pid rc waited
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-signal.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/slow.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - signal fixture started"
+sleep 30
+SH
+  chmod +x "$repo/$fixture"
+
+  for sig in INT TERM; do
+    case "$sig" in
+      INT) expected=130 ;;
+      TERM) expected=143 ;;
+    esac
+    # Job control is required: a non-interactive shell otherwise makes an async
+    # command ignore SIGINT, so the runner would never see the signal at all.
+    set -m
+    ( cd "$repo" && exec "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+      >"$tmp/$sig.out" 2>"$tmp/$sig.err" &
+    pid=$!
+    set +m
+    waited=0
+    while [ "$waited" -lt 200 ]; do
+      grep -Fq 'ok - signal fixture started' "$tmp/$sig.out" && break
+      waited=$((waited + 1))
+      sleep 0.05
+    done
+    if ! grep -Fq 'ok - signal fixture started' "$tmp/$sig.out"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -rf "$tmp"
+      fail "the $sig fixture never started, so the relay was never exercised"
+    fi
+    kill -"$sig" "$pid" 2>/dev/null || true
+    rc=0
+    wait "$pid" 2>/dev/null || rc=$?
+    if [ "$rc" -ne "$expected" ]; then
+      rm -rf "$tmp"
+      fail "a sweep stopped by SIG$sig reported $rc, not the conventional $expected"
+    fi
+  done
+  rm -rf "$tmp"
+  pass "a sweep stopped by a signal reports the status of the signal that stopped it"
+}
+
 test_per_script_timeout_default_arms_for_standard_modes() {
   local tmp repo runner fixture mode rc out diag
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-default-arm.XXXXXX")
@@ -986,5 +1043,6 @@ test_per_script_timeout_bounds_a_hung_script
 test_per_script_timeout_bounds_a_hung_script_under_jobs
 test_per_script_timeout_zero_is_a_real_opt_out
 test_per_script_timeout_default_arms_for_standard_modes
+test_signal_relay_reports_the_signal_that_stopped_the_sweep
 test_aggregate_json
 printf '\nall fm-test-run tests passed\n'

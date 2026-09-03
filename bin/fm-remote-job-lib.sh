@@ -10,7 +10,9 @@
 # Staging captures the caller's stdin to EOF. A caller that hands over a stream
 # it never closes would otherwise block staging forever, so the capture is
 # bounded by FM_REMOTE_JOB_STDIN_TIMEOUT - always, never conditionally - and
-# reports that refusal instead. The
+# reports that refusal instead. That bound is range-checked alongside every
+# other tunable, so an environment cannot restore the unbounded read by naming
+# a value the capture would never enforce. The
 # shape cannot be screened structurally: sshd hands the fixed entrypoint a pipe
 # for every remote command, so a pipe is the normal case here, not the faulty
 # one - only failing to reach EOF distinguishes them.
@@ -111,6 +113,8 @@ fm_remote_job_command_preemptible() { # <staged argv command>
 fm_remote_job_validate_settings() {
   case "$FM_REMOTE_JOB_MAX_BYTES" in ''|*[!0-9]*|0) return 1 ;; esac
   [ "$FM_REMOTE_JOB_MAX_BYTES" -le 1048576 ] || return 1
+  case "$FM_REMOTE_JOB_STDIN_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$FM_REMOTE_JOB_STDIN_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_QUEUE_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
   [ "$FM_REMOTE_JOB_QUEUE_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac

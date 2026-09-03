@@ -1709,8 +1709,13 @@ trap 'rm -rf "$RUN_TMP"' EXIT
 # trades a guarantee for never regressing below the status quo - if it is
 # dropped the developer sees today's behaviour, a stalled script surviving
 # Ctrl-C, which the deadline still bounds.
+#
+# The exit status is per signal on purpose: the conventional 128+signal, so an
+# operator or CI wrapper reading the status still learns whether the sweep was
+# interrupted from a terminal (INT, 130) or terminated by a supervisor
+# (TERM, 143) rather than seeing one cause reported for both.
 # shellcheck disable=SC2329 # Registered by the INT and TERM traps below.
-run_forward_signal() {
+run_forward_signal() {  # <exit-status>
   local f pgid
   trap - INT TERM
   for f in "$RUN_TMP"/pgid.*; do
@@ -1719,9 +1724,10 @@ run_forward_signal() {
     case "$pgid" in ''|*[!0-9]*) continue ;; esac
     kill -- "-$pgid" 2>/dev/null || true
   done
-  exit 130
+  exit "${1:-130}"
 }
-trap run_forward_signal INT TERM
+trap 'run_forward_signal 130' INT
+trap 'run_forward_signal 143' TERM
 
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)
