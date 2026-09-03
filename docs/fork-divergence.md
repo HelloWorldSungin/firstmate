@@ -258,6 +258,16 @@ That rule has one granted exception that [`dashboard-events.md`](dashboard-event
 The grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and a merge must not read that grant as a violation of the rule above and narrow it away.
 This entry and the GBrain entry above are bridged by the dashboard surfaces that read the home's brain read-only rather than duplicating it - the Knowledge view and health strip served behind [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) from `assets/dashboard/gbrain.js`, the read-only snapshot [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) takes, the capture status the History view reads off each outcome record, and the `tests/fm-dashboard-gbrain.test.sh` and `tests/fm-dashboard-gbrain-ui.test.sh` suites that pin them - alongside the `data/gbrain/` grant above that lets a search write the index it reads.
 
+### Guarded merges refuse deferred execution
+
+`bin/fm-pr-merge.sh` refuses a merge that the forge has queued rather than executed, where upstream reports the queued request as a verified outcome and exits zero.
+The divergence is one branch of one function: upstream's merge-queue read, its field names, and its message shape are kept deliberately so future sync rounds conflict as little as possible, and only the decision that branch reaches differs.
+The reason is that this fleet merges on judged green evidence at a moment in time, and a queued merge lands later against a base nobody compared, which is the same shape of failure as a green check that never saw the current base.
+Upstream's queue-awareness is descriptive and correct for a fleet that uses merge queues; ours is prescriptive because we do not.
+The forwarded-argument allow-list in the same script is additive rather than divergent: it constrains what a caller may pass, admitting merge-method selectors, commit-message arguments, and post-execution branch cleanup, and refusing `--auto` by name because it requests deferral outright.
+No project in this fleet currently uses a merge queue, so this refusal is unreachable in practice today; it is a guarantee rather than a response to an observed failure.
+**Reopen condition:** if this fleet ever adopts merge queues, revisit this divergence rather than defending it - the refusal would then be blocking a workflow the fleet had chosen, and upstream's behaviour would be the correct one to adopt.
+
 ## Retired divergences
 
 ### Separate decision-hold lifecycle - retired 2026-08-24
