@@ -64,10 +64,12 @@
 #                   --changed applies 900s. Two shapes stay unbounded: a
 #                   standard-mode sweep carrying --max-wall-ms, and --changed
 #                   with an explicit --jobs, whose bound belongs to the
-#                   automatic scheduler this overrides. No real script
-#                   approaches either automatic bound, so it only converts a
-#                   HUNG script into a bounded failure. --max-wall-ms is
-#                   checked after the run and so cannot catch a hang on its own.
+#                   automatic scheduler this overrides. Both automatic bounds
+#                   sit above every measured script - 900s is roughly 2.6x the
+#                   slowest, 480s roughly 1.4x - so a bound normally converts a
+#                   HUNG script into a bounded failure rather than failing a
+#                   slow but healthy one. --max-wall-ms is checked after the
+#                   run and so cannot catch a hang on its own.
 #                   External interruption cleanup is outside this runner's
 #                   guarantee; configured per-script bounds remain authoritative.
 #   --max-wall-ms N fail the run when its measured invocation wall clock exceeds
@@ -178,7 +180,8 @@ PER_SCRIPT_TIMEOUT_SET=
 #
 # It is a guard, not a speed control: a HUNG script becomes a bounded failure
 # instead of an unbounded suite, which is the shape that silently outruns a
-# caller's invocation budget.
+# caller's invocation budget and stalled whole sweeps with no verdict in
+# HelloWorldSungin/firstmate#178.
 DEFAULT_PER_SCRIPT_TIMEOUT_SECS=480
 # Bound applied automatically on the automatic --changed path, derived from
 # measured healthy runtimes with margin rather than picked: the slowest measured
@@ -1897,12 +1900,8 @@ done
 # A hung script is what silently outruns the caller's invocation budget, so
 # every standard-mode sweep applies a generous per-script bound by default.
 # The bound is opt-out (--per-script-timeout-secs 0) and authoritative when
-# set; 480s sits above the real-Herdr family wall that caps any one script in
-# it at ~420s and better than 2x over the 210s portable worst case, so this
-# only ever fires on a script that is genuinely stuck. It is a guard, not a speed
-# control: a HUNG script becomes a bounded failure instead of an unbounded
-# suite, which is the shape that stalled full sweeps for over six minutes in
-# issue #178.
+# set; DEFAULT_PER_SCRIPT_TIMEOUT_SECS above owns why 480s and what it costs
+# each CI lane.
 if [ -z "$PER_SCRIPT_TIMEOUT_SET" ] && [ "${MODE:-}" != changed ] && [ -z "$MAX_WALL_MS" ]; then
   PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
 fi
