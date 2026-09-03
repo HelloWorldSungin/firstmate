@@ -532,7 +532,20 @@ github_read_outcome_with_gh_axi() {
       FM_PR_GITHUB_QUEUED=unknown
       ;;
   esac
+  # The degraded view cannot observe the merge QUEUE, but the target branch is
+  # not queue state and is available through gh-axi's own api passthrough, so the
+  # default-target contract is evaluated on this path too rather than silently
+  # skipped. One call carries both fields: a pull request payload contains its
+  # own base ref and that base repository's default branch.
   FM_PR_GITHUB_BASE=
+  FM_PR_GITHUB_DEFAULT=
+  local target_fields
+  if target_fields=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '.base.ref + " " + .base.repo.default_branch' 2>/dev/null); then
+    target_fields=${target_fields##*: }
+    FM_PR_GITHUB_BASE=${target_fields%% *}
+    FM_PR_GITHUB_DEFAULT=${target_fields##* }
+  fi
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
 
@@ -792,6 +805,15 @@ github_assert_default_target() {
     return 1
   fi
   [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
+  # Only a POSITIVE reading of both may permit. An empty field means the target
+  # was never established, and a contract that reports itself satisfied without
+  # being evaluated is worse than no contract.
+  if [ -z "$FM_PR_GITHUB_BASE" ] || [ -z "$FM_PR_GITHUB_DEFAULT" ]; then
+    printf 'error: refusing to merge %s because its target branch could not be established, and an unread target does not prove it is the default branch\n' \
+      "$URL" >&2
+    printf 'action: re-run validation once the forge reports the pull request target\n' >&2
+    return 1
+  fi
   if [ "$FM_PR_GITHUB_BASE" != "$FM_PR_GITHUB_DEFAULT" ]; then
     printf 'error: refusing to merge %s because it targets branch %s, but guarded merging is limited to current default branch %s\n' \
       "$URL" "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2

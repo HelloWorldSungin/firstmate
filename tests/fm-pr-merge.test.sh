@@ -145,6 +145,12 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
     ;;
+  # The degraded reader establishes the merge target through this passthrough,
+  # so the default-target contract holds on a host without gh too.
+  "api repos/"*|api\ *)
+    printf 'api_response:\n  body: %s %s\n' \
+      "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
+    ;;
 esac
 exit 0
 SH
@@ -404,6 +410,13 @@ add_glab_mock() {
 printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
+  # The guarded merge reads project merge settings before mutating, because
+  # GitLab can rebase the source branch at merge time and strand the attestation.
+  # merge_method=merge is the case where that cannot happen, so it permits.
+  "api projects/"*|"api version")
+    printf '%s\n' "${FM_TEST_GLAB_PROJECT_JSON:-{\"merge_method\":\"merge\"}}"
+    exit 0
+    ;;
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ ! -e "$case_dir/glab-stays-open" ]; then
@@ -1012,6 +1025,8 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
+  # The degraded reader establishes the merge target through this passthrough.
+  api\ *) printf 'api_response:\n  body: main main\n' ;;
 esac
 exit 0
 SH
@@ -1203,9 +1218,23 @@ test_github_without_gh_failed_read_keeps_bookkeeping() {
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+# Read-specific for the same reason as the gh variant: the guarded merge reads
+# forge state before the mutation for the target contract and again after it for
+# the outcome. Failing every read would make this case die on an unreadable
+# TARGET instead of the unreadable OUTCOME it is named for, so the first view
+# succeeds and the post-merge view is the one that fails.
+count_file="$FM_TEST_GH_AXI_LOG.views"
 case "${1:-} ${2:-}" in
   "pr merge") exit 0 ;;
-  "pr view") exit 1 ;;
+  "pr view")
+    count=$(cat "$count_file" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    [ "$count" -ge 2 ] && exit 1
+    printf 'pull_request:\n  number: %s\n  state: open\n' "$3"
+    ;;
+  # The degraded reader establishes the merge target through this passthrough.
+  api\ *) printf 'api_response:\n  body: main main\n' ;;
 esac
 exit 0
 SH
@@ -1632,7 +1661,7 @@ test_parses_pr_url_for_gh_axi() {
   run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "url-parsing: fm-pr-merge failed"
 
-  grep -qxF 'pr merge 126 --repo my-org/my-repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 126 --repo github.com/my-org/my-repo --squash' "$case_dir/gh-axi.log" \
     || fail "url-parsing: gh-axi pr merge was not invoked as number + --repo + default --squash"
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
@@ -1649,9 +1678,9 @@ test_open_recorded_issue_is_closed_after_merge() {
   run_pr_merge "$case_dir" task-x1 "$url" \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "issue-open: merge reconciliation failed"
 
-  grep -qxF "issue close 42 --repo github.com/example/repo --reason completed --comment Closed after merge of $url." "$case_dir/gh-axi.log" \
+  grep -qxF "issue close 42 --repo example/repo --reason completed --comment Closed after merge of $url." "$case_dir/gh-axi.log" \
     || fail "issue-open: recorded issue was not closed with the merged PR URL"
-  [ "$(grep -c '^issue view 42 --repo github.com/example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
+  [ "$(grep -c '^issue view 42 --repo example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
     || fail "issue-open: issue state was not verified before and after closing"
   pass "fm-pr-merge closes an open recorded issue and verifies the close"
 }
@@ -1669,7 +1698,7 @@ test_already_closed_recorded_issue_is_left_alone() {
 
   assert_no_grep 'issue close' "$case_dir/gh-axi.log" \
     "issue-closed: already-closed issue received a redundant close call"
-  grep -qxF 'issue view 43 --repo github.com/example/repo --full' "$case_dir/gh-axi.log" \
+  grep -qxF 'issue view 43 --repo example/repo --full' "$case_dir/gh-axi.log" \
     || fail "issue-closed: recorded issue was not verified"
   pass "fm-pr-merge leaves an already-closed recorded issue alone"
 }
@@ -1752,7 +1781,7 @@ test_issue_still_open_after_close_request_warns() {
   set -e
 
   expect_code 0 "$rc" "issue-stays-open: a completed merge must remain successful"
-  [ "$(grep -c '^issue view 46 --repo github.com/example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
+  [ "$(grep -c '^issue view 46 --repo example/repo --full$' "$case_dir/gh-axi.log")" -eq 2 ] \
     || fail "issue-stays-open: issue state was not checked before and after closing"
   assert_grep 'example/repo#46 is still not closed after the close request' "$case_dir/stderr" \
     "issue-stays-open: post-close verification failure was not loud"
