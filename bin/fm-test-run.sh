@@ -1804,8 +1804,9 @@ record_script_result() {
 # follow-up rc=$? assignment; this function does not re-enable errexit, which
 # would leak errexit to the caller and turn a failing test into a script exit.
 run_script_bounded() {  # <script> <out>
-  local script=$1 out=$2 rc
+  local script=$1 out=$2 rc began elapsed
   local FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.serial"
+  began=$(now_ms)
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
     # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
     # Expansion is intentionally deferred to the child bash passed to -c.
@@ -1818,10 +1819,19 @@ run_script_bounded() {  # <script> <out>
     rc=${PIPESTATUS[0]}
   fi
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+    elapsed=$(( ($(now_ms) - began) / 1000 ))
     # Serial output is streamed live and never re-read, so the explanation has
     # to reach stdout here or the operator only ever sees a bare exit=124.
-    printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-      "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
+    # 124 is also an ordinary status a script may exit with on its own, so the
+    # elapsed time decides which of the two happened - the same test the shared
+    # bound owner uses to tell a natural 137 from its own kill-after escalation.
+    if [ "$elapsed" -ge "$PER_SCRIPT_TIMEOUT_SECS" ]; then
+      printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+        "$script" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
+    else
+      printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
+        "$script" "$elapsed" "$PER_SCRIPT_TIMEOUT_SECS" | tee -a "$out"
+    fi
   fi
   return "$rc"
 }
@@ -1955,14 +1965,19 @@ else
         bash "$script" >"$work/output" 2>&1
       fi
       rc=$?
-      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
-        printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-          "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
-      fi
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))
       if [ "$duration" -lt 0 ]; then
         duration=0
+      fi
+      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+        if [ "$((duration / 1000))" -ge "$PER_SCRIPT_TIMEOUT_SECS" ]; then
+          printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+            "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
+        else
+          printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
+            "$script" "$((duration / 1000))" "$PER_SCRIPT_TIMEOUT_SECS" >>"$work/output"
+        fi
       fi
       printf '%s\n' "$duration" >"$work/duration_ms"
       printf '%s\n' "$rc" >"$work/exit"

@@ -841,4 +841,95 @@ assert_grep "remote job worker exited 3 times; stopping the supervisor" "$TMP_RO
   "the restart guard did not explain why it stopped"
 pass "barely healthy worker failures remain bounded by the restart guard"
 
+# --- bounded stdin capture ------------------------------------------------
+#
+# Staging reads the caller's stdin to EOF. Issue 178 was that read blocking
+# forever on a stream the caller never closed, so the bound below is the
+# durable half of that fix and each of its outcomes is pinned here: a stream
+# that never reaches EOF must become a bounded refusal, a payload must survive
+# the bound byte for byte on every mechanism arm, an unusable bound must be
+# refused rather than silently skipped, and the bound owner must be required
+# rather than optional.
+
+CAPTURE_FIFO="$TMP_ROOT/capture-hang.fifo"
+mkfifo "$CAPTURE_FIFO"
+exec 9<>"$CAPTURE_FIFO"
+CAPTURE_BEGAN=$SECONDS
+set +e
+FM_REMOTE_JOB_STDIN_TIMEOUT=1 fm_remote_job_stage \
+  "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+  < "$CAPTURE_FIFO" > /dev/null
+CAPTURE_RC=$?
+set -e
+CAPTURE_ELAPSED=$((SECONDS - CAPTURE_BEGAN))
+exec 9>&-
+rm -f "$CAPTURE_FIFO"
+[ "$CAPTURE_RC" -ne 0 ] \
+  || fail "staging accepted a caller stream that never reached EOF"
+[ "$CAPTURE_ELAPSED" -lt 60 ] \
+  || fail "staging waited ${CAPTURE_ELAPSED}s on an unclosed stream; the bound did not fire"
+assert_contains "$FM_REMOTE_JOB_ERROR" "never reached EOF" \
+  "the bounded refusal did not name the unclosed stream as the cause"
+STRAY_STAGE=$(find "$STATE_ROOT/jobs" -maxdepth 1 -name '.stage.*' 2>/dev/null || true)
+[ -z "$STRAY_STAGE" ] \
+  || fail "the refused staging left a partial job behind: $STRAY_STAGE"
+pass "staging refuses a caller stream that never reaches EOF instead of blocking on it"
+
+# A bound that drops the payload would be invisible to every other case here,
+# since they all stage from /dev/null. Each arm is pinned separately because
+# they background the read differently.
+printf 'payload line one\npayload line two\n' > "$TMP_ROOT/capture-payload"
+FM_REMOTE_JOB_STDIN_TIMEOUT=10
+for CAPTURE_ARM in default perl bash; do
+  FM_TIMEOUT_FORCE_FALLBACK=0
+  FM_TIMEOUT_MECHANISM_OVERRIDE=
+  case "$CAPTURE_ARM" in
+    perl) FM_TIMEOUT_FORCE_FALLBACK=1 ;;
+    bash) FM_TIMEOUT_MECHANISM_OVERRIDE=bash ;;
+  esac
+  [ "$(fm_timeout_mechanism)" != timeout ] || [ "$CAPTURE_ARM" = default ] \
+    || fail "the $CAPTURE_ARM arm did not select a distinct mechanism"
+  fm_remote_job_stage \
+    "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+    < "$TMP_ROOT/capture-payload" > /dev/null \
+    || fail "staging a finite payload failed under the $CAPTURE_ARM arm: $FM_REMOTE_JOB_ERROR"
+  CAPTURE_JOB="$STATE_ROOT/jobs/$FM_REMOTE_JOB_ID"
+  cmp -s "$TMP_ROOT/capture-payload" "$CAPTURE_JOB/stdin" \
+    || fail "the $CAPTURE_ARM arm did not stage the payload byte for byte (got $(wc -c <"$CAPTURE_JOB/stdin") bytes)"
+  rm -rf -- "$CAPTURE_JOB"
+done
+FM_TIMEOUT_FORCE_FALLBACK=0
+FM_TIMEOUT_MECHANISM_OVERRIDE=
+pass "a finite payload survives the stdin bound byte for byte on every mechanism arm"
+
+set +e
+FM_REMOTE_JOB_STDIN_TIMEOUT=0 fm_remote_job_stage \
+  "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh \
+  < /dev/null > /dev/null
+CAPTURE_RC=$?
+set -e
+[ "$CAPTURE_RC" -ne 0 ] \
+  || fail "staging accepted an unusable stdin bound instead of refusing it"
+assert_contains "$FM_REMOTE_JOB_ERROR" "could not be bounded" \
+  "an unusable stdin bound was not reported as such"
+STRAY_STAGE=$(find "$STATE_ROOT/jobs" -maxdepth 1 -name '.stage.*' 2>/dev/null || true)
+[ -z "$STRAY_STAGE" ] \
+  || fail "the refused staging left a partial job behind: $STRAY_STAGE"
+pass "an unusable stdin bound is refused rather than silently skipped"
+
+# The bound owner is a requirement, not an enhancement: without it the capture
+# would fall back to the unbounded read that issue 178 reported.
+CAPTURE_LONE="$TMP_ROOT/capture-lone-lib"
+mkdir -p "$CAPTURE_LONE"
+cp "$ROOT/bin/fm-remote-job-lib.sh" "$CAPTURE_LONE/"
+set +e
+CAPTURE_OUT=$(bash -c ". '$CAPTURE_LONE/fm-remote-job-lib.sh'" 2>&1)
+CAPTURE_RC=$?
+set -e
+[ "$CAPTURE_RC" -ne 0 ] \
+  || fail "the library sourced without its bound owner instead of refusing"
+assert_contains "$CAPTURE_OUT" "required bound owner not found" \
+  "a missing bound owner was not named: $CAPTURE_OUT"
+pass "the library refuses to load without the bound owner the capture depends on"
+
 echo "ALL TESTS PASSED"
