@@ -749,22 +749,39 @@ test_expected_tab_id_ignores_legacy_when_not_provided() {
   pass "fm_backend_zellij_target_ready: legacy label-only panes keep working when no tab id is recorded"
 }
 
-test_target_exists_threads_recorded_tab_id() {
-  local dir fb state meta
-  dir="$TMP_ROOT/target-exists-tab-id"; mkdir -p "$dir/responses"
+# target_exists_tab_id_case: one fm_backend_target_exists probe for a task whose
+# metadata records <recorded-tab>, against a live pane 7 that currently sits in
+# tab 9 under the legacy bare title "fm-legacy". Echoes the probe's exit status.
+# The session must be listed, or session_exists would refuse first and the
+# recorded-tab comparison would never run.
+target_exists_tab_id_case() {  # <case-name> <recorded-tab>
+  local dir fb state meta status
+  dir="$TMP_ROOT/$1"; mkdir -p "$dir/responses"
   state="$dir/state"; mkdir -p "$state"
   meta="$state/tk1.meta"
-  printf 'backend=zellij\nwindow=firstmate:7\nzellij_session=firstmate\nzellij_tab_id=3\nzellij_pane_id=7\n' > "$meta"
-  # pane 7 was reused in tab 9 with the same legacy label.
+  printf 'backend=zellij\nwindow=firstmate:7\nzellij_session=firstmate\nzellij_tab_id=%s\nzellij_pane_id=7\n' "$2" > "$meta"
   zellij_pane_response "$dir" 1 7 9
   zellij_tab_response "$dir" 2 9 fm-legacy
   fb=$(make_zellij_fakebin "$dir")
   PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
     FM_STATE_OVERRIDE="$state" FM_ROOT_OVERRIDE="$ROOT" \
     bash -c '. "$0/bin/fm-backend.sh"; fm_backend_target_exists zellij firstmate:7 "fm-legacy" "$(fm_meta_get '"$meta"' zellij_tab_id)"' "$ROOT"
   status=$?
+  printf '%s' "$status"
+}
+
+test_target_exists_threads_recorded_tab_id() {
+  local status
+  # pane 7 was reused in tab 9 with the same legacy label; the task recorded 3.
+  status=$(target_exists_tab_id_case target-exists-tab-id 3)
   [ "$status" -ne 0 ] || fail "fm_backend_target_exists must reject a reused pane when the recorded zellij_tab_id does not match"
-  pass "fm_backend_target_exists: threads recorded zellij_tab_id to reject reused panes"
+  # Same live session, same pane, same label, same fixture responses: only the
+  # recorded tab id differs, so the refusal above is the tab-id comparison and
+  # not a session, pane, or label failure short-circuiting ahead of it.
+  status=$(target_exists_tab_id_case target-exists-tab-id-live 9)
+  [ "$status" -eq 0 ] || fail "fm_backend_target_exists must accept the pane that still lives in its recorded zellij_tab_id"
+  pass "fm_backend_target_exists: threads recorded zellij_tab_id to reject reused panes and keep the recorded one"
 }
 
 test_current_path_probes_with_marker_and_ignores_prompt_paths() {

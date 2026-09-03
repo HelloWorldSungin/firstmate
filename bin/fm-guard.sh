@@ -160,6 +160,7 @@ in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
+queue_pending=$FM_SUP_QUEUE_PENDING
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
 watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
@@ -170,8 +171,6 @@ if [ "$needed" = false ]; then
   [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
   exit 0
 fi
-
-[ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
@@ -211,7 +210,7 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
       elif [ "$sources" -gt 0 ]; then
         printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
-      elif [ "$FM_SUP_QUEUE_PENDING" = true ]; then
+      elif "$queue_pending"; then
         printf '●  Queued wakes are pending and need supervision, but %s.\n' "$watcher_cause"
       else
         printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
