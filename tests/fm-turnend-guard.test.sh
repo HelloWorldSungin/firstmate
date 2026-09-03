@@ -1619,6 +1619,25 @@ test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
   pass "fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating"
 }
 
+# The attended fail-open is the ONE alarm an operator sees for the episode, so
+# its named cause has to survive a queue-only need exactly like the block banner
+# does - a home with no state/*.meta, no event source and no config/x-mode.env,
+# armed solely by an undrained state/.wake-queue.
+test_hook_claude_mode_queue_only_fail_open_names_the_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-queue-alarm")
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$dir/state/.wake-queue"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a queue-only verified failure must still take the bounded attended fail-open"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN: queued wakes pending' \
+    "the attended alarm must name the pending wake queue as the supervision need"
+  assert_not_contains "$out" 'X-mode relay polling active' \
+    "a home with no X-mode relay poll must not be told Relay polling is the need"
+  pass "fm-turnend-guard --claude: a queue-only attended fail-open names the pending wake queue"
+}
+
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch() {
   local no_notice notice_only out status
   no_notice=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-notice")
@@ -1787,6 +1806,7 @@ test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
+test_hook_claude_mode_queue_only_fail_open_names_the_queue
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
