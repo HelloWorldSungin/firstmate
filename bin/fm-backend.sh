@@ -874,8 +874,8 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
 # primitive so callers that only need a fast alive/dead read (recovery
 # digests, the session-start fleet digest) do not re-derive it inline.
-fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+fm_backend_target_exists() {  # <backend> <target> [expected-label] [expected-tab-id]
+  local backend=$1 target=$2 expected_label=${3:-} expected_tab_id=${4:-} session pane
   case "$backend" in
     tmux)
       tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
@@ -897,7 +897,7 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       ;;
     zellij)
       fm_backend_source zellij || return 1
-      fm_backend_zellij_target_ready "$target" "$expected_label"
+      fm_backend_zellij_target_ready "$target" "$expected_label" "$expected_tab_id"
       ;;
     orca)
       fm_backend_source orca || return 1
