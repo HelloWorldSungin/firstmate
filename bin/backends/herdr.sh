@@ -3765,6 +3765,11 @@ fm_backend_herdr_eventwait_release() {  # <fifo_dir> <owns_dir>
 # then stages its fifo there and records its reader's pid in
 # <dir>/reader.pid, removing that record as soon as it has reaped the reader,
 # so the owning caller can release both from a scope that outlives this one.
+# When that variable is set but no longer names a directory, the owning caller
+# has already released it and gone, so this call fails closed with 2 instead of
+# allocating a private directory and reader that caller can neither see nor
+# release. The mktemp fallback is only for a caller that left the variable
+# unset, which is a caller that can guarantee its own return path.
 fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pane_window...>
   local session=$1 timeout=$2 state=$3
   shift 3
@@ -3800,7 +3805,8 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
 
   local fifo_dir fifo reader_pid line ws status agent raw record hit rc=1 reader_rc=0
   local owns_fifo_dir=1
-  if [ -n "${FM_BACKEND_EVENT_WAIT_DIR:-}" ] && [ -d "${FM_BACKEND_EVENT_WAIT_DIR:-}" ]; then
+  if [ -n "${FM_BACKEND_EVENT_WAIT_DIR:-}" ]; then
+    [ -d "$FM_BACKEND_EVENT_WAIT_DIR" ] || return 2
     fifo_dir=$FM_BACKEND_EVENT_WAIT_DIR
     owns_fifo_dir=0
   else

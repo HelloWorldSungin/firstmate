@@ -994,6 +994,8 @@ fm_backend_events_capable() {  # <backend> <session>
 # A caller that may be killed while this blocks exports FM_BACKEND_EVENT_WAIT_DIR
 # naming a directory it owns; the backend stages its per-wait scratch and its
 # reader-pid record there so the caller can release both from its own exit path.
+# Once that directory is gone the backend returns 2 rather than allocating
+# scratch of its own, so a caller released mid-wait leaks nothing.
 fm_backend_wait_transition() {  # <backend> <session> <timeout_secs> <state_dir> <pane_window...>
   local backend=$1
   shift

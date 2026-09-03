@@ -1357,6 +1357,16 @@ interruptible_sleep_stop() {
 # tracked, and releases it from the EXIT path. The backend records its reader's
 # pid inside that directory and removes the record once it has reaped the
 # reader, so a release only ever signals a reader still owed a reap.
+#
+# Knowingly accepted residual: the command-substitution subshell itself is not
+# tracked and can outlive this watcher until it sees EOF on its fifo, so a
+# stream edge landing in the same instant as the stop can still write
+# $STATE/.nativeturnend-<key> after the singleton lock is released, concurrently
+# with an fm-watch-arm.sh --restart successor. Default disposition made that
+# reachable; the old design deferred the signal until the substitution returned.
+# It is bounded: the backend does not commit the escalation marker on that path,
+# so no actionable blocked edge is consumed, and the poll loop remains the
+# fail-closed backstop.
 EVENT_WAIT_DIR=
 event_wait_release() {
   local reader_pid

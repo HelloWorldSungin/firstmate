@@ -587,9 +587,13 @@ Correction 2: the `Current limit` paragraph in the 2026-08-01 entry no longer de
 The herdr push path in `event_wait_or_sleep` is now interrupted by a stop signal like every other wait, so a push-capable home is no longer up to `FM_POLL` deaf to its own stop signal.
 The fifo directory and reader child that paragraph says the reader removes on its own return path were never safe there: a `SIGKILL` or a crash of the watcher abandoned that command substitution and leaked both long before stop signals took their default disposition.
 The watcher therefore allocates that directory itself, exports it as `FM_BACKEND_EVENT_WAIT_DIR`, and releases it plus the reader pid the backend records inside it from `watcher_cleanup`.
+The backend fails closed with its `event path unusable` code when that variable is set but no longer names a directory, instead of falling back to a private `mktemp -d`.
+A caller that has already released the directory it named is a caller that could never release a private one either, so allocating one would re-create exactly the orphan this cleanup exists to remove.
+The `mktemp -d` path stays for a caller that leaves the variable unset, which is a caller that can guarantee its own return path.
 
 Observable: a watcher stopped while blocked in the event wait leaves no `fm-*eventwait.*` directory under `TMPDIR` and no live reader process.
 `tests/fm-watcher-lock.test.sh` pins it against a real watcher process with a fake herdr and a fake stream reader, and fails if either survives the stop.
+`tests/fm-backend-herdr.test.sh` pins the released-directory case at the adapter: the wait returns 2, starts no stream reader, and leaves no FIFO directory behind.
 
 Correction 3, recorded because it changes what an operator sees rather than what the watcher does: an EXIT trap entered from a signal inherits the interrupted command's redirections.
 
