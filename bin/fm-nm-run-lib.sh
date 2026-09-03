@@ -7,8 +7,10 @@
 # is unsafe: a false negative hides a genuinely parked run, and a false positive
 # lets teardown act on a run it does not own. Teardown uses the strict
 # equal-or-run-ahead predicate. Current-state reporting may additionally accept
-# a run-behind head while that exact run is authoring fixes, or an unresolved
-# head from a live branch-scoped answer, because the pipeline owns those changes.
+# a run-behind head while that exact run is authoring fixes, and may accept any
+# head at all - unresolved and diverged included - under the active
+# pipeline-owned exemption that fm_nm_run_is_pipeline_owned_active defines at
+# the bottom of this file, because there the pipeline owns those changes.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -81,13 +83,17 @@ fm_nm_head_relation() {  # <worktree> <run_head>
 
 # 0 when a run may be attributed to the worktree under the caller's evidence.
 # Equal and run-ahead always match. Run-behind matches only while the run is
-# actively authoring fixes. An unresolved head matches only for a live answer
-# already scoped to this exact branch. Missing and diverged never match.
-fm_nm_head_attributable() {  # <worktree> <run_head> <authoring:0|1> <branch-scoped-live:0|1>
+# actively authoring fixes. Missing, unresolved, and diverged never match here:
+# an unresolved head is the pipeline-owned lane head, and the branch-custody
+# evidence for it is fm_nm_run_is_pipeline_owned_active below rather than any
+# head relation. This predicate once accepted an unresolved head from any live
+# branch-scoped answer, which was a proxy for that custody before branch_sync
+# was readable; a live run on a `synced` branch whose head simply never reached
+# this worktree is not attributable, so the proxy is not restored.
+fm_nm_head_attributable() {  # <worktree> <run_head> <authoring:0|1>
   case "$(fm_nm_head_relation "$1" "$2")" in
     equal|run-ahead) return 0 ;;
     run-behind)      [ "${3:-0}" = 1 ] && return 0; return 1 ;;
-    unresolved)      [ "${4:-0}" = 1 ] && return 0; return 1 ;;
     *)               return 1 ;;
   esac
 }
@@ -95,5 +101,60 @@ fm_nm_head_attributable() {  # <worktree> <run_head> <authoring:0|1> <branch-sco
 # Strict teardown and historical-list predicate. A current-state caller with
 # stronger live-run evidence uses fm_nm_head_attributable directly.
 fm_nm_head_matches_worktree() {  # <worktree> <run_head>
-  fm_nm_head_attributable "$1" "$2" 0 0
+  fm_nm_head_attributable "$1" "$2" 0
+}
+
+# The PROVEN-mismatch versus UNKNOWN-attribution distinction upstream carried in
+# a separate fm_nm_head_resolvable predicate is expressed here by
+# fm_nm_head_relation's `unresolved` verdict, which is the same test with the
+# caller's live-run evidence attached. A caller scanning run rows newest-first
+# must stop on `unresolved` rather than surface an older, superseded run.
+
+# branch_sync.state from captured `axi status` TOON $1: the scalar directly
+# under the top-level `branch_sync:` block. The first `state:` inside the
+# block is the direct child (the nested local/pipeline/target/remote
+# sub-blocks carry no `state:` key). Empty when the block is absent: no run
+# on the current branch, another branch's run, or a CLI without branch sync.
+fm_nm_branch_sync_state() {  # <toon-output>
+  local s
+  s=$(printf '%s\n' "$1" \
+    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}state:[[:space:]]*\(.*\)/\1/p' \
+    | head -1)
+  fm_nm_strip_quotes "$s"
+}
+
+# 0 if the run in captured `axi status` TOON $1 is still in flight: no
+# terminal outcome and no terminal status.
+fm_nm_run_is_active() {  # <toon-output>
+  local status outcome
+  status=$(fm_nm_strip_quotes "$(fm_nm_field "$1" status)")
+  outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$1" outcome)")
+  [ -z "$outcome" ] || return 1
+  case "$status" in completed|failed|cancelled) return 1 ;; esac
+}
+
+# The one exemption to the head rule above: while the pipeline OWNS the branch
+# (branch_sync.state=pipeline_owned), the daemon's own branch attribution IS
+# the attribution for an ACTIVE run, and
+# head equality must not be required - the pipeline's lane head is routinely
+# not a git object in the task worktree (rebase and fix commits that were
+# never pushed back), so the head rule rejects exactly the run that is most
+# current. The exemption never applies to a terminal run: a terminal run has
+# released the branch, and binding one by branch name alone is the historical
+# reused-branch misattribution the head rule exists to prevent.
+#
+# This exemption is OR'd with fm_nm_head_attributable rather than consulted
+# inside it, so it reads NO head relation at all: under pipeline custody an
+# active run binds even on a `diverged` head, which fm_nm_head_attributable
+# rejects everywhere else. That is deliberate and is the whole difference the
+# two rules have. A diverged head under pipeline custody is the pipeline's own
+# rebase - the one actor entitled to rewrite that tip while it holds the branch
+# - whereas a diverged head with no live custody is the rewritten-tip evidence
+# the relation table exists to refuse. `branch_sync.state=pipeline_owned` plus
+# a non-terminal run is therefore the whole bound on the exemption, and a
+# caller with no branch_sync evidence at all (the coarse runs-listing fallback)
+# never reaches it and stays on the relation table alone.
+fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
+  [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
+  fm_nm_run_is_active "$1"
 }

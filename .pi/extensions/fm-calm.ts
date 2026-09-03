@@ -440,7 +440,7 @@ export default function (pi: ExtensionAPI) {
         input !== "/export" &&
         !input.startsWith("/export ")
       ) {
-        return;
+        return undefined;
       }
 
       exportRendering = true;
@@ -467,6 +467,7 @@ export default function (pi: ExtensionAPI) {
         repaintCalmToolRows();
         ctx.ui.setStatus("firstmate-calm", undefined);
       }, 0);
+      return undefined;
     });
   });
 

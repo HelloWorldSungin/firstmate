@@ -386,7 +386,7 @@ Send the same worker one exact decision naming the decision key, step, action, a
 Require the matching `resolved` event, forbid `--yes`, and require the worker to process every synchronous return until completion or a genuinely new escalation.
 Resume fleet supervision immediately after the decision lands.
 
-Judge validation by the reconciled run-step verdict from `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
+Judge validation by the reconciled, attributed run-step verdict from `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; terminal outcomes remain done or failed unless the reconciler reports a newer declared wait under the precedence rule in [`docs/architecture.md`](docs/architecture.md).
 Those working verdicts are cross-checked against worker liveness, so an `abandoned` verdict means the run is still advancing with no live worker to answer its next gate; load `stuck-crewmate-recovery` rather than waiting it out.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.

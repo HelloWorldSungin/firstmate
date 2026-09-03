@@ -36,21 +36,8 @@
 #      Legacy task records have no reliable task branch; if a run is found
 #      through their ambient branch, that run is likewise surfaced as
 #      unattributable rather than guessed from the task id.
-#   2. Matching no-mistakes run for this crew's branch AND attributable code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
-#      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed.
-#      A run matches when its head equals the worktree HEAD, or the worktree HEAD
-#      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). It also matches in two cases the pipeline's own
-#      commits create, both narrowed to the run that is demonstrably current:
-#      an ACTIVELY-EXECUTING run whose head the tip has advanced past (it
-#      authored that advance), and a LIVE run answered for this branch whose head
-#      is not an object in this worktree at all (the pipeline owns the branch and
-#      commits in a copy this worktree has never fetched). Local work that
-#      advanced past a parked or terminal run head, a rewritten or diverged tip,
-#      and an unresolvable sha read out of the historical runs listing all still
-#      invalidate attribution. nm_head_attributable owns the exact rule.
+#   2. Attribute an active or terminal no-mistakes run under the branch, head,
+#      pipeline-custody, and newest-first rules owned by bin/fm-nm-run-lib.sh.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -491,7 +478,7 @@ runstep_record_read() {
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
 # trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
-# branch+head attribution rule below are thin wrappers over the ONE owner in
+# attribution helpers below are thin wrappers over the ONE owner in
 # bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
 trim() { fm_nm_trim "$@"; }
@@ -758,9 +745,7 @@ nm_head_relation() {  # <sha>
 # 0 when a run recorded at <sha> may be attributed to this worktree's current
 # code. Branch match is a precondition (caller). <authoring> is 1 only while the
 # run sits in an actively-executing step - the states in which the pipeline
-# commits its OWN fixes. <branch-scoped> is 1 only for an answer the CLI gave for
-# THIS worktree's current branch, never for a row read out of the historical
-# runs listing.
+# commits its OWN fixes.
 #
 # `run-behind` is the fix-round case. When a review finding is answered
 # `--action fix`, the pipeline commits that fix and the branch tip advances past
@@ -775,13 +760,17 @@ nm_head_relation() {  # <sha>
 # rewritten tip. While the pipeline owns the branch it commits in its own copy,
 # so the head it reports is simply an object this worktree has never fetched;
 # refusing it made a crew parked at a live fix_review gate read as having no run
-# at all. Only a LIVE run answered for THIS branch earns that benefit: the
-# historical runs listing has no notion of "current", so an unresolvable sha
-# there stays rejected, and a terminal run's unseen head is evidence of nothing.
-# `missing` and `diverged` are always rejected - an absent sha cannot bind, and a
+# at all. That benefit is earned by branch custody itself, read from
+# branch_sync.state, and not by a head relation - so it is not decided here but
+# by fm_nm_run_is_pipeline_owned_active, which the caller ORs with this
+# predicate. The historical runs listing has no notion of "current" and carries
+# no branch_sync at all, so an unresolvable sha there stays rejected, and a
+# terminal run's unseen head is evidence of nothing on either path.
+# `missing`, `unresolved`, and `diverged` are therefore all rejected here - an
+# absent sha cannot bind, an unseen sha is the custody question above, and a
 # resolvable sha on neither side of HEAD is a genuinely rewritten branch.
-nm_head_attributable() {  # <sha> <authoring:0|1> <branch-scoped-live:0|1>
-  fm_nm_head_attributable "$WT" "$1" "${2:-0}" "${3:-0}"
+nm_head_attributable() {  # <sha> <authoring:0|1>
+  fm_nm_head_attributable "$WT" "$1" "${2:-0}"
 }
 
 run_identity_for_head() {  # <sha>
@@ -843,12 +832,12 @@ nm_run_is_live() {
   case "$status" in completed|failed|cancelled) printf '0' ;; *) printf '1' ;; esac
 }
 
-# 0 if the axi-status run's head field is attributable to this worktree. The
-# caller has already established this answer is for the crew's own branch, which
-# is what makes it branch-scoped for the pipeline-owned rule above.
+# 0 if the axi-status run's head field is attributable to this worktree by head
+# relation alone. The caller ORs this with the pipeline-owned-active exemption,
+# which is what admits a lane head this worktree has never fetched.
 nm_run_head_matches_worktree() {
   nm_head_attributable "$(strip_quotes "$(nm_field head)")" \
-    "$(nm_run_is_authoring)" "$(nm_run_is_live)"
+    "$(nm_run_is_authoring)"
 }
 
 nm_run_invalidates_record() {
@@ -925,7 +914,12 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
   else
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$LOOKUP_BRANCH" ]; then
-      if nm_run_head_matches_worktree; then
+      # Head relation, or the pipeline-owned-active exemption: while the
+      # pipeline OWNS this branch the daemon's own branch attribution is
+      # authoritative and no head relation is required at all, so an active run
+      # binds even on a diverged head. fm_nm_run_is_pipeline_owned_active in
+      # bin/fm-nm-run-lib.sh owns that rule and why it stops at a terminal run.
+      if nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; then
         LOOKUP_COMPLETED=1
         if [ -n "$TASK_BRANCH" ]; then
           HAVE_RUN=1

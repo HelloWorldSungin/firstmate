@@ -18,6 +18,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-sync.sh`       | Refresh project clones with stale remote-pointer pruning, safe fast-forwards, self-heals, `STUCK:` reports, guarded branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-vault-drift.sh`      | Detect stale, unlinked, or broken documentation vaults across project clones, read-only |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
+| `fm-home-summary-refresh.sh` | Atomically publish this home's structured summary ledger                         |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-dashboard-server.mjs` | Serve the read-only fleet dashboard - its routed destinations with per-task detail ([dashboard.md](dashboard.md)) - over the versioned snapshot envelope, plus presence-gated GBrain health and search and the authenticated agent-event ingest and per-task timeline |
 | `fm-dashboard-install.sh` | Install and configure the dashboard as a boot-persistent user systemd service        |
@@ -45,8 +46,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
 | `fm-herdr-ci-cleanup.sh` | Snapshot and tear down only job-owned `fm-lab-*` sessions in the Herdr CI lane       |
-| `fm-test-run.sh`         | Behavior-test runner: selection, portable lanes, proven-isolated `--jobs`, coverage guard, timing/JSON |
-| `fm-test-isolation-proof.sh` | Concurrent isolation proof and proven-isolated candidate set owner |
+| `fm-test-run.sh`         | Behavior-test runner: selection, portable lanes, bounded concurrency, budgets, coverage guard, timing/JSON |
+| `fm-test-isolation-proof.sh` | Concurrent isolation harness and portable candidate set owner |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and unhealthy supervision    |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for tracked hooks             |
@@ -104,7 +105,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
 | `fm-run-progress.sh`     | Report whether a crew's validation run is progressing or stranded, from the pipeline's own step activity |
 | `fm-model-verify.sh`     | Verify the model a dispatched worker actually ran on against the model recorded for it |
-| `fm-nm-run-lib.sh`       | Shared branch-and-code-identity attribution for no-mistakes runs                    |
+| `fm-nm-run-lib.sh`       | Single owner of shared no-mistakes run-attribution primitives and rules             |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-timeout-lib.sh`      | Single owner of hard-bounded command execution and its fallback watchdog |
 | `fm-timing-lib.sh`       | Single owner of the deferred network stage's per-step elapsed-time records, inert unless a run asks for them |

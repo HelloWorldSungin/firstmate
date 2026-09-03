@@ -345,6 +345,14 @@ SH
   chmod 0755 "$dir/no-mistakes-fixture" "$dir/date"
   write_config "$home" '{"tools":[{"name":"no-mistakes","command":"no-mistakes-fixture","version_args":["--version"],"announce_args":["--help"],"announce_pattern":"A new version of no-mistakes is available: [^ ]+ -> [^ ]+"}]}'
   out="$home/out.txt"
+  # The budget here is deterministic arithmetic, not a wall-clock race: the
+  # fixture PATH above shadows `date`, which real_epoch reads, so the sweep
+  # starts at a pinned 1000 and reads 1001 only once the version probe has
+  # touched the clock marker. A budget of 1 therefore puts the deadline exactly
+  # at 1001, which the post-probe read meets, so the announcement step is
+  # provably never reached. Do not widen this to buy real-time headroom: the
+  # stub removes the granularity race outright, and any larger budget moves the
+  # deadline past the stub's second value and lets the announcement run.
   run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1 \
     FM_TOOL_UPDATE_NOW=1000 FM_ANNOUNCE_CLOCK_MARKER="$clock_marker"
   report=$(cat "$out")

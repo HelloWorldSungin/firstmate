@@ -107,7 +107,32 @@ The fork stops the whole supervised process tree rather than only the serving ch
 `worker_reap_descendants` walks the descendant snapshot and escalates TERM to KILL, an `EXIT` trap runs it on every supervisor exit, `WORKER_STOP` stops a signalled serving child from returning to its poll loop, and exit 125 joins 0 and 75 as a terminal serving-child status the supervisor does not restart.
 That replaced upstream's global `WORKER_SUPERVISED_PID` with a supervisor-local `child_pid`, so every upstream change to the restart loop arrives referring to a variable this fork no longer has.
 It first collided on 2026-08-26 with `kunchenguid/firstmate#2942`, whose total-restart bound was adopted with the fork's `child_pid` and its terminal exit-125 branch kept, and [`tests/fm-remote-job-orphan-reap.test.sh`](../tests/fm-remote-job-orphan-reap.test.sh) pins the reaping half while `tests/fm-remote-job.test.sh` pins upstream's bound.
+It collided again on 2026-09-03 with `kunchenguid/firstmate#3210`, which replaced the single supervised execution with an array of bounded transport lanes and rewrote `worker_stop_active_execution` around it.
+Upstream's lane loop was adopted whole and the reap re-threaded to run ahead of it rather than beside each lane, because a lane's serving child spawns its own commands and those orphans are re-parented away from the supervisor the moment that child dies, after which the descendant walk can no longer reach them; a failed reap is folded into the loop's verdict so every lane still releases its recorded claim.
+A future round that reorders that call after the lane loop silently retires the entry.
 This divergence went unrecorded from its introduction until 2026-08-26.
+
+### No-mistakes run attribution
+
+The fork rewrote the branch-and-code-identity rule that binds a no-mistakes run to a task into a named relation table in [`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh) - `fm_nm_head_relation` returning `equal`, `run-ahead`, `run-behind`, `unresolved`, `missing`, or `diverged`, consumed by `fm_nm_head_attributable` - and built the surrounding current-state surface upstream has no equivalent of: the `abandoned` verdict, the degraded run-step replay, and the recorded `branch=` task identity that makes a disagreeing ambient branch an attribution fault rather than another task's run.
+Upstream keeps a single boolean head predicate plus a branch-custody exemption, so every upstream change to attribution arrives inside functions the fork rewrote.
+`bin/fm-crew-state.sh` and [`tests/fm-crew-state.test.sh`](../tests/fm-crew-state.test.sh) carry that surface, and teardown deliberately uses only the strict equal-or-run-ahead predicate.
+
+It first collided on 2026-09-03 with `kunchenguid/firstmate#3194`, and the reconciliation settled the one question the two designs answer differently.
+Upstream's `fm_nm_run_is_pipeline_owned_active` was adopted and is OR'd with the fork's relation table at the `axi status` attribution site, so while `branch_sync.state=pipeline_owned` names a non-terminal run that run binds on any head at all, a `diverged` one included, and outside that custody the relation table alone decides.
+The fork's own arm that accepted an `unresolved` head from any live branch-scoped answer was retired in the same pass: it was a proxy for pipeline custody written before `branch_sync` was readable, the fork's own pipeline-owned fixture already declares that state, and keeping it would have admitted a live run on a `synced` branch whose head merely never reached this worktree.
+Upstream's separate `fm_nm_head_resolvable` was retired as a second owner of the proven-versus-unknown distinction the `unresolved` verdict already makes, and the coarse runs-listing scan keeps the fork's three-verdict result because that path carries no `branch_sync` evidence to reach the exemption with.
+`test_pipeline_owned_unresolvable_head_attributes` and upstream's five new exemption cases pin both halves, so a round that restores the retired proxy or drops the exemption fails loudly.
+
+### Fleet snapshot per-task timeout and abandoned child work
+
+The fork bounds each task's current-state read in [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) with its own `FM_SNAPSHOT_TASK_TIMEOUT`, a floor of 2 so the inner bound sits strictly inside it, a `FM_SNAPSHOT_TASK_NM_TIMEOUT` hand-down to the no-mistakes lookup, a parallel fan-out, and a `source:"timeout"` record for a task that did not answer.
+Upstream built the same bound independently as a single `FM_SNAPSHOT_CREW_STATE_TIMEOUT`, so a round must end with exactly one of these contracts rather than both names on one file.
+The fork also carries `abandoned_children` beside upstream's `active_children` through the snapshot, the per-home summary ledger, and the bearings Underway rows.
+
+Both halves collided on 2026-09-03 with `kunchenguid/firstmate#3222`, which added the `state/home-summary.json` ledger and [`bin/fm-home-summary-refresh.sh`](../bin/fm-home-summary-refresh.sh) in place of the per-home read the fork had extended.
+The fork's single timeout contract was kept and upstream's second name was not introduced, `abandoned_children` was carried into the new ledger, and the ledger publisher now validates that field so a producer regression fails at publication rather than at the consumer that requires it.
+`kunchenguid/firstmate#3210`'s deletion of `FM_SNAPSHOT_SECONDMATE_TIMEOUT` and its rewrite of the bearings per-child rows are the same collision continuing in later rounds, so a round touching either file must re-read this entry rather than trusting a clean merge.
 
 ### Pi away-mode supervision standby
 
