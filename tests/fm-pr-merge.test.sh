@@ -204,6 +204,42 @@ SH
 # gh mock that still answers fm-pr-check.sh's head lookup but cannot answer the
 # outcome read, so a merge call that returned success is followed by a live
 # state nothing can prove. Args: case_dir head_sha
+# The guarded merge reads forge state TWICE: once before the mutation, for the
+# default-target contract, and once after it, for the outcome. A mock that fails
+# every read cannot tell those two cases apart, so a case named for an unreadable
+# OUTCOME would actually die on an unreadable TARGET and stop testing its own
+# subject. This variant fails only from the Nth read onward, so the target read
+# succeeds and the post-merge outcome read is the one that fails.
+# Args: case_dir head first_failing_read
+add_gh_mock_outcome_read_fails_from() {
+  local case_dir=$1 head=$2 from=$3
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+  "api graphql")
+    count_file="\$FM_TEST_GH_OUTCOME.reads"
+    count=\$(cat "\$count_file" 2>/dev/null || echo 0)
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    if [ "\$count" -ge $from ]; then
+      echo 'error: could not reach the GitHub API' >&2
+      exit 1
+    fi
+    cat "\$FM_TEST_GH_OUTCOME"
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
 add_gh_mock_outcome_read_fails() {
   local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh" <<SH
@@ -1045,7 +1081,10 @@ esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi"
-  add_gh_mock_outcome_read_fails "$case_dir" 8787878787878787878787878787878787878787
+  # Read-specific: the pre-mutation target read succeeds so this case reaches the
+  # unreadable OUTCOME it is named for, rather than dying on an unreadable target.
+  write_github_outcome "$case_dir" OPEN false false main
+  add_gh_mock_outcome_read_fails_from "$case_dir" 8787878787878787878787878787878787878787 2
   : > "$case_dir/gh-axi.log"
   : > "$case_dir/gh.log"
 
