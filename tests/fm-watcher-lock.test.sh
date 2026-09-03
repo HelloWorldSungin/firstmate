@@ -79,8 +79,8 @@ test_singleton_start() {
   done
   grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null || fail "second watcher did not report existing singleton"
   kill "$pid1" "$pid2" 2>/dev/null || true
-  wait "$pid1" 2>/dev/null || true
-  wait "$pid2" 2>/dev/null || true
+  wait_for_exit "$pid1" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
+  wait_for_exit "$pid2" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "simultaneous watcher starts leave exactly one live process"
 }
 
@@ -112,7 +112,7 @@ test_stale_watch_lock_reclaimed() {
   [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
   [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
   kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  wait_for_exit "$pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "killed watcher stale lock is reclaimed"
 }
 
@@ -201,7 +201,7 @@ test_guard_warnings() {
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
   kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  wait_for_exit "$pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
@@ -229,7 +229,7 @@ test_lock_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    wait "$pid" 2>/dev/null || true
+    wait_for_exit "$pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one lock winner under concurrency, got $wins"
@@ -279,7 +279,7 @@ test_lock_stale_steal_single_winner_under_concurrency() {
     i=$((i + 1))
   done
   for pid in $pids; do
-    wait "$pid" 2>/dev/null || true
+    wait_for_exit "$pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
   [ "$wins" -eq 1 ] || fail "expected exactly one stale-lock stealer, got $wins"
@@ -341,7 +341,7 @@ test_lock_does_not_steal_live_lock() {
     printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
   ' _ "$LIB" "$lockdir")
   kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  wait_for_exit "$live" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   case "$out" in
     *"rc=1"*) ;;
     *) fail "live-held lock was acquired instead of refused: $out" ;;
@@ -459,12 +459,12 @@ test_watch_restart_rejects_reused_pid() {
   done
   is_live_non_zombie "$pid" \
     && fail "restart did not surface recovery after replacing a reused-pid lock"
-  wait "$pid" 2>/dev/null || true
+  wait_for_exit "$pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   grep -F 'check: rearm-resurface' "$out" >/dev/null \
     || fail "restart replaced reused-pid lock without surfacing recovery: $(cat "$out")"
   is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
   kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  wait_for_exit "$live" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "watch restart preserves recovery without signaling a reused pid"
 }
 
@@ -492,7 +492,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   done
   if [ ! -s "$ready" ]; then
     kill -KILL "$peer" 2>/dev/null || true
-    wait "$peer" 2>/dev/null || true
+    wait_for_exit "$peer" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
     fail "TERM-resistant peer did not install its handler"
   fi
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
@@ -514,7 +514,7 @@ test_watch_restart_attaches_to_healthy_peer() {
   is_live_non_zombie "$armpid" || fail "restart arm exited instead of following the healthy peer"
   is_live_non_zombie "$peer" || fail "restart killed a TERM-resistant peer unexpectedly"
   kill -KILL "$peer" 2>/dev/null || true
-  wait "$peer" 2>/dev/null || true
+  wait_for_exit "$peer" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status)"
@@ -694,8 +694,8 @@ test_watch_restart_hands_over_within_its_own_budget() {
   is_live_non_zombie "$old_pid" \
     && fail "outgoing watcher was still live while its replacement held the lock"
   kill "$arm_pid" "$lock_pid" 2>/dev/null || true
-  wait "$arm_pid" 2>/dev/null || true
-  wait "$old_pid" 2>/dev/null || true
+  wait_for_exit "$arm_pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
+  wait_for_exit "$old_pid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "watch restart hands over to a fresh watcher inside its own stop budget"
 }
 
@@ -811,7 +811,7 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
   # After the seed dies without a successor, the attached arm must fail loudly.
   kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  wait_for_exit "$wpid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
@@ -852,7 +852,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
     || fail "attached arm signal was not recorded in the lifecycle ledger"
   is_live_non_zombie "$wpid" || fail "signaling an attached arm terminated the peer watcher"
   kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  wait_for_exit "$wpid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "attached arm signals record a classified lifecycle entry"
 }
 
@@ -892,7 +892,7 @@ test_arm_starts_and_self_heals() {
     if [ "$row" = dead-pid ]; then
       is_live_non_zombie "$armpid" \
         && fail "arm did not surface recovery after reclaiming a dead-pid lock"
-      wait "$armpid" 2>/dev/null || true
+      wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
       grep -F 'check: rearm-resurface' "$armout" >/dev/null \
         || fail "arm reclaimed dead-pid lock without surfacing recovery: $(cat "$armout")"
       continue
@@ -906,7 +906,7 @@ test_arm_starts_and_self_heals() {
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
     kill "$armpid" "$lock_pid" 2>/dev/null || true
-    wait "$armpid" 2>/dev/null || true
+    wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   done
   pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
 }
@@ -928,10 +928,19 @@ test_arm_hup_cleans_child_and_temp_output() {
   grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  # Wait for the arm's HUP exit itself.
-  # wait_for_exit kills the arm after a poll clock and returns 124.
-  # That 124 is the helper's kill sentinel, not a HUP status.
-  wait "$armpid"
+  # Bound the HUP-exit wait: wait_for_exit kills the arm after a poll clock and
+  # returns 124 when it does. The arm's own handle_arm_signal does an unbounded
+  # 'wait' on its TERMed child, so under load the child may not reap and the
+  # arm can fail to exit on HUP at all; without a bound the bare 'wait' on the
+  # arm wedged this entire suite forever (fork issue #250).
+  # ARM_FAIL_EXIT_POLLS is this file's own deadline for an arm that fails to
+  # exit, already spent by test_arm_self_eviction_is_loud_without_successor and
+  # test_arm_waits_for_peer_beacon_after_child_stands_down. The 80 polls the
+  # attached-arm cases use would be structurally too tight here: unlike them
+  # this arm owns a started watcher and must pay that child's TERM exit first,
+  # and test_watcher_stops_promptly_on_term budgets 100 polls for that exit
+  # alone. A false 124 on a correct-but-loaded arm is the expensive failure.
+  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS"
   status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0
@@ -1022,7 +1031,7 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
   # After the peer dies without a successor, the attached arm must fail loudly.
   kill "$peer" 2>/dev/null || true
-  wait "$peer" 2>/dev/null || true
+  wait_for_exit "$peer" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS"
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
@@ -1056,7 +1065,7 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   ! grep -qF 'watcher: started' "$armout" || fail "arm falsely reported started"
   is_live_non_zombie "$live" || fail "arm killed the unrelated live lock holder"
   kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  wait_for_exit "$live" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
@@ -1098,7 +1107,7 @@ SH
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
   kill -HUP "$successor_arm" 2>/dev/null || true
-  wait "$successor_arm" 2>/dev/null || true
+  wait_for_exit "$successor_arm" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   # The forced interruption is a watcher-down interval. Consume the prior
   # delivered wake before beginning independent ledger cycles, just as the
   # recovery handling turn does, so this fixture does not intentionally carry a
@@ -1120,7 +1129,7 @@ SH
     done
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
     kill -HUP "$successor_arm" 2>/dev/null || true
-    wait "$successor_arm" 2>/dev/null || true
+    wait_for_exit "$successor_arm" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
     drain_and_ack "$state" \
       || fail "recovery drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))
@@ -1210,7 +1219,7 @@ SH
     real_second=$(FM_PROC_ROOT_OVERRIDE="$no_proc" LC_TIME=ko_KR.UTF-8 bash -c 'unset LC_ALL; . "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
   fi
   kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  wait_for_exit "$live" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   [ -n "$baseline" ] || fail "fm_pid_identity produced no baseline identity under LC_ALL=C"
   [ "$via_lc_all" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_ALL (got '$via_lc_all', want '$baseline')"
   [ "$via_lc_time" = "$baseline" ] || fail "fm_pid_identity varied with exported LC_TIME (got '$via_lc_time', want '$baseline')"
@@ -1320,7 +1329,7 @@ test_msys_pid_identity_uses_proc() {
   live=$!
   identity=$(bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null)
   kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
+  wait_for_exit "$live" "$ARM_FAIL_EXIT_POLLS" 2>/dev/null || true
   case "$identity" in
     proc-starttime=*" cmdline-hex="*) ;;
     *) fail "MSYS process identity did not use compatible /proc fields ('$identity')" ;;
