@@ -58,14 +58,16 @@
 #                   unproven remainder runs serially after that group.
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
-#                   record it as exit 124. A bound is applied automatically
-#                   when this flag is absent: 480s on a standard-mode sweep,
-#                   900s on --changed, and none when --max-wall-ms is given.
-#                   N overrides whichever would apply, and 0 is the opt-out
-#                   that runs unbounded. No real script approaches either
-#                   automatic bound, so it only converts a HUNG script into a
-#                   bounded failure. --max-wall-ms is checked after the run
-#                   and so cannot catch a hang on its own.
+#                   record it as exit 124. N overrides every automatic bound,
+#                   and 0 is the opt-out that runs unbounded. With the flag
+#                   absent a standard-mode sweep applies 480s, and plain
+#                   --changed applies 900s. Two shapes stay unbounded: a
+#                   standard-mode sweep carrying --max-wall-ms, and --changed
+#                   with an explicit --jobs, whose bound belongs to the
+#                   automatic scheduler this overrides. No real script
+#                   approaches either automatic bound, so it only converts a
+#                   HUNG script into a bounded failure. --max-wall-ms is
+#                   checked after the run and so cannot catch a hang on its own.
 #                   External interruption cleanup is outside this runner's
 #                   guarantee; configured per-script bounds remain authoritative.
 #   --max-wall-ms N fail the run when its measured invocation wall clock exceeds

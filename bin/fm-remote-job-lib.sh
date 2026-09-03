@@ -14,7 +14,10 @@
 # enforce). A caller that hands over a stream it never closes is refused
 # instead of blocking staging forever; sshd hands the fixed entrypoint a pipe
 # for every remote command, so a pipe is the normal case here, not the
-# faulty one - only failing to reach EOF distinguishes them.
+# faulty one - only failing to reach EOF distinguishes them. The queue budget
+# FM_REMOTE_JOB_QUEUE_TIMEOUT owns is stamped after that capture, so a slow but
+# complete stream spends staging time rather than the queue time a worker is
+# given to admit the published job.
 #
 # A published job directory is mode 0700 and contains root, home, argv
 # (NUL-delimited), stdin, seq, stdout, stderr, queue_deadline, timeout, and
@@ -664,13 +667,11 @@ fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdi
     return 1
   }
   chmod 700 "$stage" || { rm -rf -- "$stage"; return 1; }
-  queue_deadline=$(( $(date +%s) + FM_REMOTE_JOB_QUEUE_TIMEOUT ))
   if ! printf '%s\n' "$$" > "$stage/.owner-pid" ||
     ! printf '%s\n' "$owner_start" > "$stage/.owner-start" ||
     ! chmod 600 "$stage/.owner-pid" "$stage/.owner-start" ||
     ! printf '%s\n' "$root" > "$stage/root" ||
     ! printf '%s\n' "$home" > "$stage/home" ||
-    ! printf '%s\n' "$queue_deadline" > "$stage/queue_deadline" ||
     ! printf '%s\n' "$FM_REMOTE_JOB_TIMEOUT" > "$stage/timeout" ||
     ! printf '%s\0' "$command" "$@" > "$stage/argv"; then
     rm -rf -- "$stage"
@@ -696,6 +697,12 @@ fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdi
       return 1
       ;;
   esac
+  queue_deadline=$(( $(date +%s) + FM_REMOTE_JOB_QUEUE_TIMEOUT ))
+  if ! printf '%s\n' "$queue_deadline" > "$stage/queue_deadline"; then
+    rm -rf -- "$stage"
+    FM_REMOTE_JOB_ERROR="cannot capture remote job input"
+    return 1
+  fi
   for bytes in root home queue_deadline timeout argv stdin; do chmod 600 "$stage/$bytes" || { rm -rf -- "$stage"; return 1; }; done
   fm_remote_job_regular_bounded "$stage/argv" "$FM_REMOTE_JOB_MAX_BYTES" || {
     rm -rf -- "$stage"

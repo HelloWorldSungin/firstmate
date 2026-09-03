@@ -927,6 +927,27 @@ FM_TIMEOUT_FORCE_FALLBACK=0
 FM_TIMEOUT_MECHANISM_OVERRIDE=
 pass "a finite payload survives the stdin bound byte for byte on every mechanism arm and call shape"
 
+# The queue budget measures how long a worker may leave a published job
+# unadmitted, so a stream that closes slowly but inside its own bound must not
+# spend it. A producer that holds the write end open for SLOW_CAPTURE_DELAY
+# seconds separates the two clocks: staging pays that delay, the queue budget
+# must not.
+SLOW_CAPTURE_DELAY=4
+SLOW_CAPTURE_QUEUE=30
+SLOW_CAPTURE_ID=$(
+  { printf 'slow payload\n'; sleep "$SLOW_CAPTURE_DELAY"; } |
+    FM_REMOTE_JOB_QUEUE_TIMEOUT=$SLOW_CAPTURE_QUEUE FM_REMOTE_JOB_STDIN_TIMEOUT=60 \
+      fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh
+) || fail "staging a slow but complete stream failed: $FM_REMOTE_JOB_ERROR"
+SLOW_CAPTURE_JOB="$STATE_ROOT/jobs/$SLOW_CAPTURE_ID"
+SLOW_CAPTURE_REMAINING=$(( $(cat "$SLOW_CAPTURE_JOB/queue_deadline") - $(date +%s) ))
+cmp -s <(printf 'slow payload\n') "$SLOW_CAPTURE_JOB/stdin" \
+  || fail "the slow capture did not stage its payload"
+rm -rf -- "$SLOW_CAPTURE_JOB"
+[ "$SLOW_CAPTURE_REMAINING" -gt "$((SLOW_CAPTURE_QUEUE - SLOW_CAPTURE_DELAY))" ] \
+  || fail "a ${SLOW_CAPTURE_DELAY}s stdin capture spent the queue budget: ${SLOW_CAPTURE_REMAINING}s of ${SLOW_CAPTURE_QUEUE}s left"
+pass "a slow but complete stdin capture leaves the queue budget intact"
+
 # A bound the capture could never enforce is a settings error, so it is refused
 # by the same validator that owns every other tunable rather than reaching the
 # capture at all. Zero is included deliberately: it would disable the bound,
