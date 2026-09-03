@@ -100,17 +100,27 @@ PER_SCRIPT_TIMEOUT_SECS=0
 # Set by --per-script-timeout-secs so an explicit 0 is a real opt-out rather
 # than indistinguishable from an unset bound.
 PER_SCRIPT_TIMEOUT_SET=
-# Bound applied automatically to every standard-mode sweep, sized against both
-# ends rather than picked. Above: the slowest measured healthy script is the
-# 341s tests/fm-backend-herdr-presentation-e2e.test.sh, so 480s clears it by
-# 1.4x and clears the 210s tests/fm-watch-triage.test.sh portable worst case
-# by better than 2x. Below: it stays under every CI lane cap (600s parallel,
-# 900s serial, and a 20 min real-Herdr step whose healthy family wall is
-# ~7 min), so a stuck script yields a per-script exit=124 attribution rather
-# than a bare job cancellation - which is why no lane raises it. It is a
-# guard, not a speed control: a HUNG script becomes a bounded failure instead
-# of an unbounded suite, which is the shape that silently outruns a caller's
-# invocation budget.
+# Bound applied automatically to every standard-mode sweep. What settles it is
+# the family WALL, not the average. The real-Herdr family is 12 scripts inside
+# a ~7 min healthy wall (.github/workflows/ci.yml), so no single script in it
+# can exceed ~420s - a hard constraint rather than a statistical one, and it
+# sits under 480s. The portable lanes' measured worst case is the 210s
+# tests/fm-watch-triage.test.sh, so 480s is better than 2x there.
+#
+# Below, the arithmetic is replacement, not addition: a hung script spends the
+# bound INSTEAD of its own healthy slot. portable-serial is a 363s shard wall
+# (2903s over PORTABLE_SERIAL_SHARDS) less that slot plus 480s, near 800s
+# against the 900s cap. real-Herdr is 420s less that slot plus 480s, well
+# inside the 1200s step cap. portable-parallel is the tight one: a ~1 min
+# measured shard wall plus 480s plus this lane's setup steps sits at or just
+# over its 600s cap, so that lane can still lose per-script attribution to a
+# job cancellation. That is an honest cost of the bound, not a claim against
+# it - raising the bound past a lane cap would only guarantee it never fires,
+# which is the defect it exists to replace, so no lane raises it.
+#
+# It is a guard, not a speed control: a HUNG script becomes a bounded failure
+# instead of an unbounded suite, which is the shape that silently outruns a
+# caller's invocation budget.
 DEFAULT_PER_SCRIPT_TIMEOUT_SECS=480
 
 # How many separate-runner shards the portable serial remainder splits into.
@@ -1655,8 +1665,8 @@ done
 # A hung script is what silently outruns the caller's invocation budget, so
 # every standard-mode sweep applies a generous per-script bound by default.
 # The bound is opt-out (--per-script-timeout-secs 0) and authoritative when
-# set; 480s clears the slowest measured healthy script (the 341s Herdr
-# presentation E2E) by 1.4x and still fires inside every CI lane cap, so this
+# set; 480s sits above the real-Herdr family wall that caps any one script in
+# it at ~420s and better than 2x over the 210s portable worst case, so this
 # only ever fires on a script that is genuinely stuck. It is a guard, not a speed
 # control: a HUNG script becomes a bounded failure instead of an unbounded
 # suite, which is the shape that stalled full sweeps for over six minutes in
