@@ -195,6 +195,24 @@ shift 2
 #   --repo -R                     would retarget the mutation away from the
 #                                 identity this run validated.
 # Refusing by name rather than silently dropping keeps a caller's mistake loud.
+#
+# WHY NO TOKEN IS EXEMPT FROM CLASSIFICATION, which is the one rule below that is
+# about the TOOL rather than about deferral. This guard used to model the forge
+# CLI as a POSITIONAL parser - a value-taking flag consumes the next word,
+# whatever that word is - and that model was wrong in both directions before it
+# was wrong here. The tool does not parse positionally: it SCANS the whole
+# argument list for each flag it knows, so a token that LOOKS like a flag IS a
+# flag to it, wherever it stands. OBSERVED AT gh-axi 0.1.34 and recorded as a
+# version-observed fact about a third-party tool rather than a permanent
+# property: dist/src/commands/pr.js calls takeBoolFlag(args, "--auto") before
+# takeFlag(args, "--subject"), and dist/src/args.js's takeFlag returns undefined
+# without erroring when its flag is left valueless, so `-- --subject --auto`
+# satisfies a positional guard while gh-axi still arms deferred execution; the
+# same file's rejectUnknownFlags inspects EVERY dash-leading token, so even one
+# the tool would not act on is judged as a flag rather than carried as text.
+# Hence a value-taking flag consumes the next word only when that word is not
+# itself flag-shaped. A value that legitimately begins with a dash is passed with
+# the --flag=<value> spelling, which is one token and cannot be mistaken for one.
 assert_merge_args_allowed() {
   local arg
   # Detached values belong to the flag before them - "--sha abc123" is one
@@ -210,6 +228,15 @@ assert_merge_args_allowed() {
             "$URL" "$arg" >&2
           return 1
         fi
+        case $2 in
+          -*)
+            printf 'error: refusing to forward %s to the merge of %s because it stands where %s expects a value, and the forge CLI reads every dash-leading token as a flag wherever it stands rather than as the value beside it\n' \
+              "$2" "$URL" "$arg" >&2
+            printf 'action: give the value with the %s=<value> spelling if that flag accepts one, or re-run the merge without that argument\n' \
+              "$arg" >&2
+            return 1
+            ;;
+        esac
         shift 2
         continue
         ;;
@@ -640,6 +667,30 @@ FIELDS
   FM_PR_GITHUB_QUEUE_OBSERVED=true
 }
 
+# One TOON scalar field, read by name out of a TOON object gh-axi printed.
+# It decodes a SINGLE value on a SINGLE line and never splits one line into two
+# fields, which is the mistake it replaced. The encoder quotes a scalar only when
+# leaving it bare would be ambiguous, escaping an embedded quote or backslash
+# inside those quotes, so an unquoted value is already literal and a quoted one
+# is undone here. A bare null is JSON null - the field was never established -
+# and is reported as absent so the caller's positive-reading rule refuses, while
+# the STRING "null" arrives quoted and survives as text.
+github_toon_scalar() {
+  local raw=$1 field=$2 value
+  value=$(printf '%s\n' "$raw" \
+    | sed -n "s/^[[:space:]]*$field:[[:space:]]*//p" | head -1)
+  case "$value" in
+    '"'*'"')
+      value=${value#'"'}
+      value=${value%'"'}
+      value=${value//\\\"/\"}
+      value=${value//\\\\/\\}
+      ;;
+    null) value= ;;
+  esac
+  printf '%s' "$value"
+}
+
 github_read_outcome_with_gh_axi() {
   local output state
   if ! output=$(gh-axi pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" 2>/dev/null); then
@@ -670,25 +721,26 @@ github_read_outcome_with_gh_axi() {
   # own base ref and that base repository's default branch.
   FM_PR_GITHUB_BASE=
   FM_PR_GITHUB_DEFAULT=
-  # gh-axi api wraps a non-JSON --jq result in a TOON envelope. Captured live
-  # rather than written from memory, the exact output is three lines:
-  #   api_response:
-  #     body: <base> <default>
-  #     truncated: false
-  # so the value must be taken from the body LINE. An earlier version stripped to
-  # the last ": " in the whole string and got "false" from the trailing line,
-  # which made base and default equal and the contract vacuous on this path.
-  local target_raw target_fields
+  # ASK FOR ONE FIELD PER LINE, and the reason is the encoding rather than taste.
+  # A --jq expression whose result is not JSON comes back inside a TOON envelope
+  # as a single `body:` line, so two ref names joined by a space had to be SPLIT
+  # back apart - and a git ref name may legally contain a comma or begin with a
+  # dash, both of which make the TOON encoder QUOTE the whole scalar, after which
+  # the split lands inside the quotes and the contract compares two mangled
+  # names. A --jq object is valid JSON, so gh-axi encodes it as a TOON object
+  # instead and each field arrives on its own line with nothing to split.
+  # Captured live from gh-axi 0.1.34 - version-observed, like every other fact
+  # recorded here about that tool - the exact output is two lines:
+  #   base: <base>
+  #   def: <default>
+  # A hostile-but-legal name is still QUOTED on its own line (`base: "a,b"`,
+  # `def: "-lead"`), which is why each value goes through the scalar reader
+  # rather than being taken raw.
+  local target_raw
   if target_raw=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
-    --jq '.base.ref + " " + .base.repo.default_branch' 2>/dev/null); then
-    target_fields=$(printf '%s\n' "$target_raw" \
-      | sed -n 's/^[[:space:]]*body:[[:space:]]*//p' | head -1)
-    case "$target_fields" in
-      *' '*)
-        FM_PR_GITHUB_BASE=${target_fields%% *}
-        FM_PR_GITHUB_DEFAULT=${target_fields##* }
-        ;;
-    esac
+    --jq '{base: .base.ref, def: .base.repo.default_branch}' 2>/dev/null); then
+    FM_PR_GITHUB_BASE=$(github_toon_scalar "$target_raw" base)
+    FM_PR_GITHUB_DEFAULT=$(github_toon_scalar "$target_raw" def)
   fi
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }

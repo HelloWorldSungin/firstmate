@@ -111,7 +111,17 @@ case "${1:-} ${2:-}" in
   # The guarded merge establishes its target through this passthrough before
   # mutating, so the default-target contract holds on the degraded path too.
   api\ *)
-    printf 'api_response:\n  body: %s %s\n  truncated: false\n' \
+    # This fixture answers ONE query: the per-field object whose TOON encoding
+    # puts each branch on its own line. The SHAPE OF THE REQUEST is what decides
+    # the shape of the reply - a jq expression that is not JSON comes back inside
+    # an api_response envelope instead - so a run that asks the older
+    # whitespace-joined question gets the error a fixture owes a question it does
+    # not model, rather than an answer that hides the difference.
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: %s\ndef: %s\n' \
       "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
     ;;
 esac

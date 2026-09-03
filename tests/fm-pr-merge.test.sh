@@ -96,6 +96,12 @@
 #   (bj) the POST-merge half of that same seam: the degraded gh-axi view cannot
 #       answer the outcome question without a proved merge, and reports an
 #       outcome it could not read rather than a concrete not-merged verdict
+#   (bk) no argument position lets a refused flag reach the forge - every
+#       value-taking allow-list entry crossed with --auto in both orders - while
+#       the detached values the allow-list exists to carry still merge
+#   (bl) the degraded reader decodes a TOON-quoted branch name, so a ref name
+#       containing a comma or beginning with a dash is compared as itself rather
+#       than as its quotes, in both the permitting and refusing directions
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -163,7 +169,17 @@ case "${1:-} ${2:-}" in
   # The degraded reader establishes the merge target through this passthrough,
   # so the default-target contract holds on a host without gh too.
   "api repos/"*|api\ *)
-    printf 'api_response:\n  body: %s %s\n  truncated: false\n' \
+    # This fixture answers ONE query: the per-field object whose TOON encoding
+    # puts each branch on its own line. The SHAPE OF THE REQUEST is what decides
+    # the shape of the reply - a jq expression that is not JSON comes back inside
+    # an api_response envelope instead - so a run that asks the older
+    # whitespace-joined question gets the error a fixture owes a question it does
+    # not model, rather than an answer that hides the difference.
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: %s\ndef: %s\n' \
       "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
     ;;
 esac
@@ -871,6 +887,78 @@ test_github_auto_merge_spellings_are_refused_before_the_merge() {
   pass "fm-pr-merge refuses every --auto spelling before any merge is attempted"
 }
 
+# THE ARGUMENT GUARD MAKES TWO CLAIMS, so a table is where both of them live.
+#
+# It must refuse a refused flag WHEREVER it stands, and it must still admit the
+# ordinary detached values the allow-list exists to carry. One case can prove
+# only one of those, and a guard that fails either way looks correct from the
+# other side: deleting the guard passes the admitting half, and a guard that
+# refuses everything passes the refusing half.
+#
+# The hole this pins: the guard once modelled the forge CLI as a POSITIONAL
+# parser, so a value-taking flag swallowed the next word whatever it was, and
+# `-- --subject --auto` reached gh-axi, which scans the whole list, took --auto
+# as a flag, dropped the valueless --subject and ARMED DEFERRED EXECUTION - the
+# one thing this fork refuses - while the suite stayed green because every --auto
+# case put the flag at the head of the vector.
+test_no_argument_position_launders_a_refused_flag() {
+  local case_dir rc number=300 taker order spec url
+  local -a vector
+  # Every value-taking entry on the allow-list crossed with the refused flag, in
+  # BOTH orders: the refused flag standing where a value belongs, and standing
+  # ahead of a well-formed pair that would otherwise consume it.
+  for taker in --method --sha --subject --body --body-file -t -b -F; do
+    for order in "$taker --auto" "--auto $taker value"; do
+      number=$((number + 1))
+      url="https://github.com/example/repo/pull/$number"
+      case_dir=$(make_case "arg-guard-refuses-$number")
+      mkdir -p "$case_dir/wt"
+      add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+      : >"$case_dir/gh-axi.log"
+      read -r -a vector <<<"$order"
+
+      set +e
+      run_pr_merge "$case_dir" task-x1 "$url" -- "${vector[@]}" \
+        >"$case_dir/stdout" 2>"$case_dir/stderr"
+      rc=$?
+      set -e
+
+      expect_code 1 "$rc" \
+        "arg-guard-refuses: '$order' must be refused wherever --auto stands"
+      assert_grep '--auto' "$case_dir/stderr" \
+        "arg-guard-refuses: '$order' was refused without naming the flag responsible"
+      [ ! -s "$case_dir/gh-axi.log" ] \
+        || fail "arg-guard-refuses: '$order' still reached the forge"
+    done
+  done
+  # The admitting half. --sha <sha> is the detached value the allow-list was
+  # widened for in the first place, and --subject=<value> is how a value that
+  # legitimately begins with a dash is still passed: it is ONE token, so nothing
+  # can read it as a flag standing on its own.
+  for order in '--sha abc123' '--subject fix' '--subject=-fix'; do
+    number=$((number + 1))
+    url="https://github.com/example/repo/pull/$number"
+    case_dir=$(make_case "arg-guard-admits-$number")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+    : >"$case_dir/gh-axi.log"
+    read -r -a vector <<<"$order"
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$url" -- "${vector[@]}" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 0 "$rc" \
+      "arg-guard-admits: '$order' is on the allow-list and must still merge"
+    grep -qxF "pr merge $number --repo example/repo --squash $order" \
+      "$case_dir/gh-axi.log" \
+      || fail "arg-guard-admits: '$order' was not forwarded to the forge unchanged"
+  done
+  pass "no argument position lets a refused flag reach the forge, and detached values still pass"
+}
+
 
 
 
@@ -989,7 +1077,13 @@ case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
   # The degraded reader establishes the merge target through this passthrough.
-  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: main\ndef: main\n'
+    ;;
 esac
 exit 0
 SH
@@ -1197,7 +1291,13 @@ case "${1:-} ${2:-}" in
     printf 'pull_request:\n  number: %s\n  state: open\n' "$3"
     ;;
   # The degraded reader establishes the merge target through this passthrough.
-  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: main\ndef: main\n'
+    ;;
 esac
 exit 0
 SH
@@ -2762,6 +2862,7 @@ test_github_unreadable_queue_rules_are_not_reported_as_no_queue
 test_github_no_queue_rule_says_nothing_about_a_queue
 test_github_fallback_view_refusal_says_the_queue_was_unobservable
 test_github_auto_merge_spellings_are_refused_before_the_merge
+test_no_argument_position_launders_a_refused_flag
 test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
 test_github_without_gh_still_uses_gh_axi_merge
@@ -3094,10 +3195,11 @@ test_degraded_path_reads_the_real_target() {
   rm -f "$case_dir/fakebin/gh"
   ghless_path="$case_dir/path-without-gh"
   mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
-  # The shared mock emits the REAL gh-axi envelope, trailing truncated line and
-  # all. A parser that reads the last ": " in the whole string gets "false" for
-  # both fields, compares them equal, and permits every target - which is exactly
-  # how this contract was vacuous on this path once already.
+  # The shared mock emits the REAL gh-axi shape for this query: one TOON field
+  # per line, which is what the reader is written against. The parse has been
+  # vacuous on this path once already - an earlier reader took the last ": " in
+  # the whole payload, got the envelope's own trailing field for both branches,
+  # compared them equal and permitted every target.
   # state must be open: an already-merged request short-circuits the target
   # check by design, because a landed merge has no target left to refuse.
   FM_TEST_GH_AXI_BASE='release/2026' FM_TEST_GH_AXI_DEFAULT=main
@@ -3144,7 +3246,7 @@ test_gh_failure_still_reads_the_target_through_gh_axi() {
     case_dir=$(make_home_case "target-gh-failed-$direction")
     mkdir -p "$case_dir/wt"
     add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
-    printf '%s %s\n' "$base" "$default" >"$case_dir/gh-axi-target"
+    printf 'base: %s\ndef: %s\n' "$base" "$default" >"$case_dir/gh-axi-target"
     # gh resolves and is consulted, and its outcome read fails every time. The
     # head lookup still answers, so this case is about the READ failing rather
     # than about gh being unusable.
@@ -3169,8 +3271,11 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   api\ *)
-    printf 'api_response:\n  body: %s\n  truncated: false\n' \
-      "$(cat "$case_dir/gh-axi-target")"
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    cat "$case_dir/gh-axi-target"
     ;;
 esac
 exit 0
@@ -3210,10 +3315,97 @@ SH
   pass "the merge-target contract holds when gh is installed but its read fails"
 }
 
+# A GIT REF NAME MAY CONTAIN A COMMA OR BEGIN WITH A DASH, and the TOON encoder
+# gh-axi 0.1.34 bundles QUOTES any scalar that does either, so the degraded
+# reader is handed `base: "a,b"` rather than `base: a,b`. The two payloads below
+# are that encoder's own output for those names, captured from it rather than
+# written from memory.
+#
+# A reader that takes the quoted text literally compares names that differ only
+# by their quotes, so it REFUSES a pull request that does target the default
+# branch, and names branches nobody has - a wrong verdict, wrong labels, and no
+# error anywhere. Both directions are covered because a reader that strips too
+# much fails the refusing half exactly as one that strips nothing fails the
+# permitting half.
+test_degraded_target_reads_a_quoted_branch_name() {
+  local case_dir rc url number=96 spec direction base_toon def_toon named
+  for spec in 'permits|"a,b"|"a,b"|a,b' 'refuses|"-lead"|main|-lead'; do
+    direction=$(printf '%s' "$spec" | cut -d'|' -f1)
+    base_toon=$(printf '%s' "$spec" | cut -d'|' -f2)
+    def_toon=$(printf '%s' "$spec" | cut -d'|' -f3)
+    named=$(printf '%s' "$spec" | cut -d'|' -f4)
+    number=$((number + 1))
+    url="https://github.com/example/repo/pull/$number"
+    case_dir=$(make_home_case "target-quoted-$direction")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+    # gh is installed and its outcome read fails, which is the degraded path the
+    # api passthrough answers on. The head lookup still works, so this case is
+    # about the READ rather than about gh being unusable.
+    add_gh_mock_outcome_read_fails "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+    printf 'base: %s\ndef: %s\n' "$base_toon" "$def_toon" >"$case_dir/gh-axi-target"
+    cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case_dir=$(dirname "$FM_TEST_GH_AXI_LOG")
+case "${1:-} ${2:-}" in
+  "pr merge")
+    : > "$case_dir/gh-axi-merge-attempted"
+    printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}"
+    ;;
+  "pr view")
+    if [ -e "$case_dir/gh-axi-merge-attempted" ]; then
+      printf 'pull_request:\n  number: %s\n  state: merged\n' "$3"
+    else
+      printf 'pull_request:\n  number: %s\n  state: open\n' "$3"
+    fi
+    ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    cat "$case_dir/gh-axi-target"
+    ;;
+esac
+exit 0
+SH
+    chmod +x "$case_dir/fakebin/gh-axi"
+    : >"$case_dir/gh-axi.log"
+    : >"$case_dir/gh.log"
+
+    set +e
+    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    if [ "$direction" = refuses ]; then
+      expect_code 1 "$rc" \
+        "target-quoted-refuses: a non-default target must be refused"
+      assert_grep "targets branch $named," "$case_dir/stderr" \
+        "target-quoted-refuses: the refusal named a branch the encoder's quotes invented"
+      assert_grep 'current default branch main' "$case_dir/stderr" \
+        "target-quoted-refuses: the default branch was not read back cleanly"
+      assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+        "target-quoted-refuses: a refused target still reached the forge"
+    else
+      expect_code 0 "$rc" \
+        "target-quoted-permits: a quoted name equal to the default must still merge"
+      assert_grep 'pr merge' "$case_dir/gh-axi.log" \
+        "target-quoted-permits: a pull request on the default branch never reached the merge"
+      assert_grep "verified: $url is merged" "$case_dir/stdout" \
+        "target-quoted-permits: the landed merge was not reported"
+    fi
+  done
+  pass "the degraded reader decodes a quoted branch name instead of comparing its quotes"
+}
+
 test_non_default_target_is_refused_by_name
 test_unestablished_target_is_refused
 test_degraded_path_reads_the_real_target
 test_gh_failure_still_reads_the_target_through_gh_axi
+test_degraded_target_reads_a_quoted_branch_name
 
 # A landed merge this run already observed must never be re-read, because a
 # transient failure on that second read would strand a merge that is already on
@@ -3250,7 +3442,13 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "simulated transport failure after the merge landed" >&2; exit 1 ;;
   "pr view") exit 1 ;;
-  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: main\ndef: main\n'
+    ;;
 esac
 exit 0
 SH
@@ -3357,7 +3555,13 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
-  api\ *) printf 'api_response:\n  body: main main\n  truncated: false\n' ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: main\ndef: main\n'
+    ;;
 esac
 exit 0
 SH
