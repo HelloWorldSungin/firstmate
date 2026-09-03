@@ -76,6 +76,18 @@ Upstream's re-arm recovery (`kunchenguid/firstmate#2065`) makes any watcher that
 Upstream already models the case where one cycle deliberately succeeds another, through `FM_WATCH_PREDECESSOR_ARM_PID` and its handling-successor launch, so `--restart` now declares itself that successor rather than carrying a fork-local mechanism beside upstream's.
 A restart therefore keeps the fork's hand-over guarantee while every other arm path keeps upstream's resurface behavior unchanged.
 
+### Watcher stop-signal disposition
+
+The fork's watcher installs no `HUP`/`INT`/`TERM` handler and lets those signals keep their default disposition, where upstream's [`bin/fm-watch.sh`](../bin/fm-watch.sh) installs `trap 'exit 1' HUP INT TERM` beside its `EXIT` trap and re-arms that same handler after the check-spawn deferral in `run_check_capture`.
+A stop handler is a string bash parses at the moment the signal arrives, and that parse can fail while the shell is inside a command substitution: bash reports a trap diagnostic, runs no handler, and continues, so the watcher stayed deaf to its own stop for the rest of the poll interval (`HelloWorldSungin/firstmate#242`).
+Upstream's triage of the identical diagnostic (`kunchenguid/firstmate#3565`) attributes it to a runtime-built handler restored through `trap -p` and `eval`, machinery neither repo carries, so adopting that direction would reinstall a parsed handler rather than remove the parse that fails.
+Both upstream `trap 'exit 1'` sites are ordinary lines a round can take verbatim, which would silently retire this divergence, so [`tests/fm-watcher-lock.test.sh`](../tests/fm-watcher-lock.test.sh) requires the stopped watcher to exit 143 - true only when no handler is installed - with its singleton lock released and no trap diagnostic on stderr.
+The `EXIT` trap is now entered from inside whatever command the signal interrupted and inherits its redirections, so `watcher_cleanup`'s retained-stale-lock warning writes to fd 4, a copy of stderr taken at startup, where upstream writes a bare `>&2`; taking that line back would send the operator's only notice of a deliberately retained stale lock into the `2>/dev/null` of the fork's own cycle wait.
+
+Default disposition also means the herdr event wait's command substitution can be abandoned mid-wait, so the watcher allocates that wait's fifo directory itself, passes it as `FM_BACKEND_EVENT_WAIT_DIR`, and releases both it and the reader pid the adapter records inside it from the watcher's own `EXIT` path.
+Upstream's `fm_backend_herdr_wait_transition` always allocates that directory with its own `mktemp -d`, so the caller-owned staging and its fail-closed return for a directory the caller has already released sit inside upstream-owned code in [`bin/backends/herdr.sh`](../bin/backends/herdr.sh) and the contract comment in [`bin/fm-backend.sh`](../bin/fm-backend.sh), with [`tests/fm-backend-herdr.test.sh`](../tests/fm-backend-herdr.test.sh) pinning both halves.
+[`verification/supervision.md`](verification/supervision.md#watcher-stop-disposition) owns the measurements, the narrowed `HelloWorldSungin/firstmate#160` burst window, and the residual this leaves.
+
 ### Run-progress wedge hold
 
 The fork carries [`bin/fm-run-progress.sh`](../bin/fm-run-progress.sh), which upstream has no equivalent of, and threads a per-pane hold-count file through `wedge_timer_check` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) so a wedge escalation is held while the crew's validation run is demonstrably still moving.

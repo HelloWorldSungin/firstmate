@@ -884,10 +884,14 @@ if [ "$WORK_ITEM_COUNT" -eq 1 ]; then
     CLOSE_WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-merge.XXXXXX") \
       || { issue_close_warning "could not create a temporary working directory"; exit 0; }
     trap 'rm -rf -- "$CLOSE_WORKDIR"' EXIT
-    # bash runs no EXIT trap for an untrapped fatal signal, and this directory
-    # holds a rendered comment payload, so the signal a bounded caller sends must
-    # remove it too - the same pairing bin/fm-issue-comment.sh and
-    # bin/fm-issue-status.sh use for their own scratch directories.
+    # This directory holds a rendered comment payload, so the signal a bounded
+    # caller sends must remove it and leave a 143 status behind - the same
+    # pairing bin/fm-issue-comment.sh and bin/fm-issue-status.sh use for their
+    # own scratch directories. Correcting the rationale that stood here: bash
+    # DOES run the EXIT trap for an untrapped fatal signal (measured 2026-09-02,
+    # bash 5.2.21, docs/verification/supervision.md), so removal does not depend
+    # on this handler. It stays because it states that exit contract explicitly
+    # rather than leaving it to the shell's signal disposition.
     trap 'rm -rf -- "$CLOSE_WORKDIR"; trap - EXIT; exit 143' HUP INT TERM
     fm_forge_scratch_set "$CLOSE_WORKDIR"
   fi

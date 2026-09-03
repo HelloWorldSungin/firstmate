@@ -1264,9 +1264,11 @@ run_check_capture() {
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
   pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
-  # Re-arm the burst-safe stop handler installed at startup, never a bare
-  # 'exit 1': a second stop signal during the EXIT trap must stay disarmed.
-  trap watcher_stop_signal HUP INT TERM
+  # Restore the default disposition the watcher runs with. The deferral above is
+  # kept deliberately: a stop landing between the spawn and FM_ACTIVE_CHECK_PGID
+  # being set would leave a check process group the EXIT trap cannot reap. That
+  # window is a few statements wide, against a whole poll interval before.
+  trap - HUP INT TERM
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_check_output_cleanup
@@ -1313,17 +1315,20 @@ heartbeat_scan_finds_actionable() {
 }
 
 # interruptible_sleep: wait <seconds> without swallowing this watcher's own stop
-# signal. Bash defers a trapped signal until the running FOREGROUND command
-# finishes, so a blind `sleep "$POLL"` left the watcher deaf to TERM/HUP/INT for
-# the remainder of the interval - exit latency tracked FM_POLL exactly, 14.53s
-# at the 15s default. Every path that stops this home's watcher (fm-watch-arm.sh's
+# signal, and to keep the sleep child reapable. Bash defers a TRAPPED signal until
+# the running FOREGROUND command finishes, so a blind `sleep "$POLL"` left the
+# watcher deaf to TERM/HUP/INT for the remainder of the interval - exit latency
+# tracked FM_POLL exactly, 14.53s at the 15s default. Every path that stops
+# this home's watcher (fm-watch-arm.sh's
 # HUP/TERM teardown, its --restart stop-then-relaunch, and its bounded 5s wait for
 # the old watcher to exit) paid that latency, and the default 15s poll exceeds that
 # restart budget outright, so a restart forked a second watcher while the first was
 # still alive holding the lock. Backgrounding the sleep and waiting on the named
-# child keeps the same wait budget while letting the trap run the moment the signal
-# lands. Tracked so the EXIT path can reap the child instead of orphaning it for
-# the rest of the interval. Cadence, wake classification, and the heartbeat beacon
+# child keeps the same wait budget. Stop signals now take their default
+# disposition (see the EXIT trap below), which already ends the wait immediately;
+# the named child remains tracked so the EXIT path can reap it instead of
+# orphaning it for the rest of the interval. Cadence, wake classification, and
+# the heartbeat beacon
 # are unchanged, so wedge detection is unaffected. Measurements and the herdr
 # push-path limit below: docs/verification/supervision.md.
 INTERRUPTIBLE_SLEEP_PID=
@@ -1339,6 +1344,40 @@ interruptible_sleep_stop() {
   kill -TERM "$INTERRUPTIBLE_SLEEP_PID" 2>/dev/null || true
   wait "$INTERRUPTIBLE_SLEEP_PID" 2>/dev/null || true
   INTERRUPTIBLE_SLEEP_PID=
+}
+
+# The push event wait below runs inside a command substitution, so every
+# resource the backend allocates for it - a fifo directory and a child reader
+# process - belongs to a subshell this watcher can neither see nor reap. Those
+# are the watcher's resources, not the subshell's: whenever that subshell fails
+# to reach its own return path the directory and the reader are orphaned, which
+# a SIGKILL or a crash of this watcher has always caused and a stop signal now
+# causes too. So the watcher creates the directory itself and hands it to the
+# backend, tracking it in its own scope exactly as INTERRUPTIBLE_SLEEP_PID is
+# tracked, and releases it from the EXIT path. The backend records its reader's
+# pid inside that directory and removes the record once it has reaped the
+# reader, so a release only ever signals a reader still owed a reap.
+#
+# Knowingly accepted residual: the command-substitution subshell itself is not
+# tracked and can outlive this watcher until it sees EOF on its fifo, so a
+# stream edge landing in the same instant as the stop can still write
+# $STATE/.nativeturnend-<key> after the singleton lock is released, concurrently
+# with an fm-watch-arm.sh --restart successor. Default disposition made that
+# reachable; the old design deferred the signal until the substitution returned.
+# It is bounded: the backend does not commit the escalation marker on that path,
+# so no actionable blocked edge is consumed, and the poll loop remains the
+# fail-closed backstop.
+EVENT_WAIT_DIR=
+event_wait_release() {
+  local reader_pid
+  [ -n "$EVENT_WAIT_DIR" ] || return 0
+  reader_pid=$(cat "$EVENT_WAIT_DIR/reader.pid" 2>/dev/null || true)
+  case "$reader_pid" in
+    ''|*[!0-9]*) ;;
+    *) kill -TERM "$reader_pid" 2>/dev/null || true ;;
+  esac
+  rm -rf "$EVENT_WAIT_DIR" 2>/dev/null || true
+  EVENT_WAIT_DIR=
 }
 
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
@@ -1396,14 +1435,19 @@ event_wait_or_sleep() {
     return
   fi
 
-  # Known limit: unlike the interruptible_sleep budgets above, this reader wait is
-  # a foreground command substitution, so a push-capable home stays up to POLL deaf
-  # to its own stop signal. It is left alone deliberately: the reader owns a fifo
-  # dir and a child reader process that it removes on its own return path, so
-  # interrupting it here would leak both on every stop. Fixing it needs reader-side
-  # teardown, not a second background wrapper.
-  rec=$(FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 fm_backend_wait_transition "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}")
+  # This reader wait is a foreground command substitution, so the stop signal
+  # that ends it kills this watcher without the subshell ever reaching its own
+  # teardown. The fifo directory and reader child are therefore allocated here
+  # and released here (event_wait_release above), on the watcher's own scope, so
+  # neither depends on the subshell being allowed to finish.
+  if ! EVENT_WAIT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-watch-eventwait.XXXXXX"); then
+    EVENT_WAIT_DIR=
+    interruptible_sleep "$POLL"
+    return
+  fi
+  rec=$(FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 FM_BACKEND_EVENT_WAIT_DIR="$EVENT_WAIT_DIR" fm_backend_wait_transition "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}")
   rc=$?
+  event_wait_release
   case "$rc" in
     0)
       _event_cap_fails=0
@@ -1479,11 +1523,15 @@ elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
 watcher_cleanup() {
-  # Disarm stop signals for the whole cleanup, covering exits the stop handler
-  # did not initiate (self-eviction, error exits): a stop signal landing while
-  # this EXIT trap runs would re-enter its own trap and exit immediately, and
-  # bash never resumes an aborted EXIT trap, so the lock release below would be
-  # skipped and the singleton lock left on disk naming a dead pid (issue #160).
+  # Ignore stop signals for the whole cleanup, whatever started the exit (a stop
+  # signal, self-eviction, or an error exit). Real senders deliver stop signals in
+  # bursts - coreutils timeout signals the process group and then re-signals from
+  # its own handler - and a second one landing while this EXIT trap runs would
+  # terminate the shell where it stands. Bash never resumes an aborted EXIT trap,
+  # so the lock release below would be skipped and the singleton lock left on disk
+  # naming a dead pid (issue #160). The ignore covers everything from this
+  # statement onward and nothing before it - see the EXIT trap install below for
+  # the window it leaves open and what backstops it.
   trap '' HUP INT TERM
   local cleanup_status=0 owns_lock=0 transition=release-lock
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -1494,28 +1542,83 @@ watcher_cleanup() {
     fi
   fi
   interruptible_sleep_stop
+  event_wait_release
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
   if [ "$owns_lock" -eq 1 ] \
     && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
-    echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
+    # Written to the startup copy of stderr (fd 4), never to a bare `>&2`. This
+    # trap runs inside whatever command the stop signal interrupted, and the
+    # watcher's normal stop point is a `wait ... 2>/dev/null`, so a bare `>&2`
+    # here would deliver the operator's only warning about a deliberately
+    # retained stale lock into /dev/null.
+    echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&4
     cleanup_status=1
   fi
   return "$cleanup_status"
 }
-# The stop handler must disarm before exiting, not just exit: real senders
-# deliver stop signals in bursts (coreutils timeout signals the process group
-# and then re-signals from its own handler), and the second signal otherwise
-# lands inside watcher_cleanup and aborts it as described above. Stop signals
-# are therefore ignored while cleanup runs. Its normal work is bounded child
-# reaping plus lock release; if that work wedges, SIGKILL is the escape hatch.
-watcher_stop_signal() {
-  trap '' HUP INT TERM
-  exit 1
-}
+# A private copy of this watcher's stderr for watcher_cleanup's operator
+# diagnostic. The EXIT trap runs inside whatever command a stop signal
+# interrupted, inheriting that command's redirections, so it needs a descriptor
+# that no interrupted command can have pointed elsewhere. Fixed number, not the
+# {var}>&2 form, which bash 3.2 (the macOS baseline) does not support.
+exec 4>&2 || true
+# Stop signals deliberately keep their DEFAULT disposition: this watcher installs
+# no HUP/INT/TERM handler. A handler is a string bash must parse at the moment the
+# signal arrives, and that parse can fail while the shell is inside a command
+# substitution - the shell then reports a trap parse error, runs no handler, and
+# CONTINUES, so the watcher ignored the stop for the rest of its poll interval
+# (issue #242). Measured on bash 5.2.21: 4 ignored TERMs in 700 signalled runs of
+# a command-substitution loop, and 0 in 600 runs of the same loop without one.
+#
+# What default disposition removes is the STOP-HANDLER parse, and that is what
+# makes the stop unconditional: the process always dies. It does not remove the
+# parse, correcting an earlier claim here that it did and that the kernel
+# terminates the process. Bash installs its own terminating-signal handler and
+# must, or it could not run the EXIT trap at all; the EXIT trap below is itself a
+# string bash parses at the moment the signal is delivered, from inside whatever
+# command the stop interrupted - the same command-substitution context named
+# above. The parse is RELOCATED, not removed, so the two designs differ in what a
+# failed parse costs:
+#   - with a stop handler, the stop is IGNORED for the rest of the poll interval.
+#     The harness escalates to a hard kill, a hard kill runs no EXIT trap, so
+#     cleanup is lost AND the interval is wasted, and fm-watch-arm.sh --restart
+#     can fork a duplicate watcher while the first still holds the lock.
+#   - with default disposition, the process still exits 143 and cleanup is
+#     silently skipped. The dead-pid reclaim backstops the singleton lock only;
+#     sleep-child reaping, event_wait_release, active check process-group stop,
+#     private check-output removal and custom check snapshot removal are not
+#     backstopped.
+# Measured rather than assumed on bash 5.2.21, 900 signalled runs per arm of the
+# same command-substitution loop, interleaved so load drift hit both arms equally
+# and cleanup detected by a marker file because the interrupted command's
+# redirections swallow the diagnostic: the stop-handler design lost cleanup 3
+# times in 900 and 2 times in 900 across two independent runs, default
+# disposition 0 times in 900 in both, against a positive control carrying a
+# deliberately malformed EXIT trap detected 30 times in 30.
+#
+# Residual, stated as a residual and never as a guarantee: this EXIT trap's own
+# parse CAN fail - shown directly with a malformed trap - and when it does the
+# process still exits 143 with cleanup skipped and the diagnostic swallowed by
+# the interrupted command's redirections, so the trap-diagnostic assertion in
+# tests/fm-watcher-lock.test.sh cannot observe that case.
+#
+# What this does NOT preserve, correcting an earlier claim here that it did:
+# issue #160's burst safety is NARROWED, not kept. watcher_cleanup's ignore
+# covers only signals arriving after its `trap ''` has executed. A second stop
+# signal landing between kernel delivery of the first and that statement makes
+# bash take its _exit(128+sig) path and abandon the EXIT trap where it stands,
+# whereas the previous watcher_stop_signal design absorbed a second delivery at
+# both offsets through bash's in-progress-trap guard. In that window the dead-pid
+# lock reclaim backstops the LOCK ONLY; sleep-child reaping, event-wait release,
+# active check process-group stop, private check-output removal and custom check
+# snapshot removal have no backstop. The burst case in
+# tests/fm-watcher-lock.test.sh does not cover the window either, because it
+# SIGSTOPs the sleep child on purpose to place its second signal INSIDE cleanup.
+# Evidence and the bash version this was measured against:
+# docs/verification/supervision.md.
 trap watcher_cleanup EXIT
-trap watcher_stop_signal HUP INT TERM
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.

@@ -356,10 +356,14 @@ cmd_poll() {
   printf -v cleanup_command 'rm -f -- %q' "$response"
   # shellcheck disable=SC2064 # $cleanup_command must expand now, while the staged path is still set.
   trap "$cleanup_command" EXIT
-  # Retirement stops this listener by signalling its process group, and bash runs
-  # no EXIT trap for an uncaught signal, so each one cleans up the staged
-  # response and then re-raises itself with the default disposition, leaving the
-  # process dying exactly as the runner expects.
+  # Retirement stops this listener by signalling its process group, so each
+  # signal cleans up the staged response and then re-raises itself with the
+  # default disposition, leaving the process dying exactly as the runner
+  # expects. Correcting the rationale that stood here: bash DOES run the EXIT
+  # trap for an uncaught signal (measured 2026-09-02, bash 5.2.21,
+  # docs/verification/supervision.md), so removal does not depend on these
+  # handlers. They stay because they make the cleanup-then-die order explicit at
+  # the point retirement targets.
   local signal
   for signal in INT TERM HUP; do
     # shellcheck disable=SC2064 # Same reason: expand now, while both are set.

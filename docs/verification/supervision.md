@@ -490,6 +490,199 @@ The singleton lock is released in every measured case.
 Current limit: the herdr push path in `event_wait_or_sleep` waits inside a foreground command substitution, so a push-capable home remains up to `FM_POLL` deaf to its own stop signal.
 That reader owns a fifo directory and a child reader process that it removes on its own return path, so interrupting it from the caller would leak both on every stop.
 
+### Watcher stop disposition
+
+Measured on 2026-09-02 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`, superseding the stop-path mechanism recorded above.
+The latency table above still holds; what changed is how the stop signal is received.
+
+A stop-signal HANDLER is a string bash parses at the moment the signal arrives.
+That parse can fail while the shell is inside a command substitution.
+Bash then prints a trap diagnostic, runs no handler, and CONTINUES, so the watcher ignored the stop for the rest of its poll interval (issue #242).
+
+The handler text is not what is malformed.
+`bin/fm-watch.sh` installed `trap watcher_stop_signal HUP INT TERM`, a single well-formed word, and `trap -p` read out of a live watcher at the moment of failure showed only well-formed entries.
+The diagnostic names whichever sourced file was executing when the signal landed, not where any trap is installed, which is why CI reported `bin/fm-wake-lib.sh` - a file that installs no trap at all.
+
+Reproduce with two loops that differ only in whether the body performs a command substitution, sending one TERM per run at a randomised offset:
+
+```sh
+# arm A: command substitution in the loop
+printf '%s\n' '#!/usr/bin/env bash' 'trap "exit 1" TERM' 'while :; do c=$(date +%s); done' > /tmp/arm-a.sh
+# arm B: same loop shape, no command substitution
+printf '%s\n' '#!/usr/bin/env bash' 'trap "exit 1" TERM' 'while :; do printf -v c "%s" "$SECONDS"; done' > /tmp/arm-b.sh
+# for each arm: start it, sleep 0.02-0.35s, send one TERM, record whether the
+# process survived a further second and whether stderr carried a trap diagnostic
+```
+
+Observed, interleaved so load drift hits both arms equally:
+
+| arm | runs | trap diagnostics | ignored TERM |
+| --- | --- | --- | --- |
+| command substitution in loop | 700 | 5 | 4 |
+| no command substitution | 600 | 0 | 0 |
+
+The same failure was reproduced against the real watcher at 2 occurrences in 640 signalled runs (`FM_POLL=0.05`, one TERM per run at a randomised offset).
+One of those runs also printed `bin/fm-watch.sh: line 515: unexpected EOF while looking for matching ')'`, bash failing to parse its own script source, which a malformed handler string cannot cause.
+
+The watcher therefore installs no HUP/INT/TERM handler and lets those signals keep their default disposition.
+Bash still runs the EXIT trap for an untrapped fatal signal, so `watcher_cleanup` is unchanged:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' 'cleanup() { echo EXIT_TRAP_RAN >&2; }' 'trap cleanup EXIT' 'trap - TERM' 'echo READY >&2' 'sleep 30' > /tmp/exit-probe.sh
+```
+
+Signalling that probe with TERM prints `EXIT_TRAP_RAN` and yields wait status 143.
+A real watcher signalled the same way exits 143 with `state/.watch.lock/pid` removed, so child reaping, private check-file removal and lock release all still run.
+Issue #160's burst case also still holds, because `watcher_cleanup`'s first statement ignores further stop signals.
+
+After the change, 250 signalled runs of the real watcher produced no trap diagnostic and no ignored TERM.
+`tests/fm-watcher-lock.test.sh` pins the mechanism rather than only the effect: the watcher must exit 143, which is true only with no handler installed, and must still have released its lock.
+That case fails deterministically with status 1 against a watcher carrying a stop handler.
+
+Not reproduced, and recorded so a later reader does not chase it: upstream `kunchenguid/firstmate#3565` attributes the same diagnostic to a runtime-built handler restored through `_FM_SIGNAL_DEFER_RESTORE=$(trap -p HUP INT TERM)` and `eval`.
+Neither `fm_signal_defer` nor `trap -p` exists in `bin/` at this fork's HEAD, at upstream `d22318ea`, or at the merge base `60bedde5`.
+The minimal reproduction above carries no `eval` and no dynamically built handler and still produces the identical message, so that mechanism is not required to explain it.
+
+### Watcher stop disposition: burst window, abandoned event wait, cleanup diagnostic
+
+Measured on 2026-09-03 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`.
+This entry supersedes one claim in the 2026-09-02 entry above and the `Current limit` paragraph in the 2026-08-01 entry above.
+Both originals stay exactly as recorded.
+
+Correction 1: issue #160's burst case does NOT still hold unchanged, as the 2026-09-02 entry claimed.
+Default disposition narrows that window rather than preserving it.
+`watcher_cleanup`'s `trap '' HUP INT TERM` covers only signals arriving after that statement has executed.
+A second stop signal delivered between the kernel delivering the first and that statement running makes bash take its `_exit(128+sig)` path and abandon the EXIT trap where it stands.
+
+Re-measured with an EXIT trap whose ignore is preceded by a delay, placing the second TERM on either side of it:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' \
+  'cleanup() { echo CLEANUP_ENTER >>"$LOG"; sleep 0.3; trap "" HUP INT TERM; sleep 0.3; echo CLEANUP_DONE >>"$LOG"; }' \
+  'trap cleanup EXIT' 'echo READY >>"$LOG"' 'sleep 30' > /tmp/probe-burst.sh
+# start it, send one TERM after 0.3s, then a second TERM 0.1s later (before the
+# ignore) and, in a second run, 0.5s later (after the ignore)
+```
+
+The comparison arm restores the design this change replaced, a stop handler that disarms and exits, over the same script:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' \
+  'cleanup() { echo CLEANUP_ENTER >>"$LOG"; sleep 0.3; trap "" HUP INT TERM; sleep 0.3; echo CLEANUP_DONE >>"$LOG"; }' \
+  'stop_signal() { trap "" HUP INT TERM; exit 1; }' \
+  'trap cleanup EXIT' 'trap stop_signal HUP INT TERM' 'echo READY >>"$LOG"' 'sleep 30 & wait $!' > /tmp/probe-burst-handler.sh
+```
+
+| second TERM | default disposition | previous `watcher_stop_signal` handler |
+| --- | --- | --- |
+| before the ignore | `CLEANUP_ENTER` only, status 143 | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 1 |
+| after the ignore | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 143 | `CLEANUP_ENTER` and `CLEANUP_DONE`, status 1 |
+
+The handler design absorbed the second delivery at both offsets, through bash's in-progress-trap guard.
+Inside the narrowed window the dead-pid lock reclaim backstops the LOCK ONLY.
+Sleep-child reaping, event-wait release, active check process-group stop, private check-output removal and custom check snapshot removal have no backstop there.
+The burst case in `tests/fm-watcher-lock.test.sh` does not cover this window either, because it SIGSTOPs the sleep child on purpose to place its second signal INSIDE cleanup.
+
+Correction 2: the `Current limit` paragraph in the 2026-08-01 entry no longer describes the code.
+The herdr push path in `event_wait_or_sleep` is now interrupted by a stop signal like every other wait, so a push-capable home is no longer up to `FM_POLL` deaf to its own stop signal.
+The fifo directory and reader child that paragraph says the reader removes on its own return path were never safe there: a `SIGKILL` or a crash of the watcher abandoned that command substitution and leaked both long before stop signals took their default disposition.
+The watcher therefore allocates that directory itself, exports it as `FM_BACKEND_EVENT_WAIT_DIR`, and releases it plus the reader pid the backend records inside it from `watcher_cleanup`.
+The backend fails closed with its `event path unusable` code when that variable is set but no longer names a directory, instead of falling back to a private `mktemp -d`.
+A caller that has already released the directory it named is a caller that could never release a private one either, so allocating one would re-create exactly the orphan this cleanup exists to remove.
+The `mktemp -d` path stays for a caller that leaves the variable unset, which is a caller that can guarantee its own return path.
+
+Observable: a watcher stopped while blocked in the event wait leaves no `fm-*eventwait.*` directory under `TMPDIR` and no live reader process.
+`tests/fm-watcher-lock.test.sh` pins it against a real watcher process with a fake herdr and a fake stream reader, and fails if either survives the stop.
+`tests/fm-backend-herdr.test.sh` pins the released-directory case at the adapter: the wait returns 2, starts no stream reader, and leaves no FIFO directory behind.
+
+Correction 3, recorded because it changes what an operator sees rather than what the watcher does: an EXIT trap entered from a signal inherits the interrupted command's redirections.
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' 'cleanup() { echo CLEANUP_DIAG >&2; }' 'trap cleanup EXIT' \
+  'sleep 30 & SPID=$!' 'echo READY >&2' 'wait "$SPID" 2>/dev/null || true' > /tmp/probe-stderr.sh
+```
+
+Signalling that probe with TERM yields status 143 with `READY` on stderr and `CLEANUP_DIAG` nowhere, because the interrupted `wait` still carried `2>/dev/null`.
+The watcher's normal stop point is exactly that shape, so `watcher_cleanup`'s retained-stale-lock warning now writes to fd 4, a copy of stderr saved at startup, rather than to a bare `>&2`.
+The `2>/dev/null` on the wait itself stays, because `interruptible_sleep_stop` can legitimately report that the sleep child is not a child of this shell.
+
+### Watcher stop disposition: the trap parse is relocated, not removed
+
+Measured on 2026-09-03 on `GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)`.
+The claim this entry corrects was never recorded in this file, so do not look above for it: it was the rationale comment in `bin/fm-watch.sh` introduced by the commit whose subject is `fix(bin): stop the watcher on default signal disposition`, which read "Default disposition removes the parse entirely - the kernel terminates the process - while bash still runs the EXIT trap below".
+Both halves of that claim are false, and that comment was corrected on this same branch.
+This entry records the measurement behind that correction rather than superseding anything above it.
+The 2026-08-01, 2026-09-02 and preceding 2026-09-03 entries above stay exactly as recorded.
+
+The kernel does not terminate the process.
+Bash installs its own terminating-signal handler and must, or it could not run the EXIT trap at all, which the 2026-09-02 entry above already observed it doing.
+
+A trap body is a string bash parses when the trap runs, not when it is installed:
+
+```sh
+bash -c 'trap "echo A; )" EXIT; echo body'
+```
+
+That prints `body`, exits 0, and only then reports `bash: exit trap: line 1: syntax error near unexpected token ')'`.
+So `trap watcher_cleanup EXIT` is parsed at signal-delivery time, from inside whatever command the stop interrupted - the same command-substitution context issue #242 identifies as the parse-failure trigger.
+What default disposition removes is the STOP-HANDLER parse, and that is what makes the stop itself unconditional.
+The parse is relocated, not removed.
+
+Traced end to end over the watcher's real stop shape, with a deliberately malformed EXIT trap standing in for a parse that fails:
+
+```sh
+cat > /tmp/bad.sh <<'EOS'
+#!/usr/bin/env bash
+trap 'echo CLEANUP_RAN >&2; touch "$MARK"; )' EXIT
+sleep 30 & SPID=$!
+echo READY >&2
+wait "$SPID" 2>/dev/null || true
+EOS
+# start it, TERM it after 0.4s, then read the wait status, the marker and stderr
+```
+
+| EXIT trap | interrupted command | status | cleanup marker | stderr |
+| --- | --- | --- | --- | --- |
+| well formed | `wait "$SPID" 2>/dev/null` | 143 | present | `READY` only |
+| malformed | `wait "$SPID" 2>/dev/null` | 143 | absent | `READY` only |
+| malformed | `wait "$SPID"` | 143 | absent | `READY`, then `exit trap: line 1: syntax error near unexpected token ')'` |
+
+A failed EXIT-trap parse therefore skips `watcher_cleanup` in full and says nothing, because the interrupted command's redirections swallow the diagnostic exactly as they swallow the operator warning that fd 4 exists to carry.
+The no-trap-diagnostic assertion in `tests/fm-watcher-lock.test.sh` cannot observe that case.
+
+Which disposition loses less is measured rather than assumed.
+Each arm is the same command-substitution loop, signalled once per run at a randomised offset, with the arms interleaved so load drift hits both equally.
+Cleanup is detected by a marker file rather than by stderr, for the reason the table above records.
+A run still alive one second after the TERM is escalated to `SIGKILL`, which is what the supervising harness does and which runs no EXIT trap at all.
+
+```sh
+cat > /tmp/arm-handler.sh <<'EOS'
+#!/usr/bin/env bash
+cleanup() { touch "$MARK"; }
+stop_signal() { trap '' HUP INT TERM; exit 1; }
+trap cleanup EXIT
+trap stop_signal HUP INT TERM
+: > "$READY"
+while :; do
+  a=$(/bin/echo x)
+  b=$(/bin/echo "$(/bin/echo y)")
+done
+EOS
+# the default-disposition arm is the same script without its `trap stop_signal` line
+# the control is the default-disposition arm with `trap 'touch "$MARK"; )' EXIT`
+```
+
+| arm | signalled runs | cleanup lost |
+| --- | --- | --- |
+| stop handler installed | 900 | 3 |
+| stop handler installed, independent re-run | 900 | 2 |
+| default disposition | 900 | 0 |
+| default disposition, independent re-run | 900 | 0 |
+| control: default disposition, malformed EXIT trap | 30 | 30 |
+
+The control confirms the detector sees a lost cleanup, so the two zeros are a real absence rather than a blind detector.
+The residual stands, as a residual and not as a guarantee: this EXIT trap's own parse can fail, and when it does the singleton lock is backstopped by the dead-pid reclaim while sleep-child reaping, event-wait release, active check process-group stop, private check-output removal and custom check snapshot removal are not.
+
 ### Recovery-loop continuity
 
 The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.

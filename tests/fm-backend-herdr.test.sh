@@ -4778,6 +4778,43 @@ test_wait_transition_clean_timeout_returns_1() {
   pass "fm_backend_herdr_wait_transition: stock macOS Bash clean timeout closes fd 9 and returns 1"
 }
 
+test_wait_transition_supplied_dir_is_used_and_left_to_the_caller() {
+  local dir state agent temp owned fb reader lines rc
+  dir="$TMP_ROOT/wt-owned-dir"; state="$dir/state"; agent="$dir/agents"; temp="$dir/temp"; owned="$dir/owned"
+  mkdir -p "$state" "$agent" "$temp" "$owned"
+  fb=$(make_herdr_eventfake "$dir")
+  set_fake_agent "$agent" "wG:pQ" idle
+  reader=$(make_fake_reader "$dir"); lines="$dir/lines"; : > "$lines"   # no events, reader exits 0
+  rc=$(PATH="$fb:$PATH" TMPDIR="$temp" FM_BACKEND_HERDR_EVENTS_FORCE=1 FM_FAKE_SESSION_NAME=sess FM_FAKE_SOCKET="$dir/x.sock" FM_FAKE_AGENT_DIR="$agent" \
+    FM_BACKEND_HERDR_EVENT_READER="$reader" FM_FAKE_READER_LINES="$lines" FM_BACKEND_EVENT_WAIT_DIR="$owned" \
+    /bin/bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_transition sess 1 "$1" sess:wG:pQ; echo $?' "$ROOT" "$state" | tail -1)
+  [ "$rc" = 1 ] || fail "a caller-supplied event-wait directory must not change the clean-timeout result, got $rc"
+  [ -d "$owned" ] || fail "a caller-supplied event-wait directory belongs to the caller and must survive the wait"
+  [ ! -e "$owned/reader.pid" ] || fail "a reaped reader's pid record must be removed so the caller never signals a stale pid"
+  [ -z "$(find "$temp" -mindepth 1 -print -quit)" ] || fail "a supplied event-wait directory must be used instead of a private one"
+  pass "fm_backend_herdr_wait_transition: a supplied event-wait directory is used for scratch and left for its owner"
+}
+
+test_wait_transition_supplied_dir_gone_fails_closed() {
+  local dir state agent temp gone fb reader lines ready rc
+  dir="$TMP_ROOT/wt-owned-dir-gone"; state="$dir/state"; agent="$dir/agents"; temp="$dir/temp"; gone="$dir/released"
+  mkdir -p "$state" "$agent" "$temp"
+  fb=$(make_herdr_eventfake "$dir")
+  set_fake_agent "$agent" "wG:pQ" idle
+  reader=$(make_fake_reader "$dir"); lines="$dir/lines"; : > "$lines"
+  ready="$dir/reader-started"
+  # The owning caller (a stopped watcher) has already released the directory it
+  # named, so the backend must not allocate a private one this caller can never
+  # see or reap.
+  rc=$(PATH="$fb:$PATH" TMPDIR="$temp" FM_BACKEND_HERDR_EVENTS_FORCE=1 FM_FAKE_SESSION_NAME=sess FM_FAKE_SOCKET="$dir/x.sock" FM_FAKE_AGENT_DIR="$agent" \
+    FM_BACKEND_HERDR_EVENT_READER="$reader" FM_FAKE_READER_LINES="$lines" FM_FAKE_READER_READY_FILE="$ready" FM_BACKEND_EVENT_WAIT_DIR="$gone" \
+    /bin/bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_wait_transition sess 1 "$1" sess:wG:pQ; echo $?' "$ROOT" "$state" | tail -1)
+  [ "$rc" = 2 ] || fail "a released event-wait directory must fail closed with the unusable code 2, got $rc"
+  [ ! -e "$ready" ] || fail "a released event-wait directory must leave no stream reader running"
+  [ -z "$(find "$temp" -mindepth 1 -print -quit)" ] || fail "a released event-wait directory must leave no orphan FIFO directory"
+  pass "fm_backend_herdr_wait_transition: a released caller directory fails closed instead of orphaning a reader"
+}
+
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
@@ -4974,4 +5011,6 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+test_wait_transition_supplied_dir_is_used_and_left_to_the_caller
+test_wait_transition_supplied_dir_gone_fails_closed
 printf '\nall fm-backend-herdr tests passed\n'

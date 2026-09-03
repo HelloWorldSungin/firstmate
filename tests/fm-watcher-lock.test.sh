@@ -552,7 +552,7 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
-test_watcher_stops_promptly_on_term() {
+test_watcher_stop_is_kernel_delivered_and_still_cleans_up() {
   # A watcher must honor its own stop signal within the cycle it receives it, not
   # at the end of the current poll interval. Bash defers a trapped signal until
   # the running foreground command returns, so a blind `sleep "$POLL"` made exit
@@ -561,12 +561,33 @@ test_watcher_stops_promptly_on_term() {
   # stop-then-relaunch, which gives the old watcher only 5s to exit before
   # falling through to a fresh child. Pin the property with a poll interval far
   # longer than the exit budget, so a regression cannot pass on timing luck.
-  local dir state fakebin out pid i status
+  #
+  # Exiting is not enough on its own, and an earlier version of this case that
+  # asserted only "it exited" was intermittently red. A stop-signal HANDLER is a
+  # string bash must parse at the moment the signal arrives, and that parse can
+  # fail while the shell is inside a command substitution: bash then reports a
+  # trap parse error, runs no handler, and CONTINUES, so the watcher ignores the
+  # stop for the rest of its interval (issue #242). Measured on bash 5.2.21 on
+  # 2026-09-02: 4 ignored TERMs in 700 signalled runs of a command-substitution
+  # loop, against 0 in 600 runs of the same loop with no command substitution.
+  # No handler in any tree was malformed; the string bash failed to parse was
+  # well formed. docs/verification/supervision.md owns that evidence.
+  #
+  # So assert the mechanism that makes the stop reliable, not only its effect.
+  # The watcher must be terminated BY the signal (128+SIGTERM = 143), which is
+  # true only when no stop handler is installed, and its EXIT cleanup must still
+  # have run, which is what releases the singleton lock. A reintroduced handler
+  # would exit with its own status and still satisfy a bare "did it stop" check
+  # while putting the parse exposure back.
+  local dir state fakebin out err pid i status
   dir=$(make_case term-latency)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  # The trap diagnostic issue #242 is about is written to stderr, so capture it
+  # rather than letting it escape to the runner's own stderr unread.
+  err="$dir/watch.err"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
   pid=$!
   i=0
   while [ "$i" -lt 100 ]; do
@@ -584,8 +605,12 @@ test_watcher_stops_promptly_on_term() {
   wait_for_exit "$pid" 100
   status=$?
   [ "$status" -ne 124 ] || fail "watcher ignored TERM for its whole poll interval"
+  [ "$status" -eq 143 ] \
+    || fail "watcher did not stop by default signal disposition (status $status): a stop-signal handler is installed again, which puts the issue #242 trap-parse exposure back"
+  ! grep -q 'trap:' "$err" 2>/dev/null \
+    || fail "watcher reported a trap diagnostic while stopping: $(grep -m1 'trap:' "$err")"
   [ ! -e "$state/.watch.lock/pid" ] || fail "stopped watcher left its singleton lock claimed"
-  pass "watcher honors a stop signal without waiting out its poll interval"
+  pass "watcher stop is kernel-delivered and its EXIT cleanup still releases the lock"
 }
 
 test_watcher_stop_burst_during_cleanup_still_releases_lock() {
@@ -646,6 +671,160 @@ test_watcher_stop_burst_during_cleanup_still_releases_lock() {
   ! ls "$state"/.watch.lock.owner.* >/dev/null 2>&1 \
     || fail "stop-signal burst during cleanup leaked the lock owner directory"
   pass "a stop-signal burst during cleanup still releases the singleton lock"
+}
+
+test_watcher_stop_releases_its_event_wait_reader() {
+  # A push-capable (herdr) home spends its cycle wait inside a command
+  # substitution, and the fifo directory plus child stream reader that wait
+  # needs are allocated by the subshell running it. Nothing guarantees that
+  # subshell reaches its own return path: a SIGKILL or a crash of the watcher
+  # has always abandoned it, and a stop signal does now too. Those resources
+  # belong to the watcher, so the watcher's own EXIT cleanup must release them.
+  # Park a real watcher in that wait with a fake stream reader that subscribes
+  # and then blocks, stop it, and require that neither the reader nor the fifo
+  # directory outlives it.
+  local dir state fakebin tmp out pid readerpid i status reader_alive leftover
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "skip: jq not found (the herdr adapter needs it to resolve a session socket)"
+    return 0
+  fi
+  dir=$(make_case event-wait-stop)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  tmp="$dir/tmp"
+  out="$dir/watch.out"
+  mkdir -p "$tmp"
+  mark_pr_check_migration_complete "$state"
+  fm_write_meta "$state/evt.meta" "window=fmlab:pane1" "backend=herdr" "kind=ship"
+
+  # Answers only the session-socket lookup the event wait needs; every other
+  # herdr call fails, which is the adapter's own fall-through and keeps this
+  # case about the stop path rather than about pane capture.
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = session ] && [ "${2:-}" = list ]; then
+  printf '{"sessions":[{"name":"fmlab","socket_path":"/dev/null"}]}\n'
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+
+  # Acknowledges the subscription so the wait commits to its stream, then blocks
+  # past any budget this case can reach. It execs the block, so the pid it
+  # records names the process that must not survive the watcher.
+  cat > "$fakebin/fake-event-reader.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$$" > "$FM_FAKE_EVENT_READER_PID"
+printf '@subscribed\n'
+exec sleep 600
+SH
+  chmod +x "$fakebin/fake-event-reader.sh"
+
+  PATH="$fakebin:$PATH" TMPDIR="$tmp" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_BACKEND_HERDR_EVENTS_FORCE=1 \
+    FM_BACKEND_HERDR_EVENT_READER="$fakebin/fake-event-reader.sh" \
+    FM_FAKE_EVENT_READER_PID="$dir/reader.pid" \
+    "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  readerpid=
+  i=0
+  while [ "$i" -lt 150 ]; do
+    readerpid=$(cat "$dir/reader.pid" 2>/dev/null || true)
+    [ -n "$readerpid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$readerpid" ] \
+    || fail "watcher never parked in the herdr event wait, so this case proves nothing: $(cat "$out" 2>/dev/null || true)"
+  is_live_non_zombie "$readerpid" || fail "the fake stream reader was not running before the stop signal"
+  kill -TERM "$pid" 2>/dev/null || fail "could not send the stop signal"
+  wait_for_exit "$pid" 100
+  status=$?
+  # The release signals the reader, so give it the same bounded settle every
+  # other process assertion in this suite uses before reading liveness.
+  i=0
+  while [ "$i" -lt 50 ] && is_live_non_zombie "$readerpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  reader_alive=0
+  is_live_non_zombie "$readerpid" && reader_alive=1
+  # Never leave a 600s sleep behind, whatever the assertions below decide.
+  kill -KILL "$readerpid" 2>/dev/null || true
+  leftover=$(find "$tmp" -maxdepth 1 -type d -name 'fm-*eventwait.*' 2>/dev/null | head -1)
+  rm -rf "${tmp:?}"/fm-*eventwait.* 2>/dev/null || true
+  [ "$status" -ne 124 ] || fail "watcher parked in the herdr event wait ignored its stop signal"
+  [ "$reader_alive" -eq 0 ] \
+    || fail "stopped watcher abandoned its herdr event-stream reader (pid $readerpid still running)"
+  [ -z "$leftover" ] || fail "stopped watcher leaked its event-wait fifo directory: $leftover"
+  [ ! -e "$state/.watch.lock/pid" ] || fail "watcher stopped in the event wait left its singleton lock claimed"
+  pass "a watcher stopped inside the push event wait reaps its stream reader and removes its fifo directory"
+}
+
+test_watcher_cleanup_warning_survives_the_interrupted_redirection() {
+  # watcher_cleanup emits exactly one operator-facing warning: the one that says
+  # this watcher deliberately left its singleton lock on disk because it could
+  # not persist recovery evidence first. An operator who never sees it has no
+  # idea why a stale lock is there.
+  #
+  # Stop signals take their default disposition, so bash enters the EXIT trap
+  # from inside whatever command the signal interrupted, and the watcher's normal
+  # stop point is `wait "$sleep_pid" 2>/dev/null` in interruptible_sleep. That
+  # command's redirection is still in force there, so a bare `>&2` in the trap
+  # writes the warning to /dev/null - verified directly by running this same case
+  # against a build with `>&2` in place of the `>&4` below, which sees an empty
+  # stderr. The warning is therefore written to fd 4, a copy of stderr taken at
+  # startup, which no interrupted command can have pointed elsewhere.
+  #
+  # Force the failure deterministically rather than waiting for a real one:
+  # _fm_recovery_marker_publish rejects a downtime marker path that is a
+  # directory, which is the exact "could not be persisted" branch. Park the
+  # watcher in its cycle wait first, because that is the redirection context this
+  # case is about.
+  local dir state fakebin out err pid sleeper i status
+  dir=$(make_case cleanup-warning)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  err="$dir/watch.err"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=60 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 150 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+    || fail "watcher did not take the lock before the cleanup-warning check"
+  sleeper=
+  i=0
+  while [ "$i" -lt 150 ]; do
+    sleeper=$(ps -axo pid=,ppid=,comm= 2>/dev/null \
+      | awk -v parent="$pid" '$2 == parent && $3 ~ /(^|\/)sleep$/ { print $1; exit }')
+    [ -n "$sleeper" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$sleeper" ] \
+    || fail "watcher never reached its cycle wait, so this case would not exercise the interrupted redirection"
+  rm -f "$state/.watcher-down" 2>/dev/null || true
+  mkdir -p "$state/.watcher-down" \
+    || fail "could not make the downtime marker unpersistable"
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the watcher"
+  wait_for_exit "$pid" 100
+  status=$?
+  [ "$status" -ne 124 ] || fail "watcher ignored TERM for its whole poll interval"
+  grep -q 'retaining stale lock evidence' "$err" 2>/dev/null \
+    || fail "watcher retained a stale lock without telling the operator: its cleanup warning was swallowed by the redirection of the command the stop signal interrupted"
+  [ -e "$state/.watch.lock/pid" ] \
+    || fail "watcher warned that it was retaining stale lock evidence but released the lock anyway"
+  pass "the retained-stale-lock warning reaches the operator through the interrupted command's redirection"
 }
 
 test_watch_restart_hands_over_within_its_own_budget() {
@@ -1356,8 +1535,10 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
-test_watcher_stops_promptly_on_term
+test_watcher_stop_is_kernel_delivered_and_still_cleans_up
 test_watcher_stop_burst_during_cleanup_still_releases_lock
+test_watcher_stop_releases_its_event_wait_reader
+test_watcher_cleanup_warning_survives_the_interrupted_redirection
 test_watch_restart_hands_over_within_its_own_budget
 test_watcher_liveness_beacon_survives_interruptible_waits
 test_arm_self_eviction_is_loud_without_successor
