@@ -1121,7 +1121,8 @@ test_github_failed_gh_read_falls_back_to_gh_axi() {
 }
 
 test_github_failed_merge_names_an_observed_landed_state() {
-  local case_dir rc
+  local case_dir rc url
+  url=https://github.com/example/repo/pull/64
   case_dir=$(make_case github-failed-merge-actually-landed)
   mkdir -p "$case_dir/wt"
   add_gh_mocks_merge_fails "$case_dir"
@@ -1135,13 +1136,34 @@ test_github_failed_merge_names_an_observed_landed_state() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "github-failed-merge-actually-landed: the forge failure must still fail the wrapper"
+  # DELIBERATE FORK DIVERGENCE, recorded in docs/fork-divergence.md. Upstream
+  # asserts exit 1 here: the merge command failed, so the wrapper fails. This
+  # fork asserts exit 0, because the two things are answers to different
+  # questions. The command's exit status reports whether the CALL succeeded; the
+  # forge's own state reports whether the MERGE HAPPENED, and only the second is
+  # the question anyone cares about. When they disagree the forge is the system
+  # of record and the command status is a transport detail.
+  #
+  # The failure modes are not symmetric, which is what decides it. Exiting
+  # non-zero on a landed merge is a FALSE NEGATIVE: the work is on the default
+  # branch while everything downstream reasons that it is not - the task reads
+  # unfinished, cleanup refuses, a retry runs against an already-merged request,
+  # and a human is told something untrue about the repository. Exiting zero is
+  # only wrong if the forge lied about its own merged flag, and if that flag
+  # cannot be trusted then no verdict here is possible at all.
+  #
+  # This rule inverted four separate times while this task was being built, which
+  # is why bin/fm-pr-merge.sh's header carries an explicit warning not to correct
+  # it back to trusting the command status. Upstream arriving at the opposite
+  # verdict independently is evidence the inversion is EASY to reach, not
+  # evidence it is right.
+  expect_code 0 "$rc" "github-failed-merge-actually-landed: a merge the forge confirms landed must not be reported as failed"
   assert_grep 'error: pr merge failed' "$case_dir/stderr" \
     "github-failed-merge-actually-landed: the original forge error was masked"
   assert_grep 'state=MERGED, merged=true, isInMergeQueue=false' "$case_dir/stderr" \
     "github-failed-merge-actually-landed: the observed landed state was never named"
-  assert_no_grep 'verified: ' "$case_dir/stdout" \
-    "github-failed-merge-actually-landed: a failed merge command was reported as verified"
+  assert_grep "$url" "$case_dir/state/.wake-queue" \
+    "github-failed-merge-actually-landed: the landed merge never reached outcome reporting"
   assert_grep 'pr=https://github.com/example/repo/pull/64' "$case_dir/state/task-x1.meta" \
     "github-failed-merge-actually-landed: the landed PR lost its reference"
   pass "fm-pr-merge names a landed state hiding behind a failed GitHub merge command"
