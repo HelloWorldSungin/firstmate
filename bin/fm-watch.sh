@@ -1571,9 +1571,38 @@ exec 4>&2 || true
 # CONTINUES, so the watcher ignored the stop for the rest of its poll interval
 # (issue #242). Measured on bash 5.2.21: 4 ignored TERMs in 700 signalled runs of
 # a command-substitution loop, and 0 in 600 runs of the same loop without one.
-# Default disposition removes the parse entirely - the kernel terminates the
-# process - while bash still runs the EXIT trap below, so watcher_cleanup's child
-# reaping, private-file removal and lock release are unchanged.
+#
+# What default disposition removes is the STOP-HANDLER parse, and that is what
+# makes the stop unconditional: the process always dies. It does not remove the
+# parse, correcting an earlier claim here that it did and that the kernel
+# terminates the process. Bash installs its own terminating-signal handler and
+# must, or it could not run the EXIT trap at all; the EXIT trap below is itself a
+# string bash parses at the moment the signal is delivered, from inside whatever
+# command the stop interrupted - the same command-substitution context named
+# above. The parse is RELOCATED, not removed, so the two designs differ in what a
+# failed parse costs:
+#   - with a stop handler, the stop is IGNORED for the rest of the poll interval.
+#     The harness escalates to a hard kill, a hard kill runs no EXIT trap, so
+#     cleanup is lost AND the interval is wasted, and fm-watch-arm.sh --restart
+#     can fork a duplicate watcher while the first still holds the lock.
+#   - with default disposition, the process still exits 143 and cleanup is
+#     silently skipped. The dead-pid reclaim backstops the singleton lock only;
+#     sleep-child reaping, event_wait_release, active check process-group stop,
+#     private check-output removal and custom check snapshot removal are not
+#     backstopped.
+# Measured rather than assumed on bash 5.2.21, 900 signalled runs per arm of the
+# same command-substitution loop, interleaved so load drift hit both arms equally
+# and cleanup detected by a marker file because the interrupted command's
+# redirections swallow the diagnostic: the stop-handler design lost cleanup 3
+# times in 900 and 2 times in 900 across two independent runs, default
+# disposition 0 times in 900 in both, against a positive control carrying a
+# deliberately malformed EXIT trap detected 30 times in 30.
+#
+# Residual, stated as a residual and never as a guarantee: this EXIT trap's own
+# parse CAN fail - shown directly with a malformed trap - and when it does the
+# process still exits 143 with cleanup skipped and the diagnostic swallowed by
+# the interrupted command's redirections, so the trap-diagnostic assertion in
+# tests/fm-watcher-lock.test.sh cannot observe that case.
 #
 # What this does NOT preserve, correcting an earlier claim here that it did:
 # issue #160's burst safety is NARROWED, not kept. watcher_cleanup's ignore
