@@ -2477,14 +2477,20 @@ test_github_still_forwards_sha_arg() {
   add_gh_mocks "$case_dir" dddddddddddddddddddddddddddddddddddddddd
   : > "$case_dir/gh-axi.log"
 
-  # --sha is rejected only where the head is firstmate's to determine. GitHub's
-  # extra args are the caller's business exactly as they were.
+  # --sha is ADMITTED to the forwarded-argument allow-list as a head-binding
+  # argument: it constrains the mutation to the state this run verified, cannot
+  # defer execution, and makes the merge strictly narrower, so a push landing
+  # between validation and merge makes the forge refuse rather than merge
+  # something nobody checked. It is forwarded because it is admitted
+  # categorically and recorded in the allow-list, NOT because the unbounded
+  # passthrough survived - that was deliberately closed, and every other
+  # unlisted argument is refused by name.
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/44 -- --sha abc123 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "github-sha-arg: fm-pr-merge failed"
 
   grep -qxF 'pr merge 44 --repo github.com/example/repo --squash --sha abc123' "$case_dir/gh-axi.log" \
-    || fail "github-sha-arg: the GitHub path stopped forwarding a caller --sha"
-  pass "fm-pr-merge leaves GitHub extra-arg handling unchanged, including --sha"
+    || fail "github-sha-arg: an admitted head-binding argument was not forwarded"
+  pass "fm-pr-merge forwards --sha as an admitted head-binding argument"
 }
 
 # --- durable merge outcome ---------------------------------------------------
@@ -2652,25 +2658,36 @@ test_main_home_merge_leaves_a_durable_wake() {
 }
 
 test_queued_github_merge_leaves_the_poll_armed() {
-  local case_dir url
+  local case_dir url rc
   url=https://github.com/example/repo/pull/66
   case_dir=$(make_home_case queued-github-merge)
   add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
   write_github_outcome "$case_dir" OPEN false true main
   : >"$case_dir/gh-axi.log"
 
+  # DELIBERATE FORK DIVERGENCE, recorded in docs/fork-divergence.md. Upstream
+  # reports a queued request as a verified outcome and exits zero. This fork
+  # refuses deferred execution, because a queued merge lands later against a base
+  # nobody compared. What the case still pins is unchanged: the queued request is
+  # never reported as landed and the poll is left to confirm it.
+  set +e
   FM_TEST_GH_MERGE_STATE=open FM_TEST_HOME="$case_dir/home" \
     run_pr_merge "$case_dir" task-x1 "$url" \
-      >"$case_dir/stdout" 2>"$case_dir/stderr" \
-    || fail "queued-github-merge: accepted merge command failed"
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
 
+  expect_code 1 "$rc" \
+    "queued-github-merge: a queued request must be refused, not accepted"
+  assert_grep 'queued for deferred execution' "$case_dir/stderr" \
+    "queued-github-merge: the refusal did not name the deferral it refused"
   assert_absent "$case_dir/state/.wake-queue" \
     "queued-github-merge: a queued merge was reported as landed"
   [ -f "$case_dir/state/task-x1.check.sh" ] \
     || fail "queued-github-merge: the merge poll was not left armed"
   [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] \
     || fail "queued-github-merge: a queued merge was marked as reported"
-  pass "a queued GitHub merge stays silent and leaves confirmation to the armed poll"
+  pass "a queued GitHub merge is refused and left to the armed poll"
 }
 
 test_distinct_merged_prs_keep_distinct_wakes() {
@@ -2936,16 +2953,37 @@ SH
       esac
     else
       url="https://gitlab.com/example/repo/-/merge_requests/$number"
-      printf '{"state":"merged","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n' \
-        >"$case_dir/mr.json"
+      add_glab_mock "$case_dir"
+      : >"$case_dir/glab.log"
+      write_mr_json "$case_dir/mr.json"
+      write_mr_json "$case_dir/mr-post.json" state=merged
       if [ "$route" = command-error ]; then
+        # The merge command fails, and the forge reports the merge landed anyway,
+        # so the confirmation read is what observes it. The shared mock cannot
+        # express that: it only switches to the merged view once a SUCCESSFUL
+        # merge has run. This mock reports the request open until the merge is
+        # attempted and merged afterwards, whatever the command's exit status.
         cat >"$case_dir/fakebin/glab" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
+printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
+case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
-  "mr merge") echo "simulated transport failure after the merge landed" >&2; exit 1 ;;
+  "api projects/"*|"api version")
+    printf '{"merge_method":"merge"}\n'
+    ;;
+  "mr view")
+    if [ -e "$case_dir/glab-merge-attempted" ]; then
+      cat "$case_dir/mr-post.json"
+    else
+      cat "$FM_TEST_GLAB_JSON"
+    fi
+    ;;
+  "mr merge")
+    : > "$case_dir/glab-merge-attempted"
+    echo "error: mr merge failed" >&2
+    exit 1
+    ;;
 esac
-cat "$FM_TEST_GLAB_JSON"
 exit 0
 SH
         chmod +x "$case_dir/fakebin/glab"
@@ -2953,7 +2991,7 @@ SH
     fi
 
     set +e
-    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" "task-$number" "$url" \
+    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
       >"$case_dir/stdout" 2>"$case_dir/stderr"
     rc=$?
     set -e

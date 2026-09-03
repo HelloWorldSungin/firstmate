@@ -134,6 +134,15 @@ shift 2
 #   --body-file -F                merge itself creates.
 #   -d --delete-branch            GitHub branch cleanup, which runs AFTER the
 #   --remove-source-branch        merge has executed and so cannot defer it.
+#   --sha --sha=*                 head-binding: constrains the mutation to the
+#                                 exact state this run verified. It cannot defer
+#                                 execution and makes the merge strictly
+#                                 narrower - a push landing between validation
+#                                 and merge makes the forge REFUSE rather than
+#                                 merge something nobody checked. This is the
+#                                 allow-list's own guarantee expressed as an
+#                                 argument, and the GitLab path already relies on
+#                                 it internally for exactly that binding.
 #
 # Deliberately NOT admitted, each for a stated reason:
 #   --auto                        requests deferred execution outright.
@@ -146,10 +155,24 @@ shift 2
 # Refusing by name rather than silently dropping keeps a caller's mistake loud.
 assert_merge_args_allowed() {
   local arg
-  for arg in "$@"; do
+  # Detached values belong to the flag before them - "--sha abc123" is one
+  # argument and its value, not two arguments - so a value-taking flag consumes
+  # the next word. Without this the value itself reaches the catch-all and is
+  # refused as an unknown argument.
+  while [ "$#" -gt 0 ]; do
+    arg=$1
     case "$arg" in
-      --squash|--merge|-s|-m|--method|--method=*) ;;
-      --subject|--body|-t|-b|--body-file|-F) ;;
+      --method|--sha|--subject|--body|--body-file|-t|-b|-F)
+        if [ "$#" -lt 2 ]; then
+          printf 'error: refusing to merge %s because %s was given without a value\n' \
+            "$URL" "$arg" >&2
+          return 1
+        fi
+        shift 2
+        continue
+        ;;
+      --squash|--merge|-s|-m|--method=*) ;;
+      --sha=*) ;;
       --subject=*|--body=*|--body-file=*) ;;
       -d|--delete-branch|--remove-source-branch) ;;
       --auto|--auto=*)
@@ -172,6 +195,7 @@ assert_merge_args_allowed() {
         return 1
         ;;
     esac
+    shift
   done
 }
 

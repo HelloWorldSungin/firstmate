@@ -107,6 +107,12 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
     ;;
+  # The guarded merge establishes its target through this passthrough before
+  # mutating, so the default-target contract holds on the degraded path too.
+  api\ *)
+    printf 'api_response:\n  body: %s %s\n' \
+      "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
+    ;;
 esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH
@@ -117,6 +123,10 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+case "${1:-} ${2:-}" in
+  # merge_method=merge is the case where GitLab cannot rebase at merge time.
+  "api projects/"*|"api version") printf '{"merge_method":"merge"}\n' ; exit 0 ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
@@ -581,7 +591,7 @@ test_valid_recording_and_merge_derivation() {
   : > "$dir/gh-axi.log"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
-  grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
+  grep -qxF 'pr merge 37 --repo github.com/my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
   # A merge this home performed leaves its own durable outcome, so the poll's
   # confirmation is no longer the first the captain hears of it. Acknowledge that
