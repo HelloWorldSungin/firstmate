@@ -284,11 +284,15 @@ test_the_window_is_four_hours() {
   snap="$home/snapshot.json"
   write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
   run_notify "$home" "$fakebin" fourhours "$snap" >/dev/null || fail "the first ask failed"
-  # One second short of four hours is still inside; one second past is not.
-  age_cooldown "$home/state" mate 14399
+  # The reconcile reads its own clock, so a seeded age grows by however long
+  # the run takes to reach that read: a one-second bracket reports a correct
+  # four-hour window as broken whenever the host is loaded. Bracket by a minute
+  # on each side instead - far wider than any scheduling delay, still far
+  # narrower than the gap to any neighboring window a regression would pick.
+  age_cooldown "$home/state" mate 14340
   out=$(run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "cooldown: mate" "the window was shorter than four hours: $out"
-  age_cooldown "$home/state" mate 14401
+  age_cooldown "$home/state" mate 14460
   out=$(run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "sent: mate" "the window was longer than four hours: $out"
   pass "the cooldown window is four hours"
@@ -405,7 +409,7 @@ test_a_failed_send_is_retried_on_the_next_run() {
 }
 
 test_busy_lifecycle_locks_never_hold_up_the_digest() {
-  local label home mate fakebin snap lock ready release holder notify out
+  local label home mate fakebin snap lock ready release holder notify out deadline
   for label in reconcile control meta; do
     { read -r home; read -r mate; read -r fakebin; } < <(make_main_home "busy-$label" mate)
     snap="$home/snapshot.json"
@@ -422,7 +426,15 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
+    # Not blocking means finishing while the holder still owns the lock, not
+    # finishing inside some wall-clock budget: a loaded host misses a fixed
+    # budget without anything being blocked. Wait for the exit with the lock
+    # still held, bounded so a genuinely blocked path still reports instead of
+    # hanging - it can only exit after the release below, which never comes.
+    deadline=$(( $(date +%s) + 60 ))
+    while kill -0 "$notify" 2>/dev/null && [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 0.05
+    done
     if kill -0 "$notify" 2>/dev/null; then
       : > "$release"
       wait "$notify" 2>/dev/null || true
