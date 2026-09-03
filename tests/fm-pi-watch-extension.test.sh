@@ -2179,6 +2179,17 @@ EOF
     i=$((i + 1))
   done
   grep -qx "$pid" "$cleanup_log" 2>/dev/null || fail "Pi process-exit fallback did not deliver TERM to the replacement arm child"
+  # The child writes that log line from inside its own TERM trap, BEFORE its
+  # exit, so the line proves the signal arrived and not that the process is
+  # gone. Reaping needs the trap body to finish, bash to tear down, and the
+  # kernel to release the pid, which is a real window under load. Give the death
+  # its own bounded wait on the same budget as the delivery wait above, or this
+  # case fails on scheduling rather than on the behaviour it exists to pin.
+  i=0
+  while [ "$i" -lt 1000 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.02
+    i=$((i + 1))
+  done
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$pid" 2>/dev/null || true
     fail "Pi arm child $pid survived process-exit cleanup"
