@@ -270,6 +270,8 @@ That rule has one granted exception that [`dashboard-events.md`](dashboard-event
 The grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and a merge must not read that grant as a violation of the rule above and narrow it away.
 This entry and the GBrain entry above are bridged by the dashboard surfaces that read the home's brain read-only rather than duplicating it - the Knowledge view and health strip served behind [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) from `assets/dashboard/gbrain.js`, the read-only snapshot [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) takes, the capture status the History view reads off each outcome record, and the `tests/fm-dashboard-gbrain.test.sh` and `tests/fm-dashboard-gbrain-ui.test.sh` suites that pin them - alongside the `data/gbrain/` grant above that lets a search write the index it reads.
 
+## Retired divergences
+
 ### Separate decision-hold lifecycle - retired 2026-08-24
 
 The fork's separate decision records and `decision-hold-lifecycle` completion owner were retired in favor of upstream's ordinary task held for the captain, adopted with `kunchenguid/firstmate#2728`.

@@ -11,17 +11,19 @@
 # The gh-axi merge abstraction always performs the merge; the outcome read that
 # follows it never becomes a prerequisite for reaching that abstraction. After
 # gh-axi returns success, GitHub's live state is read back and accepted only
-# when the pull request is merged or in the merge queue. gh's GraphQL API
+# when the pull request is merged; a queued request is REFUSED rather than
+# accepted, which is a deliberate fork divergence recorded in
+# docs/fork-divergence.md. gh's GraphQL API
 # supplies that queue-aware read when gh is on PATH; when gh is absent or its
 # read fails, gh-axi's own view still proves a landed merge, and every outcome
 # it cannot prove refuses, reporting the single failed read when gh is absent
 # and naming both failed reads when gh is present and its own read failed.
 # If the pull request remains open and the base branch has an effective
-# merge_queue rule, the refusal names the queue's configured merge method and
-# the exact -- --auto --<method> retry flags, unless the caller already passed
-# that method with --auto to a merge command that returned success, in which
-# case it reports instead that the accepted request has not entered the queue
-# and the queue state has to be re-checked.
+# merge_queue rule, the refusal names that requirement and says this fork
+# refuses deferred execution, then names a next step it can honour: land with an
+# immediate merge method, or retarget and re-run validation. It does NOT
+# advertise a --auto retry, because the forwarded-argument allow-list refuses
+# --auto by name, and a refusal must never name a step that cannot work.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -40,7 +42,10 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
-# Extra GitHub args are forwarded unchanged, including an explicit --merge.
+# Extra GitHub args are an ALLOW-LIST, not an unchanged passthrough: merge-method
+# selectors, message arguments, post-execution branch cleanup, and head-binding
+# arguments are admitted with a recorded reason each, and everything else is
+# refused by name. See assert_merge_args_allowed below.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -154,10 +159,15 @@ shift 2
 #
 # Deliberately NOT admitted, each for a stated reason:
 #   --auto                        requests deferred execution outright.
-#   --rebase -r                   on GitLab this rewrites the source branch
-#                                 BEFORE the merge and leaves it rewritten even
-#                                 when the SHA-bound merge then fails, which is
-#                                 the mutation the no-auto-rebase rule prevents.
+#   --rebase -r                   REFUSED ON GITLAB ONLY. There it rewrites the
+#                                 source branch BEFORE the merge and leaves it
+#                                 rewritten even when the SHA-bound merge then
+#                                 fails, which is the mutation the no-auto-rebase
+#                                 rule prevents. On GitHub rebase merge replays
+#                                 onto the base without touching the source, so
+#                                 it is admitted as an ordinary merge-method
+#                                 selector. Do not re-collapse these into one
+#                                 rule: the rationale is forge-specific.
 #   --repo -R                     would retarget the mutation away from the
 #                                 identity this run validated.
 # Refusing by name rather than silently dropping keeps a caller's mistake loud.
@@ -190,9 +200,23 @@ assert_merge_args_allowed() {
         return 1
         ;;
       --rebase|-r)
-        printf 'error: refusing to forward %s to the merge of %s because a rebase rewrites the source branch before the merge and leaves it rewritten even if the merge then fails\n' \
+        # THE TWO FORGES DIFFER HERE AND THE DIFFERENCE IS THE WHOLE POINT, so it
+        # is recorded rather than collapsed into one rule. On GITLAB, rebase
+        # REWRITES THE SOURCE BRANCH before merging and leaves it rewritten even
+        # when the SHA-bound merge then fails, which is the mutation the
+        # no-auto-rebase exclusion exists to prevent - so it is refused. On
+        # GITHUB, rebase merge replays the commits onto the base and does not
+        # touch the source branch at all: it is an ordinary immediate merge
+        # method and belongs in the merge-method-selector category above.
+        # Refusing it there would remove a method this file documents as
+        # supported and would tell the operator something untrue about why.
+        if [ "$PROVIDER" != gitlab ]; then
+          shift
+          continue
+        fi
+        printf 'error: refusing to forward %s to the merge of %s because a GitLab rebase rewrites the source branch before the merge and leaves it rewritten even if the merge then fails\n' \
           "$arg" "$URL" >&2
-        printf 'action: land the pull request with --squash or --merge, or bring the branch up and re-run validation\n' >&2
+        printf 'action: land the merge request with --squash or --merge, or bring the branch up and re-run validation\n' >&2
         return 1
         ;;
       *)
@@ -349,7 +373,7 @@ FM_PR_GITLAB_ACCEPTANCE=
 # UNKNOWN IS NOT ABSENT: only a POSITIVE reading permits. An unreadable merge
 # method, or an unreadable setting on an applicable method, still refuses.
 gitlab_require_attested_merge() {
-  local json method enabled version
+  local json method enabled version major minor behind
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api "projects/$(github_urlencode_path_segment "$FM_PR_PATH")" 2>/dev/null) \
     || [ -z "$json" ]; then
     printf 'error: refusing to merge %s because the GitLab project merge settings could not be read, and unknown does not prove automatic rebase is disabled\n' \
@@ -364,31 +388,81 @@ gitlab_require_attested_merge() {
     printf 'action: re-run validation once the forge is readable\n' >&2
     return 1
   fi
-  # A positive reading that the method cannot auto-rebase permits regardless of
-  # version, because automatic rebase does not apply to plain merge commits.
+  # POSITIVE reading that the method cannot auto-rebase. Automatic rebase applies
+  # only to rebase_merge and ff, so a plain merge commit permits at any version.
   [ "$method" = merge ] && return 0
 
-  enabled=$(printf '%s' "$json" | jq -r 'if has("automatic_rebase_enabled") then (.automatic_rebase_enabled | tostring) else "" end' 2>/dev/null)
-  if [ "$enabled" = true ]; then
-    printf 'error: refusing to merge %s because the GitLab project setting automatic_rebase_enabled is on with merge method %s, so the source branch can be rebased at merge time and land commits whose pipeline never ran\n' \
-      "$URL" "$method" >&2
-    printf 'action: bring the branch up to the current target branch and re-run validation, or turn off automatic rebase before merge for this project\n' >&2
-    return 1
-  fi
+  enabled=$(printf '%s' "$json" \
+    | jq -r 'if has("automatic_rebase_enabled") then (.automatic_rebase_enabled | tostring) else "" end' 2>/dev/null)
   [ "$enabled" = false ] && return 0
+  if [ "$enabled" = true ]; then
+    gitlab_refuse_if_behind "the project setting automatic_rebase_enabled is on with merge method $method"
+    return $?
+  fi
 
-  # Field absent. On 19.4+ that is unreadable state and refuses; before 19.4 the
-  # capability exists but cannot be reported, so an applicable method refuses too.
+  # The field is absent. That is NOT proof the capability is absent: automatic
+  # rebase became generally available in GitLab 19.2 while the field reporting it
+  # first appears in 19.4, so on 19.2 and 19.3 it can be on and unreadable. The
+  # version decides which of the three windows applies.
   version=$(GITLAB_HOST="$FM_PR_HOST" glab api version 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
-  if [ -z "$version" ]; then
-    printf 'error: refusing to merge %s because the GitLab version could not be read, so automatic rebase on merge method %s cannot be ruled out\n' \
-      "$URL" "$method" >&2
+  case "$version" in
+    [0-9]*.[0-9]*) ;;
+    *)
+      printf 'error: refusing to merge %s because the GitLab version could not be read, so automatic rebase on merge method %s cannot be ruled out\n' \
+        "$URL" "$method" >&2
+      printf 'action: re-run validation once the forge is readable\n' >&2
+      return 1
+      ;;
+  esac
+  major=${version%%.*}
+  minor=${version#*.}
+  minor=${minor%%.*}
+  case "$major$minor" in
+    *[!0-9]*)
+      printf 'error: refusing to merge %s because the GitLab version %s could not be compared, so automatic rebase on merge method %s cannot be ruled out\n' \
+        "$URL" "$version" "$method" >&2
+      printf 'action: re-run validation once the forge is readable\n' >&2
+      return 1
+      ;;
+  esac
+  # 19.4 and later: the field exists on this version, so its absence means the
+  # response was not readable rather than that the capability is missing.
+  if [ "$major" -gt 19 ] || { [ "$major" -eq 19 ] && [ "$minor" -ge 4 ]; }; then
+    printf 'error: refusing to merge %s because GitLab %s exposes automatic_rebase_enabled but this project response did not carry it, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" "$version" >&2
     printf 'action: re-run validation once the forge is readable\n' >&2
     return 1
   fi
-  printf 'error: refusing to merge %s because this GitLab instance (version %s) does not expose automatic_rebase_enabled and merge method %s can rebase the source branch at merge time, so it cannot be ruled out\n' \
-    "$URL" "$version" "$method" >&2
-  printf 'action: bring the branch up to the current target branch and re-run validation, or set the project merge method to merge\n' >&2
+  # Before 19.2 the capability did not exist at all, so there is nothing to rule
+  # out and refusing here would remove legitimate merges.
+  if [ "$major" -lt 19 ] || { [ "$major" -eq 19 ] && [ "$minor" -lt 2 ]; }; then
+    return 0
+  fi
+  # 19.2 and 19.3: capability present, field absent. This is the real risk
+  # window, and it only fires when the branch is actually behind.
+  gitlab_refuse_if_behind "GitLab $version can rebase before merge with merge method $method but does not expose automatic_rebase_enabled"
+}
+
+# Automatic rebase runs only when the source branch is BEHIND the target, so a
+# branch that is not behind cannot be rebased and must not be refused. The count
+# needs include_diverged_commits_count=true; it is not returned by default.
+gitlab_refuse_if_behind() {  # <because-clause>
+  local because=$1 behind
+  behind=$(GITLAB_HOST="$FM_PR_HOST" glab api \
+    "projects/$(github_urlencode_path_segment "$FM_PR_PATH")/merge_requests/$PR_NUMBER?include_diverged_commits_count=true" \
+    2>/dev/null | jq -r '.diverged_commits_count // empty' 2>/dev/null)
+  case "$behind" in
+    ''|*[!0-9]*)
+      printf 'error: refusing to merge %s because %s, and whether the source branch is behind the target could not be established\n' \
+        "$URL" "$because" >&2
+      printf 'action: re-run validation once the forge reports the merge request divergence\n' >&2
+      return 1
+      ;;
+  esac
+  [ "$behind" -eq 0 ] && return 0
+  printf 'error: refusing to merge %s because %s, and the source branch is %s commits behind the target, so the merge can land commits whose pipeline never ran\n' \
+    "$URL" "$because" "$behind" >&2
+  printf 'action: bring the branch up to the current target branch and re-run validation\n' >&2
   return 1
 }
 

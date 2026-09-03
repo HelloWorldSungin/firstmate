@@ -123,7 +123,8 @@ make_case() {
     'state=MERGED' \
     'merged=true' \
     'queued=false' \
-    'base=main' > "$case_dir/github-outcome"
+    'base=main' \
+    'default=main' > "$case_dir/github-outcome"
   : > "$case_dir/github-rules"
   : > "$case_dir/gh.log"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
@@ -410,11 +411,35 @@ add_glab_mock() {
 printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
-  # The guarded merge reads project merge settings before mutating, because
-  # GitLab can rebase the source branch at merge time and strand the attestation.
-  # merge_method=merge is the case where that cannot happen, so it permits.
-  "api projects/"*|"api version")
-    printf '%s\n' "${FM_TEST_GLAB_PROJECT_JSON:-{\"merge_method\":\"merge\"}}"
+  # The guarded merge reads project merge settings, the instance version, and
+  # the merge request divergence before mutating, because GitLab can rebase the
+  # source branch at merge time and strand the attestation. Each answer comes
+  # from a per-case file when one exists, so a case can exercise any point in
+  # the bound; the defaults are the permitting ones.
+  "api version")
+    if [ -f "$case_dir/version" ]; then
+      printf '{"version":"%s"}\n' "$(cat "$case_dir/version")"
+    else
+      printf '{"version":"19.3.0"}\n'
+    fi
+    exit 0
+    ;;
+  "api projects/"*)
+    case " $* " in
+      *include_diverged_commits_count*)
+        if [ -f "$case_dir/behind" ]; then
+          printf '{"diverged_commits_count":%s}\n' "$(cat "$case_dir/behind")"
+        else
+          printf '{"diverged_commits_count":0}\n'
+        fi
+        exit 0
+        ;;
+    esac
+    if [ -f "$case_dir/project.json" ]; then
+      cat "$case_dir/project.json"
+    else
+      printf '%s\n' "${FM_TEST_GLAB_PROJECT_JSON:-{\"merge_method\":\"merge\"}}"
+    fi
     exit 0
     ;;
   "mr view")
@@ -623,6 +648,11 @@ test_merge_failure_propagates_after_recording() {
   case_dir=$(make_case merge-fails)
   mkdir -p "$case_dir/wt"
   add_gh_mocks_merge_fails "$case_dir"
+  # A GENUINE failure: the command failed AND the forge does not report the
+  # request merged. make_case's default fixture reports MERGED, which is the
+  # separate landed-but-command-failed case that must exit zero, so this case
+  # states its own not-merged outcome rather than inheriting that one.
+  write_github_outcome "$case_dir" OPEN false false main
   : > "$case_dir/gh-axi.log"
 
   set +e
@@ -796,6 +826,10 @@ test_github_auto_merge_spellings_are_refused_before_the_merge() {
   # --auto before the merge is attempted, so that explanation is unreachable and
   # the case now covers what it can still prove: BOTH spellings are refused by
   # name, with the reason, and neither reaches the forge.
+  # Collapsed from five near-identical cases that each set up the same scenario
+  # and made the same three assertions. What they actually covered between them
+  # is the argument SHAPE, so that is what varies here: both spellings, alone and
+  # beside a method, and beside a method the base branch's queue would require.
   for spelling in --auto --auto=true; do
     case_dir=$(make_case "github-auto-refused${spelling#--auto}")
     mkdir -p "$case_dir/wt"
@@ -823,109 +857,9 @@ test_github_auto_merge_spellings_are_refused_before_the_merge() {
   pass "fm-pr-merge refuses every --auto spelling before any merge is attempted"
 }
 
-test_github_failed_merge_never_claims_armed_auto_merge() {
-  local case_dir rc
-  case_dir=$(make_case auto-not-forwardable-failed-merge)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4242424242424242424242424242424242424242
-  write_github_outcome "$case_dir" OPEN false false main
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
 
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/67 -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
 
-  expect_code 1 "$rc" \
-    "auto-not-forwardable-failed-merge: forwarding --auto must be refused"
-  assert_grep 'requests deferred execution' "$case_dir/stderr" \
-    "auto-not-forwardable-failed-merge: the refusal did not name why --auto is not forwardable"
-  assert_grep 'merges immediately on judged evidence' "$case_dir/stderr" \
-    "auto-not-forwardable-failed-merge: the refusal did not name the contract it protects"
-  [ ! -s "$case_dir/gh-axi.log" ] \
-    || fail "auto-not-forwardable-failed-merge: a refused argument still reached the forge"
-  pass "fm-pr-merge refuses --auto before a merge can be attempted at all"
-}
 
-test_github_failed_merge_with_queue_flags_never_claims_acceptance() {
-  local case_dir rc
-  case_dir=$(make_case auto-not-forwardable-queue-flags)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4242424242424242424242424242424242424242
-  write_github_outcome "$case_dir" OPEN false false main
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/74 -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" \
-    "auto-not-forwardable-queue-flags: forwarding --auto must be refused"
-  assert_grep 'requests deferred execution' "$case_dir/stderr" \
-    "auto-not-forwardable-queue-flags: the refusal did not name why --auto is not forwardable"
-  assert_grep 'merges immediately on judged evidence' "$case_dir/stderr" \
-    "auto-not-forwardable-queue-flags: the refusal did not name the contract it protects"
-  [ ! -s "$case_dir/gh-axi.log" ] \
-    || fail "auto-not-forwardable-queue-flags: a refused argument still reached the forge"
-  pass "fm-pr-merge refuses --auto rather than forwarding queue flags"
-}
-
-test_github_accepted_queue_flags_do_not_echo_back_the_same_command() {
-  local case_dir rc
-  case_dir=$(make_case auto-not-forwardable-accepted-flags)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4242424242424242424242424242424242424242
-  write_github_outcome "$case_dir" OPEN false false main
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/68 -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" \
-    "auto-not-forwardable-accepted-flags: forwarding --auto must be refused"
-  assert_grep 'requests deferred execution' "$case_dir/stderr" \
-    "auto-not-forwardable-accepted-flags: the refusal did not name why --auto is not forwardable"
-  assert_grep 'merges immediately on judged evidence' "$case_dir/stderr" \
-    "auto-not-forwardable-accepted-flags: the refusal did not name the contract it protects"
-  [ ! -s "$case_dir/gh-axi.log" ] \
-    || fail "auto-not-forwardable-accepted-flags: a refused argument still reached the forge"
-  pass "fm-pr-merge never advertises a retry it would itself refuse"
-}
-
-test_github_mismatched_queue_flags_still_name_the_retry() {
-  local case_dir rc
-  case_dir=$(make_case auto-not-forwardable-mismatched-flags)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4242424242424242424242424242424242424242
-  write_github_outcome "$case_dir" OPEN false false main
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/69 -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" \
-    "auto-not-forwardable-mismatched-flags: forwarding --auto must be refused"
-  assert_grep 'requests deferred execution' "$case_dir/stderr" \
-    "auto-not-forwardable-mismatched-flags: the refusal did not name why --auto is not forwardable"
-  assert_grep 'merges immediately on judged evidence' "$case_dir/stderr" \
-    "auto-not-forwardable-mismatched-flags: the refusal did not name the contract it protects"
-  [ ! -s "$case_dir/gh-axi.log" ] \
-    || fail "auto-not-forwardable-mismatched-flags: a refused argument still reached the forge"
-  pass "fm-pr-merge refuses --auto regardless of the method beside it"
-}
 
 test_github_unrecognised_queue_method_still_names_the_queue() {
   local case_dir rc
@@ -1337,31 +1271,6 @@ test_github_closed_unqueued_outcome_omits_retry_flags() {
   pass "fm-pr-merge omits merge-queue retry guidance for a closed GitHub PR"
 }
 
-test_github_queued_outcome_is_verified() {
-  local case_dir rc
-  case_dir=$(make_case auto-not-forwardable-queued-outcome)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks "$case_dir" 4242424242424242424242424242424242424242
-  write_github_outcome "$case_dir" OPEN false false main
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/53 -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" \
-    "auto-not-forwardable-queued-outcome: forwarding --auto must be refused"
-  assert_grep 'requests deferred execution' "$case_dir/stderr" \
-    "auto-not-forwardable-queued-outcome: the refusal did not name why --auto is not forwardable"
-  assert_grep 'merges immediately on judged evidence' "$case_dir/stderr" \
-    "auto-not-forwardable-queued-outcome: the refusal did not name the contract it protects"
-  [ ! -s "$case_dir/gh-axi.log" ] \
-    || fail "auto-not-forwardable-queued-outcome: a refused argument still reached the forge"
-  pass "fm-pr-merge refuses --auto rather than accepting a queued outcome"
-}
 
 test_github_queue_required_refusal_names_retry_flags() {
   local case_dir rc
@@ -2574,6 +2483,9 @@ test_failed_merge_reports_nothing() {
   local case_dir rc
   case_dir=$(make_home_case failed-merge-silent remote)
   add_gh_mocks_merge_fails "$case_dir"
+  # A genuine failure needs a not-merged outcome; the inherited default reports
+  # MERGED, which is the landed-but-command-failed case that must exit zero.
+  write_github_outcome "$case_dir" OPEN false false main
   : >"$case_dir/gh-axi.log"
 
   set +e
@@ -2809,22 +2721,17 @@ test_github_open_unqueued_outcome_refuses
 test_github_unreadable_outcome_keeps_pr_bookkeeping
 test_github_refusal_quotes_the_forge_output
 test_github_unreadable_outcome_refusal_quotes_the_forge_output
-test_github_accepted_queue_flags_do_not_echo_back_the_same_command
-test_github_mismatched_queue_flags_still_name_the_retry
 test_github_unrecognised_queue_method_still_names_the_queue
 test_github_unreadable_queue_rules_are_not_reported_as_no_queue
 test_github_no_queue_rule_says_nothing_about_a_queue
 test_github_fallback_view_refusal_says_the_queue_was_unobservable
 test_github_auto_merge_spellings_are_refused_before_the_merge
-test_github_failed_merge_never_claims_armed_auto_merge
-test_github_failed_merge_with_queue_flags_never_claims_acceptance
 test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
 test_github_without_gh_still_uses_gh_axi_merge
 test_github_without_gh_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
-test_github_queued_outcome_is_verified
 test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
@@ -2886,12 +2793,15 @@ test_secondmate_without_parent_binding_is_loud
 # test, and the architecture document by three separate routes, and an
 # enumeration of the paths that get it wrong cannot keep finding them.
 #
-# The route list is derived from what the merge path actually does, not carried
-# over from an earlier structure. Adding a new way to observe a landed merge
-# means adding one line here.
+# SIX routes, and the number is only worth its distinctness test: each route below
+# is separated from every other by ONE STATED SENTENCE, and any route that cannot
+# be distinguished in one sentence is not a route. An earlier version claimed
+# seven by listing a target-preflight case whose fixture was byte-identical to
+# post-mutation and which the implementation does not distinguish either - when
+# the preflight observes MERGED it returns 0 and the merge is still attempted, so
+# the landed observation always comes from a later read. Adding a genuinely new
+# way to observe a landed merge means adding one line here AND its sentence.
 #
-#   github|target-preflight        the default-target check reads MERGED before
-#                                  any mutation is attempted
 #   github|post-mutation           the merge command succeeds and the readback
 #                                  confirms it
 #   github|command-error           the merge command FAILS and the readback
@@ -2911,7 +2821,6 @@ test_secondmate_without_parent_binding_is_loud
 test_every_landed_observation_reaches_outcome_reporting() {
   local case_dir number=700 provider route spec url rc
   for spec in \
-    github\|target-preflight \
     github\|post-mutation \
     github\|command-error \
     github\|degraded-no-gh \
@@ -3179,5 +3088,63 @@ SH
 }
 
 test_observed_landed_merge_is_not_reread
+
+# THE GITLAB AUTOMATIC-REBASE GUARD, both directions.
+#
+# A guard makes TWO claims - that it refuses what it must, and that it permits
+# what it must - and testing only one is how a fail-always control passes for a
+# working one. Deleting gitlab_require_attested_merge used to leave this whole
+# suite green, because only the permit path ran, incidentally, off a mock default.
+#
+# The bound is narrow on purpose: automatic rebase applies only to rebase_merge
+# and ff, runs only when the source is BEHIND the target, became generally
+# available in GitLab 19.2, and its API field first appears in 19.4. Refusing
+# outside that window removes legitimate merges.
+test_gitlab_auto_rebase_guard_refuses_and_permits() {
+  local case_dir rc spec label project behind want
+  for spec in \
+    'enabled-and-behind|{"merge_method":"ff","automatic_rebase_enabled":true}|3|refuse' \
+    'enabled-not-behind|{"merge_method":"ff","automatic_rebase_enabled":true}|0|permit' \
+    'explicitly-disabled|{"merge_method":"ff","automatic_rebase_enabled":false}|3|permit' \
+    'plain-merge-method|{"merge_method":"merge"}|3|permit' \
+    'unreadable-method|{}|0|refuse' \
+    'window-19-3-behind|{"merge_method":"rebase_merge"}|2|refuse' \
+    'before-19-2|{"merge_method":"rebase_merge"}|2|permit'; do
+    label=${spec%%|*}; spec=${spec#*|}
+    project=${spec%%|*}; spec=${spec#*|}
+    behind=${spec%%|*}; want=${spec#*|}
+    case_dir=$(make_case "gitlab-rebase-$label")
+    mkdir -p "$case_dir/wt"
+    add_glab_mock "$case_dir"
+    : >"$case_dir/glab.log"
+    write_mr_json "$case_dir/mr.json"
+    write_mr_json "$case_dir/mr-post.json" state=merged
+    printf '%s\n' "$project" >"$case_dir/project.json"
+    printf '%s\n' "$behind" >"$case_dir/behind"
+    case "$label" in
+      before-19-2) printf '19.1.0\n' >"$case_dir/version" ;;
+      *) printf '19.3.0\n' >"$case_dir/version" ;;
+    esac
+
+    set +e
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    if [ "$want" = refuse ]; then
+      expect_code 1 "$rc" "gitlab-rebase-$label: this case must be refused"
+      assert_grep 'automatic' "$case_dir/stderr" \
+        "gitlab-rebase-$label: the refusal did not name the automatic-rebase reason"
+    else
+      expect_code 0 "$rc" "gitlab-rebase-$label: this case must be permitted"
+      assert_no_grep 'automatic_rebase' "$case_dir/stderr" \
+        "gitlab-rebase-$label: a permitted case was refused for automatic rebase"
+    fi
+  done
+  pass "the GitLab automatic-rebase guard refuses inside its window and permits outside it"
+}
+
+test_gitlab_auto_rebase_guard_refuses_and_permits
 
 printf '\nall fm-pr-merge tests passed\n'

@@ -86,7 +86,8 @@ case "${1:-} ${2:-}" in
       'state=MERGED' \
       'merged=true' \
       'queued=false' \
-      'base=main'
+      'base=main' \
+      'default=main'
     exit 0
     ;;
 esac
