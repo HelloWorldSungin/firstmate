@@ -90,7 +90,7 @@ while IFS= read -r script; do /bin/bash -n "$script" || exit; done < <(bin/fm-li
 bin/fm-lint.sh   # lint that shell surface plus GitHub workflows via pinned actionlint; the single owner CI and the no-mistakes gate both run
 bin/fm-test-run.sh tests/<subject>.test.sh   # one script (primary local focus path, timed)
 bin/fm-test-run.sh --family pure-contract-unit   # ordinary family-scoped local path (serial, timed)
-bin/fm-test-run.sh --changed   # conservative changed-file-informed set (never silent full suite), with automatic bounded concurrency and a per-script bound
+bin/fm-test-run.sh --changed   # conservative changed-file-informed set (never silent full suite), with automatic bounded concurrency and its own longer per-script bound
 bin/fm-test-run.sh --changed --jobs 1   # explicit serial override
 bin/fm-test-run.sh --changed --max-wall-ms 300000   # same automatic path with a post-run five-minute result check
 bin/fm-test-run.sh --proven-isolated --jobs 4   # explicit local parallel of the proven set only (default is serial)
@@ -111,6 +111,7 @@ tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVE
 
 `bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
+Every standard-mode sweep above also arms an automatic per-script bound, so a hung script becomes an ordinary `exit=124` red instead of a sweep that ends with no verdict; `--help` owns that bound's value, the shapes that leave it off, and the `0` opt-out.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
