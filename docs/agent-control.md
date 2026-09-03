@@ -94,6 +94,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
   Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
+- `interrupt` re-proves that the recorded endpoint still identifies this task's own agent **before** the first key leaves, not only afterwards, so an endpoint that now resolves to another task refuses instead of cancelling that task's turn.
+  For zellij that identity is the recorded tab and not the label alone, because a reused pane under a bare legacy title can otherwise satisfy the label check for another task ([`zellij-backend.md`](zellij-backend.md) owns that identity contract).
 - `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
