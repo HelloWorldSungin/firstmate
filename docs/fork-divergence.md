@@ -81,7 +81,18 @@ A restart therefore keeps the fork's hand-over guarantee while every other arm p
 The fork carries [`bin/fm-run-progress.sh`](../bin/fm-run-progress.sh), which upstream has no equivalent of, and threads a per-pane hold-count file through `wedge_timer_check` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) so a wedge escalation is held while the crew's validation run is demonstrably still moving.
 That hold-count file is a required fifth parameter here and does not exist upstream, so every upstream change that adds a `wedge_timer_check` caller arrives one argument short and must be threaded through rather than taken verbatim.
 It first collided on 2026-08-20 with `kunchenguid/firstmate#2619`, whose new `busy_turn_bound_check` absorber was adopted with the fork's hold-count argument added to its signature and its call.
+It collided there again on 2026-09-02 with `kunchenguid/firstmate#3147`, which restructures that same function so a declared wait is read before the away-mode branch; the new branch was adopted whole and the fork's hold-count parameter kept on the `wedge_timer_check` call below it.
 `bin/fm-classify-lib.sh`'s `crew_wedge_progress` owns the policy and [`docs/architecture.md`](architecture.md) owns the supervisor-facing contract.
+
+### Watcher live declared-wait routing and self-widening recheck cadence
+
+The fork routes a LIVE `paused:` or verified `captain-held` declaration into `handle_paused_stale` by changing `pause_state_class` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) itself, where upstream leaves a live agent classified `none` and throttles further down in `surface_nonterminal_stale`.
+Without that routing the designed long cadence was unreachable for exactly the crew the generated brief creates: two tasks parked on a human re-surfaced a bare `stale: <window>` every few minutes for the whole wait, measured at 320s, 341s and 449s gaps on 2026-08-14 (`HelloWorldSungin/firstmate#144`, `HelloWorldSungin/firstmate#51`).
+The fork also widens the recheck window while one wait stands unchanged, through the `pause_streak_*` records and the shared `pause_resurface_window` owner in [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh) that both supervisors consume, where upstream keeps a fixed `FM_PAUSE_RESURFACE_SECS`.
+The divergence lives inside upstream-owned functions on this repo's highest-collision file, so every upstream change to declared-wait handling arrives beside fork routing rather than as a fork-only file.
+It first collided on 2026-09-02 with `kunchenguid/firstmate#3155` and `kunchenguid/firstmate#3147`: upstream's busy-pane routing and its away-mode handoff were both adopted, the daemon's `0)` busy arm was dropped as upstream requires while the fork's streak record moved to the surviving `2)` arm, and the fork's per-iteration window replaced upstream's fixed `pause_secs` read.
+[`tests/fm-watch-triage.test.sh`](../tests/fm-watch-triage.test.sh) and [`tests/fm-daemon.test.sh`](../tests/fm-daemon.test.sh) pin both halves, the live-declaration routing and the streak reconciliation, beside upstream's own handoff cases, so a round that restores upstream's classification fails loudly instead of silently retiring the cadence.
+This divergence went unrecorded from its introduction until 2026-09-02.
 
 ### Herdr pre-Enter footer read on a native working baseline
 
@@ -115,6 +126,24 @@ Upstream evaluates every body edit independently on a per-event group, which on 
 The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so upstream's step body is taken unchanged: `kunchenguid/firstmate#3027` replaced that step with the pinned shared `require-no-mistakes` action on 2026-08-26 and the fork adopted it whole, keeping only its own event scope above.
 A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
 This divergence went unrecorded from its introduction until 2026-08-26.
+
+### Stricter merge-proof contract
+
+The fork keeps a merge proof that a deferred execution does not satisfy: a merge queue entry or a pending auto-merge is a refusal, never a landed outcome.
+Upstream's `kunchenguid/firstmate#3064` moved the other way, accepting a merge-queue entry as `verified: queued` on exit 0 and naming `--auto` in the retry it recommends.
+Firstmate decided on 2026-09-03, on the round-1 sync PR `HelloWorldSungin/firstmate#248`, that this fork keeps the stricter contract.
+
+Three reasons, recorded so the decision is not re-derived every round.
+This fleet has no merge queue for an enqueue to be deferred into, because fork `main` carries no branch protection and no rulesets, verified against the API on 2026-08-14; upstream's design accommodates a workflow this fork does not have, so adopting it would buy nothing while widening what counts as proof.
+Reporting an unproved merge as landed has actually happened here, and the standing practice built on that incident is to read the landed commit back rather than trust a merge return, so accepting a queued enqueue as proof moves against the discipline the rest of the fleet is built on.
+The tie-breaker is a rule rather than a preference: conforming to the more protective option needs nobody's permission while relaxing one does, and upstream's design is the relaxation, so it is the option that would have needed a captain decision.
+
+This entry records a decision that the code has not caught up to yet, which is the one thing to read carefully here.
+Round 1 merged `kunchenguid/firstmate#3064` faithfully, so [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) carries upstream's permissive read today and `AGENTS.md` section 7 states upstream's wording.
+The stricter implementation is fork PR `HelloWorldSungin/firstmate#241`, which is open and held on a separate matter; the reconciliation happens when that PR lands against the merged base, and it is not a sync round's work to rebase or re-express it.
+A future round must not read the merged permissive code as evidence that this fork chose upstream's contract, and must not silently resolve this collision toward upstream: the collision was predicted at round-1 intake and decided here.
+
+Retire this entry rather than defend it if the fork ever adopts branch protection with a merge queue, because the first reason above stops holding the moment a real queue exists.
 
 ### Upstream tracking mechanism
 
@@ -171,6 +200,7 @@ The manifest publication deliberately blocks the lifecycle - teardown refuses to
 `tests/lib.sh` redirects the event config, the event store, and the dashboard credentials into a throwaway isolation root so no fixture home can reach a developer's real instrumentation, and `docs/configuration.md`, `docs/documentation-audiences.json`, and `docs/scripts.md` are the documentation catalogs this subsystem shares with the GBrain entry above.
 A merge must preserve the additive wiring property that [`dashboard-events.md`](dashboard-events.md) owns: instrumentation is off until enabled, the wiring is absent entirely when off, and the emitter exits 0 on every path, writes nothing to either stream, and does its work in a detached child, so an entry firing beside the turn-end guard or the watcher auto-arm can never change that guard's exit status, output, timing, or ordering.
 [`tests/fm-dashboard-events.test.sh`](../tests/fm-dashboard-events.test.sh) pins that by running the real guards in two identical homes with the emitter firing against a deliberately hung dashboard and requiring an identical decision from both.
+That comparison normalizes only the fields two separate processes cannot share, so an upstream change that adds one arrives as a false failure: `kunchenguid/firstmate#3156` added the claim identity as a second line of `state/.claude-autoarm-epoch` on 2026-09-02, and it is now normalized beside the owner pid and stamp, with its presence asserted separately so the comparison cannot go vacuous.
 A merge must also keep the dashboard off the fleet's critical path as [`dashboard.md`](dashboard.md) owns: the dashboard writes nothing a fleet program owns, its own writes go to the event store it owns outside the operational home, and stopping it has no effect on Firstmate supervision.
 That rule has one granted exception that [`dashboard-events.md`](dashboard-events.md) owns and [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) emits: a `ReadWritePaths` grant for `data/gbrain/`, because a GBrain search updates the index it reads.
 The grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and a merge must not read that grant as a violation of the rule above and narrow it away.
