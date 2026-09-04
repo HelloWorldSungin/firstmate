@@ -108,6 +108,13 @@
 #   (bl) the degraded reader decodes a TOON-quoted branch name, so a ref name
 #       containing a comma or beginning with a dash is compared as itself rather
 #       than as its quotes, in both the permitting and refusing directions
+#   (bm) a refused target arms nothing: neither pr= nor the merge poll, which
+#       reads only whether the pull request merged and would otherwise record
+#       the non-default landing the refusal exists to keep off this ledger
+#   (bn) the default branch's tip is re-read immediately before the merge call,
+#       a tip that moved refuses naming both commits, an unmoved one still
+#       merges, and a tip that could not be re-read refuses rather than passing
+#       as unmoved
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -128,6 +135,13 @@ MR_PROJECT_URL="https://$MR_HOST/$MR_PATH"
 MR_URL="$MR_PROJECT_URL/-/merge_requests/7"
 MR_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MR_STALE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# The GitHub default branch's tip, as the gh-axi mocks report it. Every case that
+# reaches the merge is asked for it twice - once when the merge-target contract
+# is settled and once immediately before the merge - and a case only sees a
+# different answer the second time when it sets out to.
+DEFAULT_TIP=1212121212121212121212121212121212121212
+MOVED_DEFAULT_TIP=3434343434343434343434343434343434343434
 
 JQ_BIN=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
 REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll publish"
@@ -172,21 +186,24 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
     ;;
-  # The degraded reader establishes the merge target through this passthrough,
-  # so the default-target contract holds on a host without gh too.
+  # The merge target and the default branch's current tip both come through this
+  # passthrough, so the default-target contract and the base-tip check hold on a
+  # host without gh too.
   "api repos/"*|api\ *)
-    # This fixture answers ONE query: the per-field object whose TOON encoding
-    # puts each branch on its own line. The SHAPE OF THE REQUEST is what decides
-    # the shape of the reply - a jq expression that is not JSON comes back inside
-    # an api_response envelope instead - so a run that asks the older
-    # whitespace-joined question gets the error a fixture owes a question it does
-    # not model, rather than an answer that hides the difference.
+    # This fixture answers TWO queries, each a per-field object whose TOON
+    # encoding puts every field on its own line. The SHAPE OF THE REQUEST is what
+    # decides the shape of the reply - a jq expression that is not JSON comes
+    # back inside an api_response envelope instead - so a run that asks a
+    # question this fixture does not model gets the error a fixture owes it,
+    # rather than an answer that hides the difference.
     case " $* " in
-      *'{base:'*) ;;
+      *'{base:'*)
+        printf 'base: %s\ndef: %s\n' \
+          "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
+        ;;
+      *'{tip:'*) printf 'tip: %s\n' "${FM_TEST_GH_AXI_TIP:-$FM_TEST_DEFAULT_TIP}" ;;
       *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
     esac
-    printf 'base: %s\ndef: %s\n' \
-      "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
     ;;
 esac
 exit 0
@@ -223,6 +240,12 @@ add_gh_mocks_merge_fails() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
+  api\ *)
+    case " $* " in
+      *'{tip:'*) printf 'tip: %s\n' "${FM_TEST_GH_AXI_TIP:-$FM_TEST_DEFAULT_TIP}" ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    ;;
   esac
   exit 0
 SH
@@ -314,6 +337,12 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "pr view") exit 1 ;;
+  api\ *)
+    case " $* " in
+      *'{tip:'*) printf 'tip: %s\n' "${FM_TEST_GH_AXI_TIP:-$FM_TEST_DEFAULT_TIP}" ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -352,14 +381,14 @@ case "\${1:-} \${2:-}" in
       printf 'pull_request:\n  number: %s\n  state: open\n' "\$3"
     fi
     ;;
-  # The degraded reader establishes the merge target through this passthrough,
-  # in the per-field shape the reader is written against.
+  # The degraded reader establishes the merge target and the base tip through
+  # this passthrough, in the per-field shape the reader is written against.
   api\ *)
     case " \$* " in
-      *'{base:'*) ;;
+      *'{base:'*) printf 'base: main\ndef: main\n' ;;
+      *'{tip:'*) printf 'tip: %s\n' "\${FM_TEST_GH_AXI_TIP:-\$FM_TEST_DEFAULT_TIP}" ;;
       *) echo "gh-axi mock: unmodelled api query: \$*" >&2 ; exit 2 ;;
     esac
-    printf 'base: main\ndef: main\n'
     ;;
 esac
 exit 0
@@ -644,6 +673,7 @@ run_pr_merge() {
   FM_TEST_GH_LOG="$case_dir/gh.log" \
   FM_TEST_GH_OUTCOME="$case_dir/github-outcome" \
   FM_TEST_GH_RULES="$case_dir/github-rules" \
+  FM_TEST_DEFAULT_TIP="$DEFAULT_TIP" \
   FM_TEST_META_AT_MERGE="$case_dir/meta-at-merge" \
   FM_TEST_REAL_MV="$REAL_MV" \
   FM_TEST_GLAB_LOG="$case_dir/glab.log" \
@@ -774,8 +804,15 @@ test_github_merged_outcome_is_verified() {
   expect_code 0 "$rc" "github-verified-merged: a merged PR should succeed"
   assert_grep 'verified: https://github.com/example/repo/pull/51 is merged' \
     "$case_dir/stdout" "github-verified-merged: success was not reported as verified"
+  # THIS CASE'S PULL REQUEST IS ALREADY MERGED WHEN THE RUN STARTS, so the read
+  # this assertion sees is the PRE-merge one and the post-merge read is
+  # deliberately skipped. Saying it proves a readback "after merging" is how the
+  # collapse the invariant matrix was rebuilt to prevent went unnoticed for three
+  # rounds; the post-merge readback is measured by the github|post-mutation route
+  # of test_every_landed_observation_reaches_outcome_reporting, whose fixture no
+  # pre-merge read can satisfy.
   assert_grep 'api graphql' "$case_dir/gh.log" \
-    "github-verified-merged: the PR outcome was not read back after merging"
+    "github-verified-merged: the pull request state was never read through the queue-aware reader"
   pass "fm-pr-merge verifies a genuinely merged GitHub pull request"
 }
 
@@ -877,6 +914,12 @@ test_github_refusal_quotes_the_forge_output() {
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "will be added to the merge queue when all requirements are met" ;;
+  api\ *)
+    case " $* " in
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -1127,6 +1170,12 @@ printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
   "pr merge") echo "will be added to the merge queue when all requirements are met" ;;
   "pr view") exit 1 ;;
+  api\ *)
+    case " $* " in
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    ;;
 esac
 exit 0
 SH
@@ -1177,8 +1226,12 @@ test_github_failed_gh_read_falls_back_to_gh_axi() {
   set -e
 
   expect_code 0 "$rc" "github-gh-read-falls-back: a merge the gh-axi view proves must succeed"
+  # Already merged when the run starts, so the fallback that answers here is the
+  # PRE-merge one; the post-merge half of this route is measured by
+  # github|degraded-gh-failed in the landed-merge invariant, whose fixture reads
+  # OPEN until the merge runs.
   assert_grep 'pr view 63 --repo example/repo' "$case_dir/gh-axi.log" \
-    "github-gh-read-falls-back: the gh-axi view was never consulted after gh's read failed"
+    "github-gh-read-falls-back: the gh-axi view was never consulted when gh's read failed"
   assert_grep 'verified: https://github.com/example/repo/pull/63 is merged' \
     "$case_dir/stdout" "github-gh-read-falls-back: the proven merge was not reported"
   assert_grep 'pr=https://github.com/example/repo/pull/63' "$case_dir/state/task-x1.meta" \
@@ -1255,8 +1308,12 @@ test_github_without_gh_still_uses_gh_axi_merge() {
   expect_code 0 "$rc" "github-without-gh: gh-axi can prove a landed merge without gh"
   assert_grep 'pr merge 60 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     "github-without-gh: the configured merge abstraction was not invoked"
+  # Already merged when the run starts, so the view that answers here is the
+  # PRE-merge one; github|degraded-no-gh in the landed-merge invariant is what
+  # measures the POST-merge answer, against a fixture that reads OPEN until the
+  # merge runs.
   assert_grep 'pr view 60 --repo example/repo' "$case_dir/gh-axi.log" \
-    "github-without-gh: the gh-axi fallback did not verify the landed state"
+    "github-without-gh: the gh-axi view was never consulted on a host with no gh"
   assert_grep 'verified: https://github.com/example/repo/pull/60 is merged' \
     "$case_dir/stdout" "github-without-gh: the fallback did not report the proven merge"
   pass "fm-pr-merge reaches and verifies the gh-axi merge path without gh"
@@ -1284,13 +1341,14 @@ case "${1:-} ${2:-}" in
     [ "$count" -ge 2 ] && exit 1
     printf 'pull_request:\n  number: %s\n  state: open\n' "$3"
     ;;
-  # The degraded reader establishes the merge target through this passthrough.
+  # The degraded reader establishes the merge target and the base tip through
+  # this passthrough.
   api\ *)
     case " $* " in
-      *'{base:'*) ;;
+      *'{base:'*) printf 'base: main\ndef: main\n' ;;
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
       *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
     esac
-    printf 'base: main\ndef: main\n'
     ;;
 esac
 exit 0
@@ -1346,7 +1404,10 @@ test_github_zero_exit_queue_required_refuses_with_exact_retry() {
     "github-zero-exit-queue-required: queue rules were not read with pagination and encoded branch path"
   grep -qxF 'pr merge 56 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "github-zero-exit-queue-required: the attempted merge was changed unexpectedly"
-  [ "$(wc -l < "$case_dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
+  # Count the MERGES rather than the whole log: the guarded path also asks gh-axi
+  # for the target and the base tip, and a line count silently turns "one merge"
+  # into "one forge call of any kind".
+  [ "$(count_log_lines "$case_dir/gh-axi.log" '^pr merge ')" = 1 ] \
     || fail "github-zero-exit-queue-required: the wrapper attempted more than one merge"
   assert_no_grep --auto "$case_dir/gh-axi.log" \
     "github-zero-exit-queue-required: queue flags were auto-applied to the attempted merge"
@@ -3272,6 +3333,15 @@ test_non_default_target_is_refused_by_name() {
     "target-refusal-gh: the refusal did not name the default branch it is limited to"
   [ ! -s "$case_dir/gh-axi.log" ] \
     || fail "target-refusal-gh: a refused target still reached the forge"
+  # A REFUSAL THAT LEAVES THE POLL ARMED IS NOT A REFUSAL. bin/fm-pr-poll.sh
+  # reports a merged pull request with no notion of the branch it merged into,
+  # so a poll armed here records the non-default landing this contract just
+  # refused - later, and through a different writer. Fails if the contract is
+  # evaluated after bin/fm-pr-check.sh has armed anything.
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "target-refusal-gh: a refused target armed a merge poll that would record the landing anyway"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
+    "target-refusal-gh: a refused target recorded the pull request the poll reads from"
   pass "fm-pr-merge refuses a non-default target by name before any mutation"
 }
 
@@ -3318,6 +3388,14 @@ test_merged_non_default_target_is_refused() {
     || fail "target-refusal-already-merged: a refused target still reached the forge"
   assert_absent "$case_dir/state/.wake-queue" \
     "target-refusal-already-merged: a merge onto a non-default branch was recorded as this task's landed outcome"
+  # .wake-queue only covers the outcome THIS run would write. The merge poll is a
+  # second, independent writer of the same ledger and reads only whether the pull
+  # request is merged - which this one already is - so a poll armed behind this
+  # refusal records the non-default landing on the next watcher tick.
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "target-refusal-already-merged: a refused target armed the poll that records a merged pull request regardless of its branch"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
+    "target-refusal-already-merged: a refused target recorded the pull request the poll reads from"
   pass "fm-pr-merge refuses a pull request already merged into a non-default branch"
 }
 
@@ -3446,10 +3524,10 @@ case "${1:-} ${2:-}" in
     ;;
   api\ *)
     case " $* " in
-      *'{base:'*) ;;
+      *'{base:'*) cat "$case_dir/gh-axi-target" ;;
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
       *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
     esac
-    cat "$case_dir/gh-axi-target"
     ;;
 esac
 exit 0
@@ -3536,10 +3614,10 @@ case "${1:-} ${2:-}" in
     ;;
   api\ *)
     case " $* " in
-      *'{base:'*) ;;
+      *'{base:'*) cat "$case_dir/gh-axi-target" ;;
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
       *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
     esac
-    cat "$case_dir/gh-axi-target"
     ;;
 esac
 exit 0
@@ -3575,12 +3653,127 @@ SH
   pass "the degraded reader decodes a quoted branch name instead of comparing its quotes"
 }
 
+# THE BASE IS PINNED BY STATE, NOT ONLY BY NAME.
+#
+# The merge-target contract settles WHICH branch may be merged into. This settles
+# WHICH STATE OF IT this run judged: the default branch's tip is read when that
+# contract is settled and RE-READ IMMEDIATELY BEFORE THE MERGE CALL, and a tip
+# that moved in between refuses. Refusing deferred execution is only half of the
+# immediate-execution guarantee; without this half nothing ever compares a base
+# at merge time, and the merge executes against whatever the branch happens to be
+# when the forge acts.
+#
+# THREE ROUTES, because a guard tested in one direction cannot be told apart from
+# one that always refuses: `moved` proves the refusal, `steady` proves the permit
+# AND that a second read happened at all, and `unreadable` proves that a tip
+# nothing could read refuses rather than passing as unmoved.
+test_default_tip_movement_refuses_and_permits() {
+  local case_dir rc url route number=110 tip_reads
+  for route in moved steady unreadable; do
+    number=$((number + 1))
+    url="https://github.com/example/repo/pull/$number"
+    case_dir=$(make_home_case "default-tip-$route")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    # OPEN until the merge runs: an already-landed pull request has no base left
+    # to judge and skips this check, so a merged fixture would test nothing.
+    write_github_outcome "$case_dir" OPEN false false main
+    printf '%s\n' \
+      'state=MERGED' 'merged=true' 'queued=false' 'base=main' 'default=main' \
+      >"$case_dir/github-outcome.merged"
+    # One tip per read, in order. The second line is the only difference between
+    # the three routes.
+    case "$route" in
+      moved) printf '%s\n%s\n' "$DEFAULT_TIP" "$MOVED_DEFAULT_TIP" >"$case_dir/tips" ;;
+      steady) printf '%s\n%s\n' "$DEFAULT_TIP" "$DEFAULT_TIP" >"$case_dir/tips" ;;
+      unreadable) printf '%s\n\n' "$DEFAULT_TIP" >"$case_dir/tips" ;;
+    esac
+    cat >"$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case_dir=$(dirname "$FM_TEST_GH_AXI_LOG")
+case "${1:-} ${2:-}" in
+  "pr merge")
+    cat "$FM_TEST_GH_OUTCOME.merged" > "$FM_TEST_GH_OUTCOME"
+    printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}"
+    ;;
+  "pr view")
+    if grep -qx 'merged=true' "$FM_TEST_GH_OUTCOME"; then
+      printf 'pull_request:\n  number: %s\n  state: merged\n' "$3"
+    else
+      printf 'pull_request:\n  number: %s\n  state: open\n' "$3"
+    fi
+    ;;
+  api\ *)
+    case " $* " in
+      *'{base:'*) printf 'base: main\ndef: main\n' ;;
+      *'{tip:'*)
+        count=$(cat "$case_dir/tip-reads" 2>/dev/null || echo 0)
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$case_dir/tip-reads"
+        tip=$(sed -n "${count}p" "$case_dir/tips")
+        [ -n "$tip" ] || { echo 'error: could not read the branch' >&2; exit 1; }
+        printf 'tip: %s\n' "$tip"
+        ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+    chmod +x "$case_dir/fakebin/gh-axi"
+    : >"$case_dir/gh-axi.log"
+
+    set +e
+    FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+      >"$case_dir/stdout" 2>"$case_dir/stderr"
+    rc=$?
+    set -e
+
+    tip_reads=$(count_log_lines "$case_dir/gh-axi.log" '/branches/')
+    case "$route" in
+      moved)
+        expect_code 1 "$rc" \
+          "default-tip-moved: a base that moved before the merge must be refused"
+        assert_grep "moved from tip $DEFAULT_TIP" "$case_dir/stderr" \
+          "default-tip-moved: the refusal did not name the tip this run judged"
+        assert_grep "to tip $MOVED_DEFAULT_TIP" "$case_dir/stderr" \
+          "default-tip-moved: the refusal did not name the tip the branch moved to"
+        assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+          "default-tip-moved: a merge ran against a base this run never judged"
+        assert_absent "$case_dir/state/.wake-queue" \
+          "default-tip-moved: a refused merge was recorded as a landed outcome"
+        ;;
+      steady)
+        expect_code 0 "$rc" \
+          "default-tip-steady: a base that did not move must still merge"
+        assert_grep 'pr merge' "$case_dir/gh-axi.log" \
+          "default-tip-steady: an unmoved base was refused, so the guard refuses always"
+        assert_grep "verified: $url is merged" "$case_dir/stdout" \
+          "default-tip-steady: the landed merge was not reported"
+        [ "$tip_reads" = 2 ] \
+          || fail "default-tip-steady: the tip was read $tip_reads times, so it was not re-read immediately before the merge"
+        ;;
+      unreadable)
+        expect_code 1 "$rc" \
+          "default-tip-unreadable: a tip that could not be re-read must refuse"
+        assert_grep 'could not be read' "$case_dir/stderr" \
+          "default-tip-unreadable: the refusal did not say the tip could not be read"
+        assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+          "default-tip-unreadable: an unreadable tip was treated as an unmoved one"
+        ;;
+    esac
+  done
+  pass "the default-branch tip is re-read before the merge and a base that moved refuses"
+}
+
 test_non_default_target_is_refused_by_name
 test_merged_non_default_target_is_refused
 test_unestablished_target_is_refused
 test_degraded_path_reads_the_real_target
 test_gh_failure_still_reads_the_target_through_gh_axi
 test_degraded_target_reads_a_quoted_branch_name
+test_default_tip_movement_refuses_and_permits
 
 # A landed merge this run already observed must never be re-read, because a
 # transient failure on that second read would strand a merge that is already on
@@ -3743,10 +3936,10 @@ case "${1:-} ${2:-}" in
   "pr view") printf 'pull_request:\n  number: %s\n  state: open\n' "$3" ;;
   api\ *)
     case " $* " in
-      *'{base:'*) ;;
+      *'{base:'*) printf 'base: main\ndef: main\n' ;;
+      *'{tip:'*) printf 'tip: %s\n' "$FM_TEST_DEFAULT_TIP" ;;
       *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
     esac
-    printf 'base: main\ndef: main\n'
     ;;
 esac
 exit 0
