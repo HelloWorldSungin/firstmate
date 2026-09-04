@@ -1083,7 +1083,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
   local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file progress \
-    holds_file holds hold_max
+    holds_file holds hold_max escalated
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
