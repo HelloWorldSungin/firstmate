@@ -204,7 +204,8 @@ Firstmate's skills live in two separate places with different audiences:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
-- [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, the files you set, and harness support.
+- [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, trusted external process-event adapter setup, the files you set, and harness support.
+- [docs/extension-bindings.md](docs/extension-bindings.md) - maintainer architecture for the narrow trusted external `process-event-adapter/1` package, binding, handshake, and evidence boundary.
 - [docs/dashboard.md](docs/dashboard.md) - install and operate the read-only fleet dashboard service and its routed destinations.
 - [docs/dashboard-remote-access.md](docs/dashboard-remote-access.md) - reach the dashboard from off the machine: what authentication protects, what stays yours in your own network, and how to confirm the boundary.
 - [docs/dashboard-inbox-policy.md](docs/dashboard-inbox-policy.md) - the single documented statement of what reaches the captain inbox, what makes a pull request green, and what turns each health signal amber or red.

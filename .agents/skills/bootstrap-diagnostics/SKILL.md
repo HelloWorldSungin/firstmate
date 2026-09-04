@@ -2,8 +2,8 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, GBRAIN_CAPTURE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, HOME_SUMMARY, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
-  A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, GBRAIN_CAPTURE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, HOME_SUMMARY, BACKLOG_RECONCILE, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or reports that an interrupted backlog cleanup may have left an endpoint or local copy, or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  A silent bootstrap section, or any other BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
   internal: true
@@ -64,6 +64,17 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Publication is deliberately best-effort, so it cannot change another session-start, spawn, teardown, or watcher-poll result, and the watcher runs it detached so a slow attempt cannot delay the liveness beacon.
   Read the named record for the recorded reasons, then reproduce with a direct `bin/fm-home-summary-refresh.sh` (no `--best-effort`, which is what keeps the failure quiet) so the refresh error reaches you.
   A recorded deadline means the complete refresh did not finish inside `FM_HOME_SUMMARY_TIMEOUT`, so inspect lock acquisition and producer completion before validation or publication, and fix the blocked phase rather than raising this load-bearing bound.
+- `BOOTSTRAP_INFO: closed the backlog item for <id> after interrupted cleanup; its endpoint or local copy may remain and should be reconciled` - replay closed the item, but the durable close says physical cleanup was interrupted.
+  Verify process reaping, the local-copy return, and endpoint closure, then reconcile any surviving resource.
+- `BACKLOG_RECONCILE: <id>: recorded backlog close could not be replayed: <reason>` - this session start found a pending-close record but could not land it.
+  A valid teardown record proves the close was authorized and recorded, but physical cleanup may be partial: verify process reaping, the local-copy return, and endpoint closure before assuming those resources are gone.
+  A validation error means the record cannot be trusted, so do not assume cleanup completed or follow any path or argument stored in it.
+  Read the named reason, inspect the marker as inert data when validation failed, fix the record or backlog-file problem, and rerun session start so a valid recorded close replays.
+  Never hand-close the item by deleting `state/<id>.backlog-close` - that can discard a completion link the cleanup captured, and the surviving marker prevents the record sweep from starting the item meanwhile.
+- `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be read: <reason>` - this home could not determine whether the item matches its worker record.
+  Resolve the named backlog read problem and rerun session start; never guess by starting or closing an unreadable item.
+- `BACKLOG_RECONCILE: <id>: worker record exists but its backlog item could not be moved to In flight: <reason>` - this home owns a worker whose backlog item is still queued, and the reconciliation could not correct it.
+  Until it is corrected, the fleet view reads that worker as work no backlog item owns; resolve the named backlog problem and rerun session start.
 - `ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>; record left unchanged` - this non-tmux task record lacks its cleanup binding, and the one-shot migration could not verify that the recorded endpoint still belongs to this task, so cleanup will keep refusing it.
   This is correct and deliberate: an unproven binding would let cleanup destroy another task's endpoint, so never hand-write the binding, relax `fm_backend_validate_task_endpoint`, or force cleanup past the refusal.
   A `gone` reason means the endpoint no longer exists, and a label or identity mismatch means the recorded task identity failed verification.

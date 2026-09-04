@@ -297,6 +297,7 @@ family_for_basename() {
     fm-gbrain-lib.test.sh|fm-gbrain-pin-check.test.sh|fm-recall.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
+    fm-backlog-atomicity.test.sh|\
     fm-bootstrap.test.sh|fm-bootstrap-network-parallel.test.sh|fm-fleet-sync.test.sh|fm-gate-refuse.test.sh|fm-gotmp.test.sh|\
     fm-run-attribution-legacy-transition.test.sh|\
     fm-session-start.test.sh|fm-sessionstart-nudge.test.sh|fm-startup-network.test.sh|\
@@ -331,6 +332,7 @@ family_for_basename() {
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
+    fm-check-unregister.test.sh|\
     fm-issue-linkage.test.sh|fm-issue-writeback.test.sh|\
     fm-outcome-manifest.test.sh|\
     fm-merge-local.test.sh|fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
@@ -601,6 +603,7 @@ tests/fm-dashboard.test.sh 15336
 tests/fm-design-skills.test.sh 159
 tests/fm-documentation-audiences.test.sh 791
 tests/fm-endpoint-binding-migrate.test.sh 1366
+tests/fm-extension-binding.test.sh 35000
 tests/fm-fleet-snapshot-view.test.sh 76290
 tests/fm-fleet-sync.test.sh 21726
 tests/fm-gate-refuse.test.sh 4071
@@ -1301,6 +1304,15 @@ families_for_changed_path() {
       # context-reset stdout injection) only show up against a real harness.
       printf '%s\n' session-bootstrap
       printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-extension.mjs|bin/fm-extension.sh|docs/examples/process-event-extension/*)
+      printf '%s\n' __script__:fm-extension-binding.test.sh
+      ;;
+    bin/fm-procevent.sh|bin/fm-procevent-lib.sh|bin/fm-procevent-extension-capture.pl)
+      printf '%s\n' __script__:fm-extension-binding.test.sh
+      printf '%s\n' __script__:fm-procevent.test.sh
+      printf '%s\n' __script__:fm-procevent-when.test.sh
+      printf '%s\n' __script__:fm-remote-reply.test.sh
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)

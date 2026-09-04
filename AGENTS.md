@@ -84,6 +84,7 @@ config/stow-pass-horizon  optional presence flag opting this home in to /stow's 
 config/herdr-presentation-spaces  Herdr visual-projection opt-out or opt-in; LOCAL, gitignored; inherited by secondmate homes (docs/herdr-backend.md "Presentation spaces")
 config/trace-context  optional default-off trace-context propagation flag; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Trace context propagation")
 config/project-board  this home's FALLBACK GitHub Projects board URL for a project whose registry entry declares no board=; LOCAL, gitignored; absent means no fallback; inherited by secondmate homes (docs/configuration.md "Project issue trackers")
+config/turnend-churn-absorb  optional presence flag opting this home into the default-off absorb of bare turn-end wakes on pane churn; LOCAL, gitignored, and not inherited (docs/configuration.md "Turn-end pane-churn absorb")
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored (docs/cmux-backend.md "Setup")
 config/forge-tokens/<host>  per-host issue-tracker credential; LOCAL, gitignored, must be mode 0600, and deliberately NOT inherited (docs/configuration.md "Project issue trackers")
 config/gbrain.json  fleet-shared brain endpoints, addresses, and credential NAMES; LOCAL, gitignored, closed schema, inherited by secondmate homes (docs/configuration.md "Brain scoping")
@@ -122,6 +123,7 @@ state/               runtime records and signals; gitignored
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.reconcile-nudged  epoch second of the last inventory-reconcile nudge sent to this secondmate; bin/fm-secondmate-reconcile.sh owns its per-home cooldown window
+  <id>.backlog-close  the exact backlog close a teardown recorded before removing the task's record, so an interrupted cleanup can still be finished at the next session start; bin/fm-backlog-transition-lib.sh owns its format and replay, and a landed close removes it
   <id>.inbox/       durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, with ordinary records re-rung and escalated by the watcher while explicit fire-and-forget records are excluded from that ladder, and removed by teardown (bin/fm-task-inbox-lib.sh)
   <id>.meta          task metadata written by fm-spawn; bin/fm-spawn.sh's header owns its base fields, docs/configuration.md "Runtime backend" owns backend-specific fields, and fm-promote, bin/fm-run-attribution-legacy-transition.sh, fm-pr-check, fm-pr-merge, and fm-x-link own the fields they add (sections 7 and 14)
   <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority (docs/herdr-backend.md "Presentation spaces")
@@ -162,7 +164,7 @@ state/               runtime records and signals; gitignored
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
   .cursor-park-owner .cursor-park-owner.lock .turnend-cursor-blocks   Cursor stop-hook owner record, publication and commit lock, and bounded repair-nag budget; never touch
-  .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .wedge-holds-* .writing-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak .nativeturnend-*   watcher internals; never touch
+  .hash-* .count-* .stale-* .stale-since-* .churn-since-* .paused-* .wedge-escalations-* .wedge-holds-* .writing-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak .nativeturnend-*   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
@@ -331,7 +333,8 @@ Write the task-specific brief under section 11 before spawning.
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
-After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship, design, or scout work as under way.
+When the configured tasks-axi backlog gate applies, the spawn itself moves the work item to In flight and refuses rather than dispatching work this home has no item for, so recording a ship, design, or scout dispatch is never a separate step to remember; a manual-backend home retains the hand-editing contract in `docs/configuration.md`.
+After spawning, confirm the worker is processing the brief and handle any trust dialog through `harness-adapters`.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
 Steer a worker with ordinary text through fail-closed `fm-send`: the message becomes a durable record in the task's steering inbox (multi-line text is legal, local and remote alike) and the worker's terminal receives only a constant doorbell line, with the watcher re-ringing an unacknowledged local message and escalating a stuck one (`bin/fm-task-inbox-lib.sh`; `bin/fm-send.sh` owns the typed-plane carve-outs).
@@ -397,6 +400,7 @@ Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_he
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
+Retire a custom check only through `bin/fm-check-unregister.sh <id>` (or `bin/fm-teardown.sh` for a spawned task); never hand-compose an `rm` with `$STATE`/`$ID`.
 
 Tear down a ship or design task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work, or for a completion manifest that could not be published, is a stop-and-investigate result, never an obstacle to bypass.
@@ -529,7 +533,7 @@ Work routed to a secondmate is recorded in that secondmate home's own backlog, n
 A decision is simply a task held for the captain: `tasks-axi hold <id> --reason "<reason>" --kind captain`, with `--until <date>` when the captain defers it.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it the same way.
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
-Update the backlog on every dispatch, completion, and decision for a work item.
+When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
@@ -574,7 +578,7 @@ When the captain asks to check or update this fleet's toolchain ("check tool upd
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `GBRAIN_PIN:`, `GBRAIN_CAPTURE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `HOME_SUMMARY:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `GBRAIN_PIN:`, `GBRAIN_CAPTURE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
