@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one running and one pending run per PR.
 # A new queued run replaces an older pending run, while cancel-in-progress also
@@ -28,5 +29,72 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      # The pinned action reads GITHUB_EVENT_PATH when pr-body is unset.
+      # A synchronize webhook snapshots the previous head's body, and a
+      # GitHub rerun replays that snapshot, so this step loads the live
+      # pull-request body. No PR code is checked out; the helper is fetched
+      # through the contents API instead.
+      #
+      # The ref it is fetched at is github.sha. On the pull_request trigger
+      # above, GITHUB_REF is refs/pull/N/merge and github.sha is the last merge
+      # commit on that branch: GitHub's test-merge of the PR head INTO the base,
+      # a two-parent commit that is neither the PR head (that is
+      # github.event.pull_request.head.sha) nor the base tip. Its tree carries
+      # the PR's copy of every file the PR adds or changes and the base copy of
+      # every file it does not, which is why the helper is visible there at all:
+      # it does not yet exist on main, so fetching at base.sha would 404 and
+      # make this step inert, and it is also the tree this workflow definition
+      # itself was loaded from.
+      #
+      # Say plainly what that means: this step downloads and runs the merge
+      # tree's copy of the helper, PR-authored for a PR that touches it, with
+      # GITHUB_TOKEN in the environment. The pinned action below never reads
+      # repository contents and keeps that property for itself; this step does
+      # not, and it is a contributor guardrail rather than a security boundary.
+      #
+      # GitHub does not start a pull_request run while the PR has a merge
+      # conflict, so a test-merge existed whenever this job is running. A PR can
+      # go unmergeable afterwards and leave that merge commit stale, and a rerun
+      # still uses the github.sha it was created with, so the fetch can 404 for
+      # a tree that no longer has the file or a SHA that can no longer be read.
+      # Every degrade below - an unfetchable helper, no interpreter, a helper
+      # that exits non-zero, a live body that cannot be read - annotates the run
+      # with a warning and leaves the webhook snapshot in place for the pinned
+      # action to judge, rather than reddening the required check with no
+      # verdict at all.
+      #
+      # The wait budget is set here rather than left to the helper's defaults:
+      # 120s at an 8s interval covers the post-push body write latencies
+      # observed on PR #254 (4s, and up to 112s).
+      - name: Load the live pull-request body into the event payload
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NM_REQUIRED_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          NM_REQUIRED_SCRIPT_REF: ${{ github.sha }}
+          NM_REQUIRED_BODY_TIMEOUT_SEC: "120"
+          NM_REQUIRED_BODY_INTERVAL_SEC: "8"
+        run: |
+          set -eu
+          script="$RUNNER_TEMP/nm-required-refresh-event-body.py"
+          if ! curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            "$GITHUB_API_URL/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/nm-required-refresh-event-body.py?ref=${NM_REQUIRED_SCRIPT_REF}" \
+            -o "$script"; then
+            echo "::warning::live-body refresh helper unavailable at ${NM_REQUIRED_SCRIPT_REF}; judging the webhook snapshot"
+            exit 0
+          fi
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          elif command -v python >/dev/null 2>&1; then
+            PY=python
+          else
+            echo "::warning::no python interpreter for the live-body refresh; judging the webhook snapshot"
+            exit 0
+          fi
+          if ! "$PY" "$script"; then
+            echo "::warning::live-body refresh failed; judging the webhook snapshot"
+            exit 0
+          fi
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)

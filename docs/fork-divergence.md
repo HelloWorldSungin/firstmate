@@ -184,9 +184,20 @@ This divergence went unrecorded from its introduction until 2026-08-26.
 The fork's `Require no-mistakes` workflow omits the `edited` pull-request event and coalesces on one per-PR concurrency group, adopted on 2026-08-14 with `HelloWorldSungin/firstmate#150` for the defect in `HelloWorldSungin/firstmate#98`.
 Upstream evaluates every body edit independently on a per-event group, which on this fork left orphan failed check runs attached to a green PR after a truncated body was restored on an unchanged head.
 [`tests/fm-no-mistakes-required-gate.test.sh`](../tests/fm-no-mistakes-required-gate.test.sh) pins the trigger list and the concurrency shape, and [`CONTRIBUTING.md`](../CONTRIBUTING.md)'s gate paragraph carries the same contributor-facing statement.
-The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so upstream's step body is taken unchanged: `kunchenguid/firstmate#3027` replaced that step with the pinned shared `require-no-mistakes` action on 2026-08-26 and the fork adopted it whole, keeping only its own event scope above.
+This entry's divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so the compliance verdict itself is taken from upstream unchanged: `kunchenguid/firstmate#3027` replaced that step with the pinned shared `require-no-mistakes` action on 2026-08-26 and the fork adopted it whole, keeping only its own event scope above.
 A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
 This divergence went unrecorded from its introduction until 2026-08-26.
+The `steps:` block carries a second, separately recorded divergence; see "Live pull-request body refresh before the compliance gate" below.
+
+### Live pull-request body refresh before the compliance gate
+
+A fork-local step ahead of the pinned `require-no-mistakes` action loads the live pull-request body into the event payload, so the gate judges the body the pipeline wrote rather than the webhook snapshot the run was triggered on.
+[`.github/scripts/nm-required-refresh-event-body.py`](../.github/scripts/nm-required-refresh-event-body.py) is the fork-local helper that performs it and has no upstream counterpart; the pinned action itself is still taken unchanged, and this step neither checks out PR code nor moves the triggering head.
+Adopted on 2026-09-04 for `HelloWorldSungin/firstmate#258`, where a synchronize run and every GitHub rerun of it replayed a snapshot taken before no-mistakes rewrote the body, so a fix round could not reach green no matter how many times it was retried.
+The refresh is best effort by design: every way it can fail annotates the run with a warning and leaves the webhook snapshot for the pinned action to judge, because reddening a required check with no verdict is worse than the stale snapshot it replaces.
+[`tests/fm-no-mistakes-required-gate.test.sh`](../tests/fm-no-mistakes-required-gate.test.sh) pins the step and the helper's degrade paths, and [`CONTRIBUTING.md`](../CONTRIBUTING.md)'s gate paragraph carries the contributor-facing statement.
+A round that takes the whole workflow from upstream drops this step silently, so `steps:` must be re-read rather than trusted to a clean merge.
+Retire this entry if the pinned action reads the live body itself, because the step then has nothing left to add.
 
 ### Merge-proof contract: one divergence accepted, one retired
 
