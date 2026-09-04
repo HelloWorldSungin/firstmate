@@ -17,6 +17,44 @@ set -u
 
 WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
 
+# python3 is optional in this repo's toolchain - bin/fm-bootstrap.sh does not
+# install it - so the cases that drive the live-body helper skip rather than
+# fail without it. The cases that assert shell behavior alone still run, which
+# is why this is per-case rather than the top-of-file exit other suites use.
+require_python3() {
+  command -v python3 >/dev/null 2>&1 && return 0
+  echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
+  return 1
+}
+
+# A background fixture here blocks on a peer only the process under test
+# supplies: a FIFO writer waits for the next fetch, a stub server waits for the
+# next request. A regression that stops supplying it parks the fixture holding
+# this script's inherited stdout, so each case stops what it started as soon as
+# the process under test has finished with it - before any assertion that could
+# exit the script. tests/lib.sh's EXIT sweep remains the backstop, not the plan.
+FM_TEST_FIXTURE_PIDS=()
+
+track_fixture() {  # <pid>
+  FM_TEST_FIXTURE_PIDS+=("$1")
+}
+
+stop_fixtures() {
+  local pid waited
+  for pid in "${FM_TEST_FIXTURE_PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+    waited=0
+    while [ "$waited" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    ! kill -0 "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  FM_TEST_FIXTURE_PIDS=()
+}
+
 # Test 1: Explicit reproduction modeling of Issue #98's exact 3-event sequence on PR 94.
 # What would have to break for this test to fail:
 # The reproduction model logic fails to record CheckRun objects per event or fails to
@@ -172,10 +210,7 @@ with open(path, "w", encoding="utf-8") as handle:
 # The refresh helper leaves the event payload on the webhook snapshot, so a
 # rerun of a synchronize job keeps judging the pre-push body.
 test_refresh_replaces_stale_synchronize_snapshot() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event live
   tmp=$(fm_test_tmproot fm-nm-required-refresh)
   event="$tmp/event.json"
@@ -213,10 +248,7 @@ if head != sys.argv[2]:
 # A still-stale live body is discarded and the event keeps an empty or
 # truncated snapshot, so the action errors as "not raised through no-mistakes".
 test_refresh_keeps_stale_live_body_for_real_verdict() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event live
   tmp=$(fm_test_tmproot fm-nm-required-refresh-stale)
   event="$tmp/event.json"
@@ -253,10 +285,7 @@ if sys.argv[3] not in body:
 # The helper returns the first body it reads, or stops re-fetching while its
 # wait budget remains, so a synchronize run settles on the pre-push attestation.
 test_refresh_waits_for_the_pipeline_body_write() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event live rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-wait)
   event="$tmp/event.json"
@@ -274,6 +303,7 @@ test_refresh_waits_for_the_pipeline_body_write() {
     sleep 0.5
     attestation_body "$NEW_HEAD" > "$live"
   } &
+  track_fixture $!
 
   fm_run_timed 30 python3 "$REFRESH_SCRIPT" \
     --event-path "$event" \
@@ -281,6 +311,7 @@ test_refresh_waits_for_the_pipeline_body_write() {
     --expected-head "$NEW_HEAD" \
     --timeout-sec 20 \
     --interval-sec 0 || rc=$?
+  stop_fixtures
   [ "$rc" -eq 0 ] || \
     fail "refresh helper never reached the later live body (exit $rc)"
 
@@ -306,10 +337,7 @@ if sys.argv[3] in body:
 # The wait is skipped whenever attestation_head() is empty, or signature
 # presence is used as the bind test instead of the attestation head.
 test_refresh_waits_when_the_signature_has_no_attestation_yet() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event live rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-signature-only)
   event="$tmp/event.json"
@@ -322,6 +350,7 @@ test_refresh_waits_when_the_signature_has_no_attestation_yet() {
     sleep 0.5
     attestation_body "$NEW_HEAD" > "$live"
   } &
+  track_fixture $!
 
   fm_run_timed 30 python3 "$REFRESH_SCRIPT" \
     --event-path "$event" \
@@ -329,6 +358,7 @@ test_refresh_waits_when_the_signature_has_no_attestation_yet() {
     --expected-head "$NEW_HEAD" \
     --timeout-sec 20 \
     --interval-sec 0 || rc=$?
+  stop_fixtures
   [ "$rc" -eq 0 ] || \
     fail "refresh helper abandoned a signed body whose attestation had not been written yet (exit $rc)"
 
@@ -349,10 +379,7 @@ if sys.argv[2] not in body:
 # "not raised through no-mistakes", because polling is entered for a body no
 # amount of waiting can bind.
 test_refresh_does_not_wait_on_a_hand_written_body() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event live rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-handwritten)
   event="$tmp/event.json"
@@ -365,6 +392,7 @@ test_refresh_does_not_wait_on_a_hand_written_body() {
   # elapsed wall time.
   mkfifo "$live" || fail "could not create the sequenced live-body fixture"
   printf '%s\n' "please merge this" > "$live" &
+  track_fixture $!
 
   fm_run_timed 30 python3 "$REFRESH_SCRIPT" \
     --event-path "$event" \
@@ -372,6 +400,7 @@ test_refresh_does_not_wait_on_a_hand_written_body() {
     --expected-head "$NEW_HEAD" \
     --timeout-sec 120 \
     --interval-sec 0 || rc=$?
+  stop_fixtures
   [ "$rc" -eq 0 ] || \
     fail "refresh helper polled for an attestation a hand-written body can never grow (exit $rc)"
 
@@ -392,10 +421,7 @@ if "please merge this" not in body:
 # helper, so "PR must be raised via no-mistakes" reports failure without the
 # pinned action ever reaching a compliance verdict.
 test_refresh_degrades_when_the_live_body_is_unreachable() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event out rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-unreachable)
   event="$tmp/event.json"
@@ -435,7 +461,8 @@ if event["pull_request"]["head"]["sha"] != sys.argv[3]:
 # A stub that answers the way GitHub's GraphQL endpoint does: it serves the
 # body only for a credentialed request that identifies this pull request and
 # selects the body field, and answers with `errors` otherwise. The response
-# plan is one token per request it will serve ("data" or "502"), so a case can
+# plan is one token per request it will serve ("data", "502", or "close", which
+# accepts the request and drops the connection without answering), so a case can
 # model an endpoint that succeeds and then fails without racing a teardown.
 write_graphql_stub() {  # <dir>
   cat > "$1/graphql-stub.py" <<'PY'
@@ -463,6 +490,9 @@ class Handler(BaseHTTPRequestHandler):
             handle.write(json.dumps(request) + "\n")
         mode = plan[len(served)] if len(served) < len(plan) else plan[-1]
         served.append(mode)
+        if mode == "close":
+            self.close_connection = True
+            return
         if mode == "502":
             self.send_response(502)
             self.send_header("Content-Length", "0")
@@ -501,11 +531,14 @@ PY
 start_graphql_stub() {  # <dir> <response plan>
   local dir=$1 plan=$2 waits=200
   python3 "$dir/graphql-stub.py" "$dir/port" "$dir/live-body" "$dir/requests.log" "$plan" &
+  track_fixture $!
   while [ ! -s "$dir/port" ] && [ "$waits" -gt 0 ]; do
     sleep 0.05
     waits=$((waits - 1))
   done
-  [ -s "$dir/port" ] || fail "the GraphQL stub never published a port"
+  [ -s "$dir/port" ] && return 0
+  stop_fixtures
+  fail "the GraphQL stub never published a port"
 }
 
 # Test 11: A successful live fetch over the GraphQL transport lands the live
@@ -519,10 +552,7 @@ start_graphql_stub() {  # <dir> <response plan>
 # or stops selecting the body field, so GitHub answers with errors and the
 # helper degrades to the snapshot instead of refreshing it.
 test_refresh_loads_the_live_body_over_graphql() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event waits rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-graphql)
   event="$tmp/event.json"
@@ -539,6 +569,7 @@ test_refresh_loads_the_live_body_over_graphql() {
       --expected-head "$NEW_HEAD" \
       --timeout-sec 0 \
       --interval-sec 0 > "$tmp/helper.out" 2>&1 || rc=$?
+  stop_fixtures
   [ "$rc" -eq 0 ] || fail "the live GraphQL fetch failed (exit $rc): $(cat "$tmp/helper.out")"
 
   assert_present "$tmp/requests.log" "the helper never reached the GraphQL endpoint"
@@ -567,10 +598,7 @@ if event["pull_request"]["head"]["sha"] != sys.argv[2]:
 # The aborted-wait branch falls through silently and the run reports a clean
 # refresh over a body the helper had not finished waiting on.
 test_refresh_warns_when_an_api_failure_cuts_the_wait_short() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp event rc=0
   tmp=$(fm_test_tmproot fm-nm-required-refresh-aborted-wait)
   event="$tmp/event.json"
@@ -590,6 +618,7 @@ test_refresh_warns_when_an_api_failure_cuts_the_wait_short() {
       --expected-head "$NEW_HEAD" \
       --timeout-sec 120 \
       --interval-sec 0 > "$tmp/helper.out" 2>&1 || rc=$?
+  stop_fixtures
   [ "$rc" -eq 0 ] || \
     fail "a mid-wait API failure reddened the required check (exit $rc): $(cat "$tmp/helper.out")"
 
@@ -605,6 +634,52 @@ if "truncated webhook snapshot" in body:
 ' "$event" "$OLD_HEAD" || fail "the aborted wait did not keep the last live body"
 
   pass "an API failure mid-wait annotates the run instead of reporting a clean refresh"
+}
+
+# Test 13: A transport that accepts the request and then drops the connection
+# degrades to the webhook snapshot. urllib wraps only the errors raised while
+# sending into URLError, so a response that never arrives surfaces as
+# http.client.RemoteDisconnected instead - an ordinary GitHub transient that
+# must not red a required merge gate.
+# What would have to break for this test to fail:
+# The degrade narrows back to the send-side errors, so a reset mid-response
+# aborts the helper with a traceback, the step fails under set -eu, and "PR
+# must be raised via no-mistakes" reports failure with no verdict at all -
+# strictly worse than the snapshot verdict this change replaced.
+test_refresh_degrades_when_the_response_never_arrives() {
+  require_python3 || return 0
+  local tmp event rc=0
+  tmp=$(fm_test_tmproot fm-nm-required-refresh-dropped)
+  event="$tmp/event.json"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  attestation_body "$NEW_HEAD" > "$tmp/live-body"
+
+  write_graphql_stub "$tmp"
+  start_graphql_stub "$tmp" close
+
+  GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$tmp/port")/graphql" \
+    fm_run_timed 90 python3 "$REFRESH_SCRIPT" \
+      --event-path "$event" \
+      --expected-head "$NEW_HEAD" \
+      --timeout-sec 0 \
+      --interval-sec 0 > "$tmp/helper.out" 2>&1 || rc=$?
+  stop_fixtures
+  [ "$rc" -eq 0 ] || \
+    fail "a dropped response reddened the required check (exit $rc): $(cat "$tmp/helper.out")"
+
+  assert_grep "::warning::" "$tmp/helper.out" \
+    "a dropped response must be annotated as a degrade rather than abort the helper"
+  python3 -c '
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
+if sys.argv[2] not in body:
+    raise SystemExit("the webhook snapshot was replaced despite a response that never arrived")
+if sys.argv[3] in body:
+    raise SystemExit("a body the transport never delivered reached the event payload")
+' "$event" "$OLD_HEAD" "$NEW_HEAD" || fail "the degraded helper did not leave the webhook snapshot intact"
+
+  pass "a response the transport drops mid-flight degrades to the webhook snapshot"
 }
 
 # Normalize the workflow into a job -> ordered-steps model, so the required
@@ -735,7 +810,7 @@ PY
     fail "the required-check workflow does not parse as GitHub Actions block YAML"
 }
 
-# Test 13: The required check's own job refreshes the live body before the
+# Test 14: The required check's own job refreshes the live body before the
 # pinned action runs, fetches the helper from the merge commit its workflow
 # definition came from, declares its wait budget, checks out no repository
 # code, and treats an unreachable helper as a degrade to the webhook snapshot
@@ -748,10 +823,7 @@ PY
 # an unreachable helper fails the step and so reds "PR must be raised via
 # no-mistakes" with no compliance verdict at all.
 test_workflow_refreshes_live_body_before_pinned_action() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
-    return 0
-  }
+  require_python3 || return 0
   local tmp fakebin event live step
   assert_present "$WORKFLOW" "workflow file must exist"
   assert_present "$REFRESH_SCRIPT" "live-body refresh helper must exist"
@@ -867,7 +939,7 @@ if sys.argv[2] not in body:
   pass "the required check refreshes the live body before the pinned action and degrades instead of reddening"
 }
 
-# Test 14: Verify that PRs opened without no-mistakes remain strictly blocked.
+# Test 15: Verify that PRs opened without no-mistakes remain strictly blocked.
 # What would have to break for this test to fail:
 # A PR opened without no-mistakes is allowed to pass compliance or clear its failure
 # without a new commit pushed through git push no-mistakes.
@@ -901,6 +973,7 @@ main() {
   test_refresh_degrades_when_the_live_body_is_unreachable
   test_refresh_loads_the_live_body_over_graphql
   test_refresh_warns_when_an_api_failure_cuts_the_wait_short
+  test_refresh_degrades_when_the_response_never_arrives
   test_workflow_refreshes_live_body_before_pinned_action
   test_manual_pr_without_signature_remains_blocked
 }

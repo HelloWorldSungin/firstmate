@@ -15,11 +15,11 @@ and it does not change the triggering head SHA.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.request
 
 ATTESTATION_PREFIX = "<!-- no-mistakes-pipeline-attestation:v1 "
@@ -126,7 +126,7 @@ def fetch_live_body(args: argparse.Namespace, number: int, owner: str, repo: str
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as err:
         raise LiveBodyUnavailable(str(err)) from err
     errors = payload.get("errors")
     if errors:
