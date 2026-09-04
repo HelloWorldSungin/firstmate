@@ -126,7 +126,141 @@ test_signature_verification_step_behavior() {
   pass "signature verification step correctly approves valid body and rejects missing body"
 }
 
-# Test 5: Verify that PRs opened without no-mistakes remain strictly blocked.
+SIGNATURE='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
+COMPLETED_STEPS='[{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"}]'
+REFRESH_SCRIPT="$ROOT/.github/scripts/nm-required-refresh-event-body.py"
+OLD_HEAD=40795826e3ed81e347eb9cd0ffd604cad12ea014
+NEW_HEAD=6d2304c0d5a84707b1cca0963802e806f0b946bc
+
+attestation_body() {
+  local head=$1
+  printf '%s\n<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"%s","steps":%s} -->\n' \
+    "$SIGNATURE" "$head" "$COMPLETED_STEPS"
+}
+
+write_event() {
+  local path=$1 body=$2 head=$3
+  python3 -c '
+import json, sys
+path, body, head = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "action": "synchronize",
+        "pull_request": {
+            "number": 254,
+            "body": body,
+            "head": {"sha": head, "ref": "fm/example"},
+            "user": {"login": "HelloWorldSungin"},
+        },
+    }, handle)
+' "$path" "$body" "$head"
+}
+
+# Test 5: A synchronize webhook snapshot with a stale attestation is replaced
+# by the live pull-request body before the pinned action runs.
+# What would have to break for this test to fail:
+# The refresh helper leaves the event payload on the webhook snapshot, so a
+# rerun of a synchronize job keeps judging the pre-push body.
+test_refresh_replaces_stale_synchronize_snapshot() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
+    return 0
+  }
+  local tmp event live
+  tmp=$(fm_test_tmproot fm-nm-required-refresh)
+  event="$tmp/event.json"
+  live="$tmp/live-body"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  attestation_body "$NEW_HEAD" > "$live"
+
+  python3 "$REFRESH_SCRIPT" \
+    --event-path "$event" \
+    --body-file "$live" \
+    --expected-head "$NEW_HEAD" \
+    --timeout-sec 0 \
+    --interval-sec 0 || fail "refresh helper exited non-zero on a live body that matches the head"
+
+  python3 -c '
+import json, sys
+event = json.load(open(sys.argv[1], encoding="utf-8"))
+body = event["pull_request"]["body"]
+head = event["pull_request"]["head"]["sha"]
+if sys.argv[2] not in body:
+    raise SystemExit("live matching attestation was not written into the event body")
+if sys.argv[3] in body:
+    raise SystemExit("webhook snapshot attestation remained in the event body")
+if head != sys.argv[2]:
+    raise SystemExit("event head sha was rewritten; the check must keep the triggering head")
+' "$event" "$NEW_HEAD" "$OLD_HEAD" || fail "refresh helper did not load the live matching body while keeping the triggering head"
+
+  pass "synchronize snapshot with a stale attestation is replaced by the live matching body"
+}
+
+# Test 6: When the live body is still stale, the helper still writes it through
+# so the pinned action reports the real attestation mismatch instead of a
+# truncated-or-empty webhook snapshot looking like a missing signature.
+# What would have to break for this test to fail:
+# A still-stale live body is discarded and the event keeps an empty or
+# truncated snapshot, so the action errors as "not raised through no-mistakes".
+test_refresh_keeps_stale_live_body_for_real_verdict() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
+    return 0
+  }
+  local tmp event live
+  tmp=$(fm_test_tmproot fm-nm-required-refresh-stale)
+  event="$tmp/event.json"
+  live="$tmp/live-body"
+  write_event "$event" "truncated webhook snapshot without a signature" "$NEW_HEAD"
+  attestation_body "$OLD_HEAD" > "$live"
+
+  python3 "$REFRESH_SCRIPT" \
+    --event-path "$event" \
+    --body-file "$live" \
+    --expected-head "$NEW_HEAD" \
+    --timeout-sec 0 \
+    --interval-sec 0 || fail "refresh helper exited non-zero when the live body was still stale"
+
+  python3 -c '
+import json, sys
+event = json.load(open(sys.argv[1], encoding="utf-8"))
+body = event["pull_request"]["body"]
+if "truncated webhook snapshot" in body:
+    raise SystemExit("stale live body was not written; webhook snapshot remained")
+if sys.argv[2] not in body:
+    raise SystemExit("stale live attestation head missing from refreshed body")
+if sys.argv[3] not in body:
+    raise SystemExit("signature missing from refreshed stale live body")
+' "$event" "$OLD_HEAD" "$SIGNATURE" || fail "refresh helper did not keep the stale live body for the attestation verdict"
+
+  pass "still-stale live body is written through so the action can emit the real mismatch"
+}
+
+# Test 7: The required-check workflow refreshes the event body before the
+# pinned action, without checking out PR code.
+# What would have to break for this test to fail:
+# The workflow drops the refresh step, adds a checkout of the PR head, or
+# unpins the shared action.
+test_workflow_refreshes_live_body_before_pinned_action() {
+  local refresh_line uses_line checkout
+  assert_present "$WORKFLOW" "workflow file must exist"
+  assert_present "$REFRESH_SCRIPT" "live-body refresh helper must exist"
+  grep -q 'pull-requests: read' "$WORKFLOW" || \
+    fail "workflow must grant pull-requests: read to fetch the live PR body"
+  grep -q 'nm-required-refresh-event-body.py' "$WORKFLOW" || \
+    fail "workflow must run the live-body refresh helper before the pinned action"
+  checkout=$(grep -c 'actions/checkout' "$WORKFLOW" || true)
+  [ "$checkout" -eq 0 ] || fail "required check must not check out PR code"
+  uses_line=$(grep -n 'uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6' "$WORKFLOW" || true)
+  refresh_line=$(grep -n 'nm-required-refresh-event-body.py' "$WORKFLOW" || true)
+  [ -n "$uses_line" ] || fail "workflow must keep the pinned require-no-mistakes action"
+  [ -n "$refresh_line" ] || fail "workflow must mention the refresh helper"
+  [ "${refresh_line%%:*}" -lt "${uses_line%%:*}" ] || \
+    fail "live-body refresh must run before the pinned require-no-mistakes action"
+  pass "workflow refreshes the live PR body before the unchanged pinned action"
+}
+
+# Test 8: Verify that PRs opened without no-mistakes remain strictly blocked.
 # What would have to break for this test to fail:
 # A PR opened without no-mistakes is allowed to pass compliance or clear its failure
 # without a new commit pushed through git push no-mistakes.
@@ -152,6 +286,9 @@ main() {
   test_workflow_triggers_exclude_edited_event
   test_workflow_concurrency_group_coalescing
   test_signature_verification_step_behavior
+  test_refresh_replaces_stale_synchronize_snapshot
+  test_refresh_keeps_stale_live_body_for_real_verdict
+  test_workflow_refreshes_live_body_before_pinned_action
   test_manual_pr_without_signature_remains_blocked
 }
 

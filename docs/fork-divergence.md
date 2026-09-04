@@ -175,9 +175,11 @@ This divergence went unrecorded from its introduction until 2026-08-26.
 The fork's `Require no-mistakes` workflow omits the `edited` pull-request event and coalesces on one per-PR concurrency group, adopted on 2026-08-14 with `HelloWorldSungin/firstmate#150` for the defect in `HelloWorldSungin/firstmate#98`.
 Upstream evaluates every body edit independently on a per-event group, which on this fork left orphan failed check runs attached to a green PR after a truncated body was restored on an unchanged head.
 [`tests/fm-no-mistakes-required-gate.test.sh`](../tests/fm-no-mistakes-required-gate.test.sh) pins the trigger list and the concurrency shape, and [`CONTRIBUTING.md`](../CONTRIBUTING.md)'s gate paragraph carries the same contributor-facing statement.
-The divergence lives in the workflow's `on:` and `concurrency:` blocks alone, so upstream's step body is taken unchanged: `kunchenguid/firstmate#3027` replaced that step with the pinned shared `require-no-mistakes` action on 2026-08-26 and the fork adopted it whole, keeping only its own event scope above.
-A round that takes the whole workflow from upstream silently restores the `edited` trigger, so those two blocks must be re-read rather than trusted to a clean merge.
-This divergence went unrecorded from its introduction until 2026-08-26.
+The trigger and concurrency divergence stays in those two blocks.
+The pinned shared `require-no-mistakes` action is still taken unchanged from `kunchenguid/firstmate#3027`, and a step above it loads the live pull-request body into the event payload so a synchronize webhook snapshot (and a GitHub rerun of that snapshot) is not judged in place of the body the pipeline wrote afterwards.
+A round that takes the whole workflow from upstream silently restores the `edited` trigger and drops that live-body refresh, so the `on:`, `concurrency:`, and `steps:` blocks must be re-read rather than trusted to a clean merge.
+The edited-omission went unrecorded from its introduction until 2026-08-26.
+The live-body refresh was added on 2026-09-04 for HelloWorldSungin/firstmate#258.
 
 ### Stricter merge-proof contract
 

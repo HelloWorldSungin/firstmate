@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one running and one pending run per PR.
 # A new queued run replaces an older pending run, while cancel-in-progress also
@@ -28,5 +29,24 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      # The pinned action reads GITHUB_EVENT_PATH when pr-body is unset.
+      # A synchronize webhook snapshots the previous head's body, and a
+      # GitHub rerun replays that snapshot, so this step loads the live
+      # pull-request body without checking out PR code. The helper lives
+      # in this repository and is fetched at the PR head SHA through the API.
+      - name: Load the live pull-request body into the event payload
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NM_REQUIRED_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          NM_REQUIRED_SCRIPT_REF: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          script="$RUNNER_TEMP/nm-required-refresh-event-body.py"
+          curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            "$GITHUB_API_URL/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/nm-required-refresh-event-body.py?ref=${NM_REQUIRED_SCRIPT_REF}" \
+            -o "$script"
+          python3 "$script"
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
