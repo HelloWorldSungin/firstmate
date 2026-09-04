@@ -159,6 +159,33 @@ The fork's own arm that accepted an `unresolved` head from any live branch-scope
 Upstream's separate `fm_nm_head_resolvable` was retired as a second owner of the proven-versus-unknown distinction the `unresolved` verdict already makes, and the coarse runs-listing scan keeps the fork's three-verdict result because that path carries no `branch_sync` evidence to reach the exemption with.
 `test_pipeline_owned_unresolvable_head_attributes` and upstream's five new exemption cases pin both halves, so a round that restores the retired proxy or drops the exemption fails loudly.
 
+### Definition-of-done owner carries this fork's ready-to-validate handoff
+
+Upstream's `kunchenguid/firstmate#3269` made [`bin/fm-dod-lib.sh`](../bin/fm-dod-lib.sh) the one owner of a ship task's mode-specific definition of done so a promoted scout receives the same delivery contract a briefed worker does.
+That library knows only upstream's three ship modes: it hardcodes `fm/<task-id>`, has no design kind, and hands a no-mistakes worker off with `done: {summary}`.
+This fork renders four things upstream's version cannot - the `--continue-branch` task branch (`HelloWorldSungin/firstmate#149`), the ADR design kind (`HelloWorldSungin/firstmate#126`), the configured declared-wait verb, and the canonical `blocked: implemented and committed, ready to validate` handoff that `bin/fm-trigger-validation.sh` resolves - so the library was taken as the owner and extended rather than adopted verbatim.
+It now exposes `fm_dod_fragments`, `fm_dod_fragments_continue_branch`, `fm_dod_render`, and upstream's `fm_dod_block`; `bin/fm-brief.sh` sets the fragments its task shape needs and renders, and `bin/fm-promote.sh` keeps calling `fm_dod_block`, which is that same rendering for a default ship task.
+Upstream's stronger `--yes` prohibition was taken in full.
+Taking upstream's text verbatim would have replaced that handoff with `done:`, which no test asserted and which would have left every no-mistakes worker parked on a block firstmate never clears, so `test_generated_brief_handoff_is_the_line_the_trigger_closes` in [`tests/fm-trigger-validation.test.sh`](../tests/fm-trigger-validation.test.sh) now takes the handoff line out of a real generated brief and drives the trigger with it.
+Upstream's byte-identity check between the promotion and brief paths stays green, so the two renderings still cannot drift.
+The handoff itself went unrecorded here from its introduction until 2026-09-04.
+
+### A preserving refusal withdraws the pending backlog close
+
+Upstream's `kunchenguid/firstmate#3322` made cleanup record its intended backlog close in `state/<id>.backlog-close` before any destructive step, so a process killed mid-cleanup leaves the next session start enough to finish it.
+This fork's cleanup carries refusals upstream has no equivalent of that deliberately KEEP a task rather than finish it: an unpublishable completion manifest, a model-routing verdict that gained a turn, and a Herdr close that could not be confirmed gone.
+Replaying a pending close after one of those removes the task record the refusal exists to preserve, which is the opposite of what each of them is for, so `withdraw_pending_backlog_close` in [`bin/fm-teardown.sh`](../bin/fm-teardown.sh) removes that record at exactly those refusals and nowhere else.
+The distinction is deliberate and narrow: a crash is not a refusal, so an interrupted cleanup still leaves its replayable close, which is why the withdrawal is called at named refusal sites rather than from the exit trap that a signal would also reach.
+Upstream's `test_interrupted_destructive_cleanup_leaves_a_recoverable_close` and this fork's `test_a_preserving_refusal_withdraws_the_close_it_recorded` in [`tests/fm-backlog-atomicity.test.sh`](../tests/fm-backlog-atomicity.test.sh) pin the two halves against each other, so a round that widens the withdrawal to every failure, or drops it, fails loudly.
+
+### A watermark-capture failure keeps the published task record
+
+The same upstream round made a dispatch whose backlog transition fails remove the record it just published, so no worker is left that the backlog does not own.
+This fork's claude dispatch captures a pre-dispatch model-evidence watermark after that record is published and after the endpoint and local copy already exist, and it refuses the dispatch when that capture fails.
+Unwinding the publication there would strand a live pane and worktree with nothing naming them, so `bin/fm-spawn.sh` clears its rollback intent on exactly those two watermark refusals and keeps the record.
+The backlog item stays Queued, which upstream's own worker-record reconciliation converges to In flight at the next locked session start, so the state this leaves is one upstream already knows how to correct.
+`test_claude_watermark_failure_preserves_recoverable_metadata` in [`tests/fm-spawn-dispatch-profile.test.sh`](../tests/fm-spawn-dispatch-profile.test.sh) pins the retained record, and every other post-publication failure keeps upstream's rollback unchanged.
+
 ### Fleet snapshot per-task timeout and abandoned child work
 
 The fork bounds each task's current-state read in [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) with its own `FM_SNAPSHOT_TASK_TIMEOUT`, a floor of 2 so the inner bound sits strictly inside it, a `FM_SNAPSHOT_TASK_NM_TIMEOUT` hand-down to the no-mistakes lookup, a parallel fan-out, and a `source:"timeout"` record for a task that did not answer.
