@@ -19,7 +19,7 @@
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
-# bootstrap running its detect-only diagnostics without its nine mutating
+# bootstrap running its detect-only diagnostics without the mutating
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
@@ -32,11 +32,12 @@
 #                       when this session actually holds the lock. Detect-only
 #                       diagnostics always run. Bootstrap's mutating sweeps
 #                       (the endpoint-binding migration, proven run attribution,
-#                       secondmate convergence and liveness, pending handoff
-#                       retry, Relay artifact writes, fleet sync, project-board
-#                       reconciliation, and token-usage refresh) run only when
-#                       locked; network sweeps run in the deferred stage rather
-#                       than this synchronous bootstrap section.
+#                       same-home backlog reconciliation, secondmate convergence
+#                       and liveness, pending handoff retry, Relay artifact
+#                       writes, fleet sync, project-board reconciliation, and
+#                       token-usage refresh) run only when locked; network sweeps
+#                       run in the deferred stage rather than this synchronous
+#                       bootstrap section.
 #   3. inactive outcomes + wake-drain - runs the local bounded inactive-outcome
 #                       reconciliation before presenting durable wakes and
 #                       advancing recovery handling state, so both mutate the

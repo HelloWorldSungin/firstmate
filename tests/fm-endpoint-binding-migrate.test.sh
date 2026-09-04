@@ -35,7 +35,9 @@ make_home() {  # <name> -> echoes home dir
   local name=$1 dir fb
   dir="$TMP_ROOT/$name"
   fb="$dir/fakebin"
-  mkdir -p "$dir/state" "$dir/worktree" "$dir/project" "$fb"
+  # data/ exists because cleanup now resolves this home's backlog directory
+  # before it can refuse on the binding this test is about.
+  mkdir -p "$dir/state" "$dir/data" "$dir/worktree" "$dir/project" "$fb"
   : > "$dir/runtime.log"
   printf '{"result":{"tabs":[]}}\n' > "$dir/tabs.json"
   printf '{"result":{"panes":[]}}\n' > "$dir/panes.json"

@@ -42,6 +42,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping retired decision commands onto `fm-captain-hold.sh` |
 | `fm-design-skills.sh`    | Resolve named skills from the captain-installed mattpocock plugin without changing it |
 | `fm-brief.sh`            | Scaffold ship or interactive ADR design briefs with explicit `--mode`, plus scout, secondmate-charter, and Herdr-lab briefs, with opt-in work-item traceability |
+| `fm-dod-lib.sh`          | One owner of a task's mode-specific definition of done, rendered by both the brief scaffold and a scout promotion |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
@@ -90,6 +91,10 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-task-inbox-lib.sh`   | Single owner of durable steering-inbox records, acknowledgement, doorbells, and the delivery-attempt ladder |
 | `fm-pending-reply-lib.sh` | Parent-owned secondmate pending-reply expectations, recovery, and keyed escalation lifecycle |
 | `fm-secondmate-report.sh` | Optional helper to append a correlated parent status or document-pointer report       |
+| `fm-extension.mjs`       | Bind, inspect, verify, and strictly invoke trusted external process-event adapter packages |
+| `fm-extension-launch-barrier.mjs` | Publish one exact static core-owned invocation group before package code runs |
+| `fm-extension.sh`        | Expose extension binding commands through the tracked shell and remote-home command boundary |
+| `fm-procevent.sh`        | Register, supervise, capture, classify, acknowledge, and safely retire built-in or explicitly bound process-event sources |
 | `fm-procevent-remote-reply.sh` | Relay the remote-secondmate status stream through non-destructive process-event deltas |
 | `fm-procevent-when.sh`   | Fire a trust-bound deterministic action at most once when its registered condition holds, then wake with the outcome |
 | `fm-gate-refuse-lib.sh`  | Shared no-mistakes gate-context refusal for fleet lifecycle entrypoints               |
@@ -115,6 +120,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-timeout-lib.sh`      | Own bounded external command execution and the per-call share of a whole operation's budget |
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |
+| `fm-backlog-transition-lib.sh` | Pair task-record changes with their backlog transitions and replay interrupted closes |
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor for the bootstrap diagnostic                  |
 | `fm-quota-sidecar.sh`    | Read the host-published LLM quota sidecar as additive dispatch evidence, degrading anything not fresh and successful to explicit UNKNOWN |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
@@ -135,6 +141,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-tmux-lib.sh`         | Shared tmux pane primitives for composer capture, verified submit, and the submit-time busy check |
 | `fm-peek.sh`             | Print a bounded tail of a crewmate endpoint                                          |
 | `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
+| `fm-check-unregister.sh` | Retire a custom watcher check and its trust binding by validated task id            |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication, merge-notification identity, and identity-bound retirement |
@@ -157,8 +164,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-outcome-lib.sh`      | Own the durable manifest, work-item, PR-status, and history wire shapes plus their atomic publication |
 | `fm-outcome-manifest.sh` | Write, read, and list the durable completion manifest teardown publishes before cleanup |
 | `fm-work-item.sh`        | Maintain a task's durable forge- and host-agnostic work-item reference store          |
-| `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship or design worktrees, reap that one task's branch once its merge is proven, require design decision inventory or completed scout deliverables, retire secondmate homes |
+| `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode, and write the ship instructions carrying that mode's definition of done |
+| `fm-teardown.sh`         | Fail-closed teardown: return landed ship or design worktrees, reap that one task's branch once its merge is proven, close this home's backlog item, require design decision inventory or completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |

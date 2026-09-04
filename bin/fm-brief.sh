@@ -187,6 +187,8 @@ esac
 . "$SCRIPT_DIR/fm-brief-repo-lib.sh"
 # shellcheck source=bin/fm-tangle-lib.sh
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
+# shellcheck source=bin/fm-dod-lib.sh
+. "$SCRIPT_DIR/fm-dod-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -986,8 +988,10 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
-# Tracked-output task: shape Setup / Rule 1 / Definition of done by this task's explicit
-# delivery mode, validated above. The generated DOD opens with the fixed
+# Tracked-output task: shape Setup / Rule 1 by this task's explicit delivery mode,
+# validated above, and render the Definition of done from its single owner,
+# bin/fm-dod-lib.sh, which bin/fm-promote.sh renders too so a promoted scout
+# receives the same contract. The block opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
 DESIGN_SECTION=
@@ -1047,28 +1051,7 @@ EOF
 fi
 
 TRACKED_SECTIONS=$HERDR_SECTION
-DOD_DIRECT='Delivery contract: mode=direct-PR'
-DOD_LOCAL='Delivery contract: mode=local-only'
-DOD_NO_MISTAKES='Delivery contract: mode=no-mistakes'
-DOD_DIRECT_INTRO='This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.'
-DOD_DIRECT_COMPLETE='The task is complete only when committed on your branch.'
-# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-DOD_DIRECT_HANDOFF='When it is implemented and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
-DOD_LOCAL_INTRO='This task ships **local-only**: no remote, no PR, no pipeline.'
-DOD_LOCAL_COMPLETE="The task is complete only when committed on your branch \`$TASK_BRANCH\`. Do NOT push, do NOT open a PR, do NOT merge."
-DOD_LOCAL_HANDOFF="When it is implemented and committed, append \`done: ready in branch $TASK_BRANCH\` to the status file and stop."
-# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-DOD_NO_MISTAKES_INTRO='This project ships **no-mistakes**: `done:` means the PR is open with its checks green.'
-# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-DOD_NO_MISTAKES_LOCAL='A clean local commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
-DOD_NO_MISTAKES_COMPLETE='The task is complete only when committed on your branch.'
-DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, append \`blocked: implemented and committed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
-DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by implementing fixes.'
-DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.'
-# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.'
-# shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR {url} checks green` and stop. You are finished.'
+fm_dod_fragments "$KIND" "$TASK_BRANCH" "$PAUSED_VERB"
 PROJECT_MEMORY_SECTION=
 if [ "$KIND" = ship ]; then
   IFS= read -r -d '' PROJECT_MEMORY_SECTION <<EOF || true
@@ -1086,121 +1069,28 @@ if [ -n "$DESIGN_SECTION" ]; then
   printf -v DOD_DIRECT '%s\n%s' "$DOD_DIRECT" "$DESIGN_DOD"
   printf -v DOD_LOCAL '%s\n%s' "$DOD_LOCAL" "$DESIGN_DOD"
   printf -v DOD_NO_MISTAKES '%s\n%s' "$DOD_NO_MISTAKES" "$DESIGN_DOD"
-  DOD_DIRECT_INTRO='This ADR ships **direct-PR**: you raise its PR yourself, without the no-mistakes pipeline.'
-  DOD_DIRECT_COMPLETE='The ADR is ready only when committed on your branch.'
-  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  DOD_DIRECT_HANDOFF='When the ADR is complete and committed, push your branch and open a PR with `gh-axi`, then append `done: PR {url}` to the status file and stop.'
-  DOD_LOCAL_INTRO='This ADR ships **local-only**: no remote, no PR, no pipeline.'
-  DOD_LOCAL_COMPLETE="The ADR is ready only when committed on your branch \`$TASK_BRANCH\`. Do NOT push, do NOT open a PR, do NOT merge."
-  DOD_LOCAL_HANDOFF="When the ADR is complete and committed, append \`done: ready in branch $TASK_BRANCH\` to the status file and stop."
-  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  DOD_NO_MISTAKES_INTRO='This ADR ships through **no-mistakes**: `done:` means the PR is open with its checks green.'
-  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  DOD_NO_MISTAKES_LOCAL='A clean local ADR commit is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR {url} checks green`.'
-  DOD_NO_MISTAKES_COMPLETE='The ADR is ready for validation only when committed on your branch.'
-  DOD_NO_MISTAKES_HANDOFF="When the ADR is complete and committed, append \`$PAUSED_VERB: ADR complete and committed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and ship the ADR PR."
-  DOD_NO_MISTAKES_DRIVE='You drive no-mistakes by responding to its gates, not by applying fixes.'
-  DOD_NO_MISTAKES_ACTIVE='Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.'
-  # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-  DOD_NO_MISTAKES_ASK='  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or apply the fix yourself.'
 fi
 
 if [ "$CONTINUE_BRANCH_SET" -eq 1 ]; then
   TASK_BRANCH_SHELL=$(shell_quote "$TASK_BRANCH")
   TASK_BRANCH_REF_SHELL=$(shell_quote "refs/heads/$TASK_BRANCH")
   TASK_BRANCH_PUSH_SHELL=$(shell_quote "HEAD:$TASK_BRANCH")
-  case "$MODE:$KIND" in
-    direct-PR:ship)
-      DOD_DIRECT_INTRO='This task continues an existing PR through **direct-PR**, without the no-mistakes pipeline.'
-      DOD_DIRECT_COMPLETE='The task is complete only when committed at detached HEAD.'
-      DOD_DIRECT_HANDOFF="When it is implemented and committed, push with \`git push origin $TASK_BRANCH_PUSH_SHELL\`, use \`gh-axi\` to confirm the existing PR was updated, then append \`done: PR https://...\` with that PR's full URL to the status file and stop."
-      ;;
-    direct-PR:design)
-      DOD_DIRECT_INTRO='This ADR continues an existing PR through **direct-PR**, without the no-mistakes pipeline.'
-      DOD_DIRECT_COMPLETE='The ADR is ready only when committed at detached HEAD.'
-      DOD_DIRECT_HANDOFF="When the ADR is complete and committed, push with \`git push origin $TASK_BRANCH_PUSH_SHELL\`, use \`gh-axi\` to confirm the existing PR was updated, then append \`done: PR https://...\` with that PR's full URL to the status file and stop."
-      ;;
-    local-only:ship)
-      DOD_LOCAL_COMPLETE="The task is complete only when committed at detached HEAD and local branch \`$TASK_BRANCH\` points to that commit. Do NOT push, do NOT open a PR, do NOT merge."
-      ;;
-    local-only:design)
-      DOD_LOCAL_COMPLETE="The ADR is ready only when committed at detached HEAD and local branch \`$TASK_BRANCH\` points to that commit. Do NOT push, do NOT open a PR, do NOT merge."
-      ;;
-    no-mistakes:ship)
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_INTRO='This task continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_LOCAL='A clean local commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
-      DOD_NO_MISTAKES_COMPLETE="The task is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
-      DOD_NO_MISTAKES_HANDOFF="When you believe implementation is complete, committed, and pushed to the existing branch, append \`blocked: implemented, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point because firstmate must trigger validation before you run /no-mistakes - use \`blocked:\`, not \`$PAUSED_VERB:\`, which would defer recheck for an hour under away mode."
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
-      ;;
-    no-mistakes:design)
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_INTRO='This ADR continues an existing PR through **no-mistakes**: `done:` means that PR is updated with checks green.'
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_LOCAL='A clean local ADR commit or push is NOT done, and neither is your own test run passing - this task has exactly one `done:` line and it is the last one, `done: PR https://... checks green` using the existing PR full URL.'
-      DOD_NO_MISTAKES_COMPLETE="The ADR is ready for validation only when committed at detached HEAD and pushed to the existing branch \`$TASK_BRANCH\`."
-      DOD_NO_MISTAKES_HANDOFF="When the ADR is complete, committed, and pushed to the existing branch, append \`$PAUSED_VERB: ADR complete, committed, and pushed, ready to validate\` and stop there; that handoff is a defined stopping point and a declared wait, and firstmate will then instruct you to run /no-mistakes to validate and update the existing ADR PR."
-      # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
-      DOD_NO_MISTAKES_DONE='After /no-mistakes reports CI green for the existing ADR PR (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append `done: PR https://... checks green` using that PR full URL and stop. You are finished.'
-      ;;
-  esac
+  fm_dod_fragments_continue_branch "$MODE" "$KIND" "$TASK_BRANCH_PUSH_SHELL" "$TASK_BRANCH"
 fi
 
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `'"$TASK_BRANCH"'` branch). Never merge a PR.'
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-$DOD_DIRECT
-$DOD_DIRECT_INTRO
-$DOD_DIRECT_COMPLETE
-$DOD_DIRECT_HANDOFF
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
-EOF
     ;;
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`$TASK_BRANCH\` branch; firstmate handles the merge into local \`main\`."
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-$DOD_LOCAL
-$DOD_LOCAL_INTRO
-$DOD_LOCAL_COMPLETE
-Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-$DOD_LOCAL_HANDOFF
-The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
-EOF
     ;;
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-$DOD_NO_MISTAKES
-$DOD_NO_MISTAKES_INTRO
-$DOD_NO_MISTAKES_LOCAL
-$DOD_NO_MISTAKES_COMPLETE
-$DOD_NO_MISTAKES_HANDOFF
-
-$DOD_NO_MISTAKES_DRIVE
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
-$DOD_NO_MISTAKES_ACTIVE
-While you sit parked on a backgrounded \`axi run\` or \`axi respond\` call, rule 4's park-and-resume pairing applies: append \`$PAUSED_VERB:\` before you go idle and \`working:\` when the call returns.
-
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies \`ask-user-authority\` and obtains any required captain decision.
-$DOD_NO_MISTAKES_ASK
-- Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
-
-$DOD_NO_MISTAKES_DONE
-EOF
     ;;
 esac
 
@@ -1228,10 +1118,7 @@ else
   SETUP_BRANCH_STEP="1. First action: create your branch: \`git checkout -b fm/$ID\`"
 fi
 
-# read -r -d '' preserves the heredoc's trailing newline that the removed
-# $(...) command substitution used to strip. Drop that one newline so generated
-# briefs stay byte-identical to the historical Bash 5 output.
-DOD=${DOD%$'\n'}
+DOD=$(fm_dod_render "$MODE") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.

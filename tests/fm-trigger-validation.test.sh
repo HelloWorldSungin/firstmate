@@ -268,11 +268,53 @@ test_refuses_unknown_task_and_missing_home() {
   pass "trigger refuses an unknown task and a missing home"
 }
 
+# --- the generated brief's handoff is the one the trigger actually closes -----
+#
+# The definition of done lives in bin/fm-dod-lib.sh and the close lives in
+# bin/fm-trigger-validation.sh, so nothing but this test fails when the two drift.
+# It takes the handoff status line from a REAL generated ship brief rather than
+# restating it, so a reworded definition of done that no longer matches the
+# trigger's canonical handoff is caught here instead of silently leaving every
+# no-mistakes worker parked on a block firstmate never clears.
+test_generated_brief_handoff_is_the_line_the_trigger_closes() {
+  local home fake_send send_log brief handoff status
+  home=$(make_home brief-handoff)
+  fake_send="$home/fakebin/fm-send.sh"
+  mkdir -p "$(dirname "$fake_send")"
+  make_fake_send "$fake_send"
+  send_log="$home/send.log"
+
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$ROOT/bin/fm-brief.sh" sample-handoff some-project --mode no-mistakes >/dev/null
+  brief="$home/data/sample-handoff/brief.md"
+  [ -f "$brief" ] || fail "the ship brief was not generated at $brief"
+  # shellcheck disable=SC2016 # The backticks are literal brief Markdown, not a command.
+  handoff=$(sed -n 's/^When you believe implementation is complete, append `\([^`]*\)`.*/\1/p' "$brief")
+  [ -n "$handoff" ] || fail "the generated brief states no ready-to-validate handoff line"
+
+  fm_write_meta "$home/state/sample-handoff.meta" \
+    "window=firstmate:fm-sample-handoff" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  status="$home/state/sample-handoff.status"
+  printf '%s\n' "$handoff" > "$status"
+
+  SEND_LOG="$send_log" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_SEND_BIN="$fake_send" \
+    "$TRIGGER" sample-handoff /no-mistakes
+
+  [ -z "$(open_decisions "$status")" ] \
+    || fail "the trigger did not close the handoff the generated brief tells a worker to append: $handoff"
+  pass "the generated brief's ready-to-validate handoff is exactly the block the trigger closes"
+}
+
 test_ship_ready_to_validate_block_closed_by_trigger
 test_replacement_default_blocker_stays_open
 test_design_paused_handoff_left_untouched
 test_keyed_decision_survives_default_unblock
 test_send_failure_leaves_block_open
 test_refuses_unknown_task_and_missing_home
+test_generated_brief_handoff_is_the_line_the_trigger_closes
 
 printf '\nall fm-trigger-validation tests passed\n'
