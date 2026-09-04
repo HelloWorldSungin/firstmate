@@ -767,11 +767,17 @@ github_read_outcome_with_gh_axi() {
 #   target   asked BEFORE the mutation. The question is which branch the pull
 #            request targets and which branch is the default, and the degraded
 #            reader gets both from its own api passthrough, so it ALSO accepts
-#            those two fields. Strictly WIDER than the outcome rule, never
-#            narrower: a proved merge still answers this question too, because a
-#            landed merge has no target left to refuse. Requiring the merge here
+#            those two fields with no merged proof. Requiring the merge here
 #            would refuse every OPEN pull request on a host carrying a broken
 #            gh, saying the target could not be read moments after it was.
+#            ACCEPTING THE VIEW IS NOT PERMITTING THE MERGE. A proved merge
+#            makes the view legible, exactly as it does on the outcome side, but
+#            it answers nothing about a target: a request hand-merged into
+#            release/2026 reads merged and still names a branch guarded merging
+#            was never permitted to touch. github_assert_default_target decides
+#            that on the two branch names alone, and refuses a landed merge this
+#            view names a non-default target for, so what is accepted here is a
+#            view worth reading rather than a merge worth recording.
 FM_PR_GITHUB_DEGRADED_ANSWERS=outcome
 github_degraded_view_answers() {
   [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
@@ -1070,17 +1076,43 @@ github_assert_default_target() {
     printf 'action: re-run validation once the forge is readable\n' >&2
     return 1
   fi
-  [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
+  # THIS IS A PRECONDITION, NOT AN OUTCOME, so wherever the forge names both
+  # branches the comparison is made - on a pull request that already reads
+  # MERGED as much as on an open one. Two nearby rules invite being reconciled
+  # into one; they answer different questions and must not be:
+  #   the LANDED-MERGE VERDICT below asks "did OUR merge land", and exits zero on
+  #   the forge's own word however the merge command behaved;
+  #   this asks "was this a permitted target at all", and a merged pull request
+  #   satisfies the first while still failing the second.
+  # A request hand-merged into release/2026 in a repository whose default is main
+  # has landed - and landed somewhere guarded merging may not touch, so recording
+  # it as this task's landed outcome reports work onto a branch this contract
+  # exists to keep it off. A landed merge has no target left to REFUSE and it
+  # still has one left to REPORT.
   # Only a POSITIVE reading of both may permit. An empty field means the target
   # was never established, and a contract that reports itself satisfied without
   # being evaluated is worse than no contract.
   if [ -z "$FM_PR_GITHUB_BASE" ] || [ -z "$FM_PR_GITHUB_DEFAULT" ]; then
+    # THE ONE CASE AN UNREAD TARGET CHANGES NOTHING: the merge already landed, so
+    # there is no mutation left to refuse, and refusing here would exit non-zero
+    # on a merge this run has just observed - the false negative the landed-merge
+    # invariant exists to prevent. This is narrow on purpose. It permits only
+    # when the target could not be READ; a target that reads as non-default is
+    # refused below whether the request has merged or not.
+    [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
     printf 'error: refusing to merge %s because its target branch could not be established, and an unread target does not prove it is the default branch\n' \
       "$URL" >&2
     printf 'action: re-run validation once the forge reports the pull request target\n' >&2
     return 1
   fi
   if [ "$FM_PR_GITHUB_BASE" != "$FM_PR_GITHUB_DEFAULT" ]; then
+    if [ "$FM_PR_GITHUB_MERGED" = true ]; then
+      printf 'error: refusing to record %s as a landed merge because it targets branch %s and is already merged there, but guarded merging is limited to current default branch %s\n' \
+        "$URL" "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
+      printf 'action: the merge is on %s and nothing here undoes it; land this work on %s and re-run validation, or retire the task\n' \
+        "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
+      return 1
+    fi
     printf 'error: refusing to merge %s because it targets branch %s, but guarded merging is limited to current default branch %s\n' \
       "$URL" "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
     printf 'action: retarget the pull request to %s, bring the branch up to current %s, and re-run validation\n' \
@@ -1097,6 +1129,15 @@ case "$PROVIDER" in
     # target read can be the first of them - a retry, or a pull request someone
     # merged by hand - and discarding that observation would let a later transient
     # read failure exit non-zero on a merge this run already knew had landed.
+    #
+    # THE LANDED-MERGE VERDICT STARTS HERE and answers ONE question: did our merge
+    # land? The forge's own word settles it, so every path below that reaches a
+    # merged reading exits zero. It is NOT the merge-target contract, which ran
+    # just above and answers whether this was a permitted target at all. That one
+    # is a precondition and can refuse a pull request the forge reports MERGED -
+    # merged into a branch guarded merging may not touch - which is why this line
+    # is reached only after that contract permitted, and why the two must not be
+    # reconciled into a single "the forge says merged, so we are done" rule.
     github_landed_observed=false
     github_assert_default_target || exit 1
     [ "$FM_PR_GITHUB_MERGED" != true ] || github_landed_observed=true
