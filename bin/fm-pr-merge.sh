@@ -15,13 +15,17 @@
 # supplies that queue-aware read when gh is on PATH; when gh is absent or its
 # read fails, gh-axi's own view still proves a landed merge, and every outcome
 # it cannot prove refuses, reporting the single failed read when gh is absent
-# and naming both failed reads when gh is present and its own read failed.
+# and naming both failed reads when gh is present and its own read failed;
+# neither degraded route accepts an outcome the gh-axi view cannot prove, so the
+# same evidence yields the same verdict whether gh is absent or merely broken.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, the refusal names the queue's configured merge method and
 # the exact -- --auto --<method> retry flags, unless the caller already passed
 # that method with --auto to a merge command that returned success, in which
 # case it reports instead that the accepted request has not entered the queue
-# and the queue state has to be re-checked.
+# and the queue state has to be re-checked. Reporting a queued request as
+# upstream reports it is a captain decision of 2026-09-03 that RETIRED this
+# fork's earlier refusal of deferred execution; see docs/fork-divergence.md.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -37,10 +41,28 @@
 # command's own output, marked as the forge's text and kept apart from this
 # script's verdict, including the refusal for an outcome that cannot be read;
 # a merge command that failed keeps its original error surfaced raw and first.
+# GUARDED MERGING IS LIMITED TO THE REPOSITORY'S CURRENT DEFAULT BRANCH on
+# GitHub. A pull request targeting anything else is refused by name, naming both
+# branches, before any queue, auto-merge or method handling, so that refusal is
+# never pre-empted by a different one. The target and the default branch come
+# from the same GraphQL query, or from gh-axi's own api passthrough when gh is
+# degraded. That contract is settled BEFORE pr= is recorded and the merge poll
+# armed, because the poll is a second writer of this task's landed outcome and
+# knows nothing about target branches. GitLab carries no such contract yet;
+# HelloWorldSungin/firstmate#257 tracks extending it.
+# THE BASE IS ALSO PINNED BY STATE, not only by name: the default branch's tip
+# commit is read when that contract is settled and RE-READ IMMEDIATELY BEFORE THE
+# MERGE CALL, and a tip that moved in between refuses. Neither forge CLI exposes
+# an expected-base parameter, so a sub-second residual window remains and is
+# declared beside the check rather than papered over. An already-landed merge
+# skips it, having no base left to judge.
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
-# Extra GitHub args are forwarded unchanged, including an explicit --merge.
+# Extra GitHub args are an ALLOW-LIST, not an unchanged passthrough: merge-method
+# selectors, message arguments, post-execution branch cleanup, and head-binding
+# arguments are admitted with a recorded reason each, and everything else is
+# refused by name. See assert_merge_args_allowed below.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -71,6 +93,11 @@
 # destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
+# A merge command that FAILED while the forge's own readback confirms the merge
+# landed exits zero on both forges, and both say so through one shared line
+# (report_landed_after_failed_command), because a run that exits zero in silence
+# straight after the forge CLI printed its own error reads as an unexplained
+# success.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra forge merge args>]
 set -eu
 
@@ -119,6 +146,165 @@ PR_NUMBER=$FM_PR_NUMBER
 PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
 [ "${1:-}" = "--" ] && shift
+
+# Forwarded arguments are an ALLOW-LIST, not a denylist. An unbounded passthrough
+# cannot be closed: each refused flag only reveals the next one. Every admitted
+# entry records WHY it is safe, and the reason is always the same shape - it acts
+# on how the merge commit is FORMED, or AFTER execution has already happened, so
+# it cannot defer execution. A flag whose safety justification cannot be written
+# honestly does not belong here.
+#
+# WHICH ENTRIES ARE INERT ON GITHUB TODAY, disclosed for the same reason the
+# --sha entry discloses it: an admitted flag must not read as a working control
+# when the tool behind it has no such flag. As OBSERVED FROM `gh-axi pr merge
+# --help` AT gh-axi 0.1.34 - a version-observed fact, not a permanent property of
+# the tool - gh-axi accepts exactly --method <merge|squash|rebase>, --merge,
+# --squash, --rebase, --auto, --delete-branch, --body <text>, --body-file <path>
+# and --subject: NO short options at all, and no --remove-source-branch. So on
+# GitHub -s, -m, -t, -b, -F, -d, -r and --remove-source-branch are inert exactly
+# as --sha is - a forwarded one is REJECTED BY THE TOOL rather than doing
+# anything. They stay admitted because the allow-list records what this script
+# considers safe to forward, which is a judgement about deferral and not a claim
+# about any one CLI's current spelling; the failure mode is a loud command
+# rejection, never a silent one. Mirror-image on GitLab: --delete-branch is
+# glab's wrong spelling there, where the same cleanup is --remove-source-branch.
+# One consequence worth stating where it is, so it is not read as a bug:
+# caller_has_merge_method recognises only the long spellings, so `-- -s` still
+# gets --squash prepended. That is harmless while the short forms are inert, and
+# is the thing to revisit first if gh-axi ever grows them.
+#
+#   --squash --merge -s -m        merge-method selectors: choose how the merge
+#                                 commit is formed, not when it happens.
+#   --method --method=*           the same selection by name.
+#   --subject --body -t -b        commit message text, applied to the commit the
+#   --body-file -F                merge itself creates.
+#   -d --delete-branch            GitHub branch cleanup, which runs AFTER the
+#   --remove-source-branch        merge has executed and so cannot defer it.
+#   --sha --sha=*                 head-binding: constrains the mutation to the
+#                                 exact state this run verified. It cannot defer
+#                                 execution and makes the merge strictly
+#                                 narrower, so it is admitted on principle.
+#                                 INERT ON BOTH FORGES TODAY, and the entry says
+#                                 so rather than reading as a working control:
+#                                 on GitLab reject_head_overrides refuses a
+#                                 caller --sha earlier by design, because this
+#                                 script supplies its own verified --sha; on
+#                                 GitHub `gh-axi pr merge --help` lists its
+#                                 supported flags as --method, --merge, --squash,
+#                                 --rebase, --auto, --delete-branch, --body,
+#                                 --body-file and --subject, with no --sha, so a
+#                                 forwarded one would be rejected by the tool
+#                                 rather than binding anything. NOTHING ELSE
+#                                 BINDS THE HEAD ON GITHUB EITHER: this script
+#                                 carries no head check on that forge, and the
+#                                 entry says so rather than pointing at a check
+#                                 that would have to exist for it to be true.
+#                                 The BASE is bound - github_read_default_tip
+#                                 refuses a merge whose default-branch tip moved
+#                                 - and a base is not a head. Head binding waits
+#                                 on the deferred synchronous REST merge
+#                                 boundary, which is what could carry one.
+#
+# Deliberately NOT admitted, each for a stated reason:
+#   --auto                        requests deferred execution outright.
+#   --rebase -r                   REFUSED ON GITLAB ONLY. There it rewrites the
+#                                 source branch BEFORE the merge and leaves it
+#                                 rewritten even when the SHA-bound merge then
+#                                 fails, which is the mutation the no-auto-rebase
+#                                 rule prevents. On GitHub rebase merge replays
+#                                 onto the base without touching the source, so
+#                                 it is admitted as an ordinary merge-method
+#                                 selector. Do not re-collapse these into one
+#                                 rule: the rationale is forge-specific.
+#   --repo -R                     would retarget the mutation away from the
+#                                 identity this run validated.
+# Refusing by name rather than silently dropping keeps a caller's mistake loud.
+#
+# WHY NO TOKEN IS EXEMPT FROM CLASSIFICATION, which is the one rule below that is
+# about the TOOL rather than about deferral. This guard used to model the forge
+# CLI as a POSITIONAL parser - a value-taking flag consumes the next word,
+# whatever that word is - and that model was wrong in both directions before it
+# was wrong here. The tool does not parse positionally: it SCANS the whole
+# argument list for each flag it knows, so a token that LOOKS like a flag IS a
+# flag to it, wherever it stands. OBSERVED AT gh-axi 0.1.34 and recorded as a
+# version-observed fact about a third-party tool rather than a permanent
+# property: dist/src/commands/pr.js calls takeBoolFlag(args, "--auto") before
+# takeFlag(args, "--subject"), and dist/src/args.js's takeFlag returns undefined
+# without erroring when its flag is left valueless, so `-- --subject --auto`
+# satisfies a positional guard while gh-axi still arms deferred execution; the
+# same file's rejectUnknownFlags inspects EVERY dash-leading token, so even one
+# the tool would not act on is judged as a flag rather than carried as text.
+# Hence a value-taking flag consumes the next word only when that word is not
+# itself flag-shaped. A value that legitimately begins with a dash is passed with
+# the --flag=<value> spelling, which is one token and cannot be mistaken for one.
+assert_merge_args_allowed() {
+  local arg
+  # Detached values belong to the flag before them - "--sha abc123" is one
+  # argument and its value, not two arguments - so a value-taking flag consumes
+  # the next word. Without this the value itself reaches the catch-all and is
+  # refused as an unknown argument.
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    case "$arg" in
+      --method|--sha|--subject|--body|--body-file|-t|-b|-F)
+        if [ "$#" -lt 2 ]; then
+          printf 'error: refusing to merge %s because %s was given without a value\n' \
+            "$URL" "$arg" >&2
+          return 1
+        fi
+        case $2 in
+          -*)
+            printf 'error: refusing to forward %s to the merge of %s because it stands where %s expects a value, and the forge CLI reads every dash-leading token as a flag wherever it stands rather than as the value beside it\n' \
+              "$2" "$URL" "$arg" >&2
+            printf 'action: give the value with the %s=<value> spelling if that flag accepts one, or re-run the merge without that argument\n' \
+              "$arg" >&2
+            return 1
+            ;;
+        esac
+        shift 2
+        continue
+        ;;
+      --squash|--merge|-s|-m|--method=*) ;;
+      --sha=*) ;;
+      --subject=*|--body=*|--body-file=*) ;;
+      -d|--delete-branch|--remove-source-branch) ;;
+      --auto|--auto=*)
+        printf 'error: refusing to forward %s to the merge of %s because it requests deferred execution, and this fleet merges immediately on judged evidence\n' \
+          "$arg" "$URL" >&2
+        printf 'action: land the pull request with an immediate merge method, or bring the branch up and re-run validation\n' >&2
+        return 1
+        ;;
+      --rebase|-r)
+        # THE TWO FORGES DIFFER HERE AND THE DIFFERENCE IS THE WHOLE POINT, so it
+        # is recorded rather than collapsed into one rule. On GITLAB, rebase
+        # REWRITES THE SOURCE BRANCH before merging and leaves it rewritten even
+        # when the SHA-bound merge then fails, which is the mutation the
+        # no-auto-rebase exclusion exists to prevent - so it is refused. On
+        # GITHUB, rebase merge replays the commits onto the base and does not
+        # touch the source branch at all: it is an ordinary immediate merge
+        # method and belongs in the merge-method-selector category above.
+        # Refusing it there would remove a method this file documents as
+        # supported and would tell the operator something untrue about why.
+        if [ "$PROVIDER" != gitlab ]; then
+          shift
+          continue
+        fi
+        printf 'error: refusing to forward %s to the merge of %s because a GitLab rebase rewrites the source branch before the merge and leaves it rewritten even if the merge then fails\n' \
+          "$arg" "$URL" >&2
+        printf 'action: land the merge request with --squash or --merge, or bring the branch up and re-run validation\n' >&2
+        return 1
+        ;;
+      *)
+        printf 'error: refusing to forward %s to the merge of %s because it is not on the allow-list of merge-method selectors, message arguments, and post-execution branch cleanup\n' \
+          "$arg" "$URL" >&2
+        printf 'action: re-run the merge without that argument, or add it to the allow-list in %s with a recorded reason why it cannot defer execution\n' \
+          "$0" >&2
+        return 1
+        ;;
+    esac
+    shift
+  done
+}
 
 caller_has_merge_method() {
   local arg
@@ -238,6 +424,123 @@ fi
 # the merge request. Sets FM_PR_MERGE_HEAD to the verified head on success and
 # returns non-zero after reporting every condition that failed.
 FM_PR_MERGE_HEAD=
+FM_PR_GITLAB_ACCEPTANCE=
+# GitLab can rebase the source branch onto the target AT MERGE TIME, which lands
+# commits whose pipeline never ran and strands the attestation this fleet merges
+# on. Refusal is bounded to the window where that can actually happen, because a
+# guard that refuses merges the forge could never have rebased is a guard people
+# switch off.
+#
+# Version facts, verified against GitLab's own documentation:
+#   - automatic rebase before merge is available only for the "Merge commit with
+#     semi-linear history" (rebase_merge) and "Fast-forward merge" (ff) methods,
+#     and runs only "when the source branch is behind the target branch"
+#     (https://docs.gitlab.com/user/project/merge_requests/methods/)
+#   - it became GENERALLY AVAILABLE in GitLab 19.2, while the API field that
+#     reports it, automatic_rebase_enabled, first appears in 19.4
+#     (https://docs.gitlab.com/api/projects/)
+# THE GAP BETWEEN 19.2 AND 19.4 IS WHY THIS CHECK IS SHAPED THIS WAY: on those
+# two versions the capability exists and cannot be read, so an absent field is
+# NOT proof the capability is absent. Do not simplify this to "field missing
+# means unsupported"; that silently disables the guard on the deployments that
+# still carry the risk.
+#
+# UNKNOWN IS NOT ABSENT: only a POSITIVE reading permits. An unreadable merge
+# method, or an unreadable setting on an applicable method, still refuses.
+gitlab_require_attested_merge() {
+  local json method enabled version major minor behind
+  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab api "projects/$(github_urlencode_path_segment "$FM_PR_PATH")" 2>/dev/null) \
+    || [ -z "$json" ]; then
+    printf 'error: refusing to merge %s because the GitLab project merge settings could not be read, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: re-run validation once the forge is readable\n' >&2
+    return 1
+  fi
+  method=$(printf '%s' "$json" | jq -r '.merge_method // empty' 2>/dev/null)
+  if [ -z "$method" ]; then
+    printf 'error: refusing to merge %s because the GitLab project merge method could not be read, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" >&2
+    printf 'action: re-run validation once the forge is readable\n' >&2
+    return 1
+  fi
+  # POSITIVE reading that the method cannot auto-rebase. Automatic rebase applies
+  # only to rebase_merge and ff, so a plain merge commit permits at any version.
+  [ "$method" = merge ] && return 0
+
+  enabled=$(printf '%s' "$json" \
+    | jq -r 'if has("automatic_rebase_enabled") then (.automatic_rebase_enabled | tostring) else "" end' 2>/dev/null)
+  [ "$enabled" = false ] && return 0
+  if [ "$enabled" = true ]; then
+    gitlab_refuse_if_behind "the project setting automatic_rebase_enabled is on with merge method $method"
+    return $?
+  fi
+
+  # The field is absent. That is NOT proof the capability is absent: automatic
+  # rebase became generally available in GitLab 19.2 while the field reporting it
+  # first appears in 19.4, so on 19.2 and 19.3 it can be on and unreadable. The
+  # version decides which of the three windows applies.
+  version=$(GITLAB_HOST="$FM_PR_HOST" glab api version 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+  case "$version" in
+    [0-9]*.[0-9]*) ;;
+    *)
+      printf 'error: refusing to merge %s because the GitLab version could not be read, so automatic rebase on merge method %s cannot be ruled out\n' \
+        "$URL" "$method" >&2
+      printf 'action: re-run validation once the forge is readable\n' >&2
+      return 1
+      ;;
+  esac
+  major=${version%%.*}
+  minor=${version#*.}
+  minor=${minor%%.*}
+  case "$major$minor" in
+    *[!0-9]*)
+      printf 'error: refusing to merge %s because the GitLab version %s could not be compared, so automatic rebase on merge method %s cannot be ruled out\n' \
+        "$URL" "$version" "$method" >&2
+      printf 'action: re-run validation once the forge is readable\n' >&2
+      return 1
+      ;;
+  esac
+  # 19.4 and later: the field exists on this version, so its absence means the
+  # response was not readable rather than that the capability is missing.
+  if [ "$major" -gt 19 ] || { [ "$major" -eq 19 ] && [ "$minor" -ge 4 ]; }; then
+    printf 'error: refusing to merge %s because GitLab %s exposes automatic_rebase_enabled but this project response did not carry it, and unknown does not prove automatic rebase is disabled\n' \
+      "$URL" "$version" >&2
+    printf 'action: re-run validation once the forge is readable\n' >&2
+    return 1
+  fi
+  # Before 19.2 the capability did not exist at all, so there is nothing to rule
+  # out and refusing here would remove legitimate merges.
+  if [ "$major" -lt 19 ] || { [ "$major" -eq 19 ] && [ "$minor" -lt 2 ]; }; then
+    return 0
+  fi
+  # 19.2 and 19.3: capability present, field absent. This is the real risk
+  # window, and it only fires when the branch is actually behind.
+  gitlab_refuse_if_behind "GitLab $version can rebase before merge with merge method $method but does not expose automatic_rebase_enabled"
+}
+
+# Automatic rebase runs only when the source branch is BEHIND the target, so a
+# branch that is not behind cannot be rebased and must not be refused. The count
+# needs include_diverged_commits_count=true; it is not returned by default.
+gitlab_refuse_if_behind() {  # <because-clause>
+  local because=$1 behind
+  behind=$(GITLAB_HOST="$FM_PR_HOST" glab api \
+    "projects/$(github_urlencode_path_segment "$FM_PR_PATH")/merge_requests/$PR_NUMBER?include_diverged_commits_count=true" \
+    2>/dev/null | jq -r '.diverged_commits_count // empty' 2>/dev/null)
+  case "$behind" in
+    ''|*[!0-9]*)
+      printf 'error: refusing to merge %s because %s, and whether the source branch is behind the target could not be established\n' \
+        "$URL" "$because" >&2
+      printf 'action: re-run validation once the forge reports the merge request divergence\n' >&2
+      return 1
+      ;;
+  esac
+  [ "$behind" -eq 0 ] && return 0
+  printf 'error: refusing to merge %s because %s, and the source branch is %s commits behind the target, so the merge can land commits whose pipeline never ran\n' \
+    "$URL" "$because" "$behind" >&2
+  printf 'action: bring the branch up to the current target branch and re-run validation\n' >&2
+  return 1
+}
+
 gitlab_verify_mergeable() {
   local json fields line
   local total=0 named=0 refusals=''
@@ -344,17 +647,18 @@ FM_PR_GITHUB_STATE=
 FM_PR_GITHUB_MERGED=
 FM_PR_GITHUB_QUEUED=
 FM_PR_GITHUB_BASE=
+FM_PR_GITHUB_DEFAULT=
 FM_PR_GITHUB_QUEUE_OBSERVED=false
 github_read_outcome_with_gh() {
   local fields line
   local total=0 named=0
-  local state='' merged='' queued='' base=''
+  local state='' merged='' queued='' base='' default=''
 
   # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
   if ! fields=$(gh api graphql \
-    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName}}}' \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName} defaultBranchRef{name}}}' \
     -F "owner=$PR_OWNER" -F "repo=$PR_REPO" -F "number=$PR_NUMBER" \
-    --jq '.data.repository.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // "")' \
+    --jq '.data.repository | "state=" + (.pullRequest.state // ""), "merged=" + (.pullRequest.merged | tostring), "queued=" + (.pullRequest.isInMergeQueue | tostring), "base=" + (.pullRequest.baseRefName // ""), "default=" + (.defaultBranchRef.name // "")' \
     2>/dev/null) || [ -z "$fields" ]; then
     return 1
   fi
@@ -365,16 +669,17 @@ github_read_outcome_with_gh() {
       merged=*) merged=${line#merged=} ;;
       queued=*) queued=${line#queued=} ;;
       base=*) base=${line#base=} ;;
+      default=*) default=${line#default=} ;;
       *) continue ;;
     esac
     named=$((named + 1))
   done <<FIELDS
 $fields
 FIELDS
-  if [ "$named" -ne 4 ] || [ "$total" -ne 4 ] || [ -z "$state" ] \
+  if [ "$named" -ne 5 ] || [ "$total" -ne 5 ] || [ -z "$state" ] \
     || { [ "$merged" != true ] && [ "$merged" != false ]; } \
     || { [ "$queued" != true ] && [ "$queued" != false ]; } \
-    || [ -z "$base" ]; then
+    || [ -z "$base" ] || [ -z "$default" ]; then
     return 1
   fi
 
@@ -382,7 +687,32 @@ FIELDS
   FM_PR_GITHUB_MERGED=$merged
   FM_PR_GITHUB_QUEUED=$queued
   FM_PR_GITHUB_BASE=$base
+  FM_PR_GITHUB_DEFAULT=$default
   FM_PR_GITHUB_QUEUE_OBSERVED=true
+}
+
+# One TOON scalar field, read by name out of a TOON object gh-axi printed.
+# It decodes a SINGLE value on a SINGLE line and never splits one line into two
+# fields, which is the mistake it replaced. The encoder quotes a scalar only when
+# leaving it bare would be ambiguous, escaping an embedded quote or backslash
+# inside those quotes, so an unquoted value is already literal and a quoted one
+# is undone here. A bare null is JSON null - the field was never established -
+# and is reported as absent so the caller's positive-reading rule refuses, while
+# the STRING "null" arrives quoted and survives as text.
+github_toon_scalar() {
+  local raw=$1 field=$2 value
+  value=$(printf '%s\n' "$raw" \
+    | sed -n "s/^[[:space:]]*$field:[[:space:]]*//p" | head -1)
+  case "$value" in
+    '"'*'"')
+      value=${value#'"'}
+      value=${value%'"'}
+      value=${value//\\\"/\"}
+      value=${value//\\\\/\\}
+      ;;
+    null) value= ;;
+  esac
+  printf '%s' "$value"
 }
 
 github_read_outcome_with_gh_axi() {
@@ -408,25 +738,95 @@ github_read_outcome_with_gh_axi() {
       FM_PR_GITHUB_QUEUED=unknown
       ;;
   esac
+  # The degraded view cannot observe the merge QUEUE, but the target branch is
+  # not queue state and is available through gh-axi's own api passthrough, so the
+  # default-target contract is evaluated on this path too rather than silently
+  # skipped. One call carries both fields: a pull request payload contains its
+  # own base ref and that base repository's default branch.
   FM_PR_GITHUB_BASE=
+  FM_PR_GITHUB_DEFAULT=
+  # ASK FOR ONE FIELD PER LINE, and the reason is the encoding rather than taste.
+  # A --jq expression whose result is not JSON comes back inside a TOON envelope
+  # as a single `body:` line, so two ref names joined by a space had to be SPLIT
+  # back apart - and a git ref name may legally contain a comma or begin with a
+  # dash, both of which make the TOON encoder QUOTE the whole scalar, after which
+  # the split lands inside the quotes and the contract compares two mangled
+  # names. A --jq object is valid JSON, so gh-axi encodes it as a TOON object
+  # instead and each field arrives on its own line with nothing to split.
+  # Captured live from gh-axi 0.1.34 - version-observed, like every other fact
+  # recorded here about that tool - the exact output is two lines:
+  #   base: <base>
+  #   def: <default>
+  # A hostile-but-legal name is still QUOTED on its own line (`base: "a,b"`,
+  # `def: "-lead"`), which is why each value goes through the scalar reader
+  # rather than being taken raw.
+  local target_raw
+  if target_raw=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '{base: .base.ref, def: .base.repo.default_branch}' 2>/dev/null); then
+    FM_PR_GITHUB_BASE=$(github_toon_scalar "$target_raw" base)
+    FM_PR_GITHUB_DEFAULT=$(github_toon_scalar "$target_raw" def)
+  fi
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
 
+# WHAT THE DEGRADED VIEW HAS TO SUPPLY, and it is not the same for both readers
+# of this function. THE SEAM IS DELIBERATE; do not re-collapse it, because each
+# side's rule is the wrong answer to the other side's question.
+#   outcome  asked AFTER the mutation. The degraded view cannot tell an OPEN
+#            pull request from a QUEUED one, so only a proved merge is legible
+#            at all; without that proof there is no outcome to report. This
+#            holds on BOTH degraded routes - gh absent entirely, and gh present
+#            with its own read failed - because the evidence is the same gh-axi
+#            view either way, and identical evidence must not yield two
+#            different verdicts depending on which tool happens to be installed.
+#   target   asked BEFORE the mutation. The question is which branch the pull
+#            request targets and which branch is the default, and the degraded
+#            reader gets both from its own api passthrough, so it ALSO accepts
+#            those two fields with no merged proof. Requiring the merge here
+#            would refuse every OPEN pull request on a host carrying a broken
+#            gh, saying the target could not be read moments after it was.
+#            ACCEPTING THE VIEW IS NOT PERMITTING THE MERGE. A proved merge
+#            makes the view legible, exactly as it does on the outcome side, but
+#            it answers nothing about a target: a request hand-merged into
+#            release/2026 reads merged and still names a branch guarded merging
+#            was never permitted to touch. github_assert_default_target decides
+#            that on the two branch names alone, and refuses a landed merge this
+#            view names a non-default target for, so what is accepted here is a
+#            view worth reading rather than a merge worth recording.
+FM_PR_GITHUB_DEGRADED_ANSWERS=outcome
+github_degraded_view_answers() {
+  [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
+  case "$FM_PR_GITHUB_DEGRADED_ANSWERS" in
+    target) [ -n "$FM_PR_GITHUB_BASE" ] && [ -n "$FM_PR_GITHUB_DEFAULT" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# WHAT THE OPERATOR IS TOLD ABOUT BOOKKEEPING TRAVELS WITH THE PHASE, because
+# the two reads sit on opposite sides of the recording step. After the merge
+# attempt the PR identity and its poll are deliberately kept, so a merge that may
+# have landed still has something watching it; before the merge nothing has been
+# armed yet, and saying otherwise would send the operator looking for a poll that
+# does not exist. One default beside the other keeps the pair from drifting.
 github_read_outcome() {
+  local bookkeeping=${FM_PR_GITHUB_READ_BOOKKEEPING:-PR metadata and merge poll remain recorded}
   if ! command -v gh >/dev/null 2>&1; then
-    github_read_outcome_with_gh_axi && return 0
-    echo "error: could not read the GitHub pull request outcome after the merge attempt; PR metadata and merge poll remain recorded" >&2
+    github_read_outcome_with_gh_axi && github_degraded_view_answers && return 0
+    printf 'error: could not read the GitHub pull request outcome %s; %s\n' \
+      "${FM_PR_GITHUB_READ_PHASE:-after the merge attempt}" "$bookkeeping" >&2
     return 1
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
   # pull request as neither merged nor queued is a concrete outcome, not a
-  # missing one, so it keeps its own refusal. The gh-axi view cannot observe the
-  # merge queue, so it can only turn this into a proved merge or into a refusal.
+  # missing one, so it keeps its own refusal. What the fallback then has to
+  # prove depends on which question is being asked of it; see
+  # FM_PR_GITHUB_DEGRADED_ANSWERS above.
   github_read_outcome_with_gh && return 0
-  if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
+  if github_read_outcome_with_gh_axi && github_degraded_view_answers; then
     return 0
   fi
-  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
+  printf 'error: could not read the GitHub pull request outcome %s: the gh read failed and the gh-axi view could not prove the outcome either; %s\n' \
+    "${FM_PR_GITHUB_READ_PHASE:-after the merge attempt}" "$bookkeeping" >&2
   return 1
 }
 
@@ -571,6 +971,14 @@ github_report_queue_rules() {
         SQUASH) queue_method=squash ;;
         REBASE) queue_method=rebase ;;
       esac
+      # The auto-requested branch below is unreachable in this fork, and the
+      # reason is the forwarded-argument allow-list rather than anything about
+      # the merge queue: it refuses --auto by name before the merge is attempted,
+      # so FM_PR_GITHUB_AUTO_REQUESTED cannot be true here. The retry the
+      # else-branch names has the same standing - it is upstream's guidance,
+      # restored by the captain decision of 2026-09-03, and a caller who takes it
+      # is refused by that allow-list. It is left whole rather than reworded so a
+      # future upstream merge conflicts on as little as possible.
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
         && github_caller_method_is "$queue_method"; then
@@ -614,6 +1022,11 @@ github_report_unmerged_outcome() {
         "$URL" >&2
     fi
   fi
+  # Unreachable in this fork for the same reason the auto branch above is: the
+  # degraded-view seam accepts no unmerged outcome from the gh-axi view on either
+  # degraded route, so every read that reaches here came from the queue-aware
+  # one. Left whole rather than deleted, so a future upstream merge conflicts on
+  # as little as possible.
   if [ "$FM_PR_GITHUB_QUEUE_OBSERVED" != true ]; then
     printf 'error: the merge queue could not be observed for %s because the queue-aware read was unavailable, so a pull request already in the merge queue cannot be told apart from one that never entered it; re-check the pull request'"'"'s merge queue state before retrying\n' \
       "$URL" >&2
@@ -622,19 +1035,31 @@ github_report_unmerged_outcome() {
   github_report_queue_rules
 }
 
+# The ONE place either forge reconciles a merge command that failed with its own
+# readback confirming the merge LANDED - the reachable half of the fork
+# divergence recorded in docs/fork-divergence.md. Both forges reach that verdict,
+# so both must state it from here: while GitHub and GitLab each wrote their own
+# line, GitHub reconciled the two facts and GitLab exited zero in silence right
+# after the operator had seen glab's own error, which is what two hand-written
+# messages drift into. Reversing or rewording the verdict is one edit here.
+report_landed_after_failed_command() {
+  printf 'actionable: the merge command for %s failed, but the forge reads it back as landed (%s), so the forge state is the authority and the command status is not; the landed merge is recorded and this run exits zero\n' \
+    "$URL" "$1" >&2
+}
+
 gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab %s for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "${FM_PR_GITLAB_ACCEPTANCE:-accepted the merge request}" "$URL" >&2
     return 2
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab %s for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
+      "${FM_PR_GITLAB_ACCEPTANCE:-accepted the merge request}" "$URL" >&2
     return 2
   fi
   [ "$state" = merged ]
@@ -643,6 +1068,151 @@ gitlab_confirm_merged() {
 # Record before either forge call. This arms the merge poll without claiming a
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
+# EVERY PRECONDITION THAT CAN REFUSE THE MERGE IS EVALUATED BEFORE THAT
+# RECORDING, and the reason is stronger than tidiness: RECORDING ARMS A SECOND,
+# INDEPENDENT WRITER OF THIS TASK'S LANDED OUTCOME. bin/fm-pr-poll.sh reads only
+# whether the pull request is merged and has no notion of which branch it merged
+# into, so a poll armed behind a refusal records the very landing the refusal
+# exists to keep off this task's ledger - later, and by a different writer.
+# A refused argument, a target this fleet may not merge into, and a base that
+# could not be read are all decided here, before anything is armed.
+assert_merge_args_allowed "$@" || exit 1
+
+# Guarded merging is limited to the repository's CURRENT default branch. A PR
+# targeting a release or long-lived branch is refused BY NAME rather than being
+# silently compared against, or merged into, something it does not target. The
+# check runs before any queue, auto-merge, or method handling so its message is
+# never pre-empted by a different rejection reaching the operator first.
+github_assert_default_target() {
+  # This runs BEFORE any mutation AND before any bookkeeping, so the shared
+  # reader must not report its failure as having happened "after the merge
+  # attempt" or claim a poll it has not armed - the operator's next decision
+  # depends on knowing no merge was tried and nothing is watching for one.
+  local FM_PR_GITHUB_READ_PHASE='before the merge was attempted'
+  local FM_PR_GITHUB_READ_BOOKKEEPING='no PR metadata was recorded and no merge poll was armed'
+  # This check consumes the BASE and DEFAULT branches, which the degraded gh-axi
+  # reader supplies directly, so it also accepts that reader on those two fields
+  # with no proved merge - unlike the post-merge outcome read, where a proved
+  # merge is the only thing that makes the degraded view legible at all, because
+  # it cannot tell an open pull request from a queued one. Without this seam a
+  # broken gh would refuse a target the degraded reader had just established.
+  # See FM_PR_GITHUB_DEGRADED_ANSWERS.
+  local FM_PR_GITHUB_DEGRADED_ANSWERS=target
+  if ! github_read_outcome; then
+    printf 'error: refusing to merge %s because its target branch could not be read, and an unread target does not prove it is the default branch\n' \
+      "$URL" >&2
+    printf 'action: re-run validation once the forge is readable\n' >&2
+    return 1
+  fi
+  # THIS IS A PRECONDITION, NOT AN OUTCOME, so wherever the forge names both
+  # branches the comparison is made - on a pull request that already reads
+  # MERGED as much as on an open one. Two nearby rules invite being reconciled
+  # into one; they answer different questions and must not be:
+  #   the LANDED-MERGE VERDICT below asks "did OUR merge land", and exits zero on
+  #   the forge's own word however the merge command behaved;
+  #   this asks "was this a permitted target at all", and a merged pull request
+  #   satisfies the first while still failing the second.
+  # A request hand-merged into release/2026 in a repository whose default is main
+  # has landed - and landed somewhere guarded merging may not touch, so recording
+  # it as this task's landed outcome reports work onto a branch this contract
+  # exists to keep it off. A landed merge has no target left to REFUSE and it
+  # still has one left to REPORT.
+  # Only a POSITIVE reading of both may permit. An empty field means the target
+  # was never established, and a contract that reports itself satisfied without
+  # being evaluated is worse than no contract.
+  if [ -z "$FM_PR_GITHUB_BASE" ] || [ -z "$FM_PR_GITHUB_DEFAULT" ]; then
+    # THE ONE CASE AN UNREAD TARGET CHANGES NOTHING: the merge already landed, so
+    # there is no mutation left to refuse, and refusing here would exit non-zero
+    # on a merge this run has just observed - the false negative the landed-merge
+    # invariant exists to prevent. This is narrow on purpose. It permits only
+    # when the target could not be READ; a target that reads as non-default is
+    # refused below whether the request has merged or not.
+    [ "$FM_PR_GITHUB_MERGED" = true ] && return 0
+    printf 'error: refusing to merge %s because its target branch could not be established, and an unread target does not prove it is the default branch\n' \
+      "$URL" >&2
+    printf 'action: re-run validation once the forge reports the pull request target\n' >&2
+    return 1
+  fi
+  if [ "$FM_PR_GITHUB_BASE" != "$FM_PR_GITHUB_DEFAULT" ]; then
+    if [ "$FM_PR_GITHUB_MERGED" = true ]; then
+      printf 'error: refusing to record %s as a landed merge because it targets branch %s and is already merged there, but guarded merging is limited to current default branch %s\n' \
+        "$URL" "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
+      printf 'action: the merge is on %s and nothing here undoes it; land this work on %s and re-run validation, or retire the task\n' \
+        "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
+      return 1
+    fi
+    printf 'error: refusing to merge %s because it targets branch %s, but guarded merging is limited to current default branch %s\n' \
+      "$URL" "$FM_PR_GITHUB_BASE" "$FM_PR_GITHUB_DEFAULT" >&2
+    printf 'action: retarget the pull request to %s, bring the branch up to current %s, and re-run validation\n' \
+      "$FM_PR_GITHUB_DEFAULT" "$FM_PR_GITHUB_DEFAULT" >&2
+    return 1
+  fi
+}
+
+# The CURRENT tip of the branch this merge would land on, read as a commit id
+# rather than a branch name. The target contract above settles WHICH branch is
+# permitted; this settles WHICH STATE OF IT this run judged, so the merge can be
+# refused when that state is no longer the one it judged.
+#
+# ONE READER ON EVERY ROUTE, deliberately: this goes through gh-axi's api
+# passthrough whether gh is present, absent or broken, because gh-axi is the tool
+# that performs the merge and is therefore the one tool a merge run always has.
+# A base guarantee that quietly lapses on the host where gh happens to be missing
+# is the shape of guarantee this file has already been wrong about twice.
+FM_PR_GITHUB_DEFAULT_TIP=
+github_read_default_tip() {
+  local raw tip branch_path
+  FM_PR_GITHUB_DEFAULT_TIP=
+  [ -n "$FM_PR_GITHUB_DEFAULT" ] || return 1
+  branch_path=$(github_urlencode_path_segment "$FM_PR_GITHUB_DEFAULT")
+  # A branch payload names its own head commit; asked for one field, gh-axi
+  # encodes the reply as a TOON object with that field on its own line, which is
+  # why the value goes through the same scalar reader the target names use.
+  raw=$(gh-axi api "repos/$PR_OWNER/$PR_REPO/branches/$branch_path" \
+    --jq '{tip: .commit.sha}' 2>/dev/null) || return 1
+  tip=$(github_toon_scalar "$raw" tip)
+  fm_pr_head_valid "$tip" || return 1
+  FM_PR_GITHUB_DEFAULT_TIP=$tip
+}
+
+github_refuse_unreadable_default_tip() {
+  printf 'error: refusing to merge %s because the current tip of default branch %s could not be read, and an unread tip does not prove the merge would execute against the base this run judged\n' \
+    "$URL" "$FM_PR_GITHUB_DEFAULT" >&2
+  printf 'action: re-run validation once the forge is readable\n' >&2
+}
+
+# THE LANDED-MERGE VERDICT'S FIRST OBSERVATION POINT, and the two preconditions
+# that must be settled before anything is armed.
+#
+# Every landed observation this run makes, wherever it is made, is carried in
+# github_landed_observed. The preflight target read can be the first of them - a
+# retry, or a pull request someone merged by hand - and discarding that
+# observation would let a later transient read failure exit non-zero on a merge
+# this run already knew had landed.
+#
+# THE LANDED-MERGE VERDICT answers ONE question: did our merge land? The forge's
+# own word settles it, so every path below that reaches a merged reading exits
+# zero. It is NOT the merge-target contract evaluated here, which answers whether
+# this was a permitted target at all. That one is a precondition and can refuse a
+# pull request the forge reports MERGED - merged into a branch guarded merging
+# may not touch - which is why the verdict is only ever reached after the
+# contract permitted, and why the two must not be reconciled into a single "the
+# forge says merged, so we are done" rule.
+github_landed_observed=false
+github_judged_default_tip=
+if [ "$PROVIDER" = github ]; then
+  github_assert_default_target || exit 1
+  [ "$FM_PR_GITHUB_MERGED" != true ] || github_landed_observed=true
+  # A merge already landed has no base left to judge: the mutation this baseline
+  # exists to bound has happened, and refusing on a tip read would exit non-zero
+  # on a merge this run has just observed. Narrow on purpose, exactly as the
+  # target contract's unread-target exception is.
+  if [ "$github_landed_observed" != true ]; then
+    github_read_default_tip || { github_refuse_unreadable_default_tip; exit 1; }
+    github_judged_default_tip=$FM_PR_GITHUB_DEFAULT_TIP
+  fi
+fi
+
 record_pr_metadata || exit 1
 
 case "$PROVIDER" in
@@ -656,23 +1226,73 @@ case "$PROVIDER" in
       FM_PR_GITHUB_AUTO_REQUESTED=true
     fi
     FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
+    # THE DEFAULT TIP IS RE-READ IMMEDIATELY BEFORE THE MERGE CALL, and the merge
+    # is refused if it moved. Refusing deferred execution is only half of the
+    # immediate-execution guarantee; the other half is that the base was compared
+    # AT MERGE TIME, so what lands is a merge onto the state this run judged
+    # rather than onto whatever the branch happens to be by the time the forge
+    # acts. The interval this closes is real work, not a formality: the metadata
+    # recording between the two reads talks to the forge itself.
+    #
+    # THE RESIDUAL WINDOW IS DECLARED RATHER THAN PAPERED OVER. `gh-axi pr merge`
+    # exposes no expected-base parameter (observed at gh-axi 0.1.34, like every
+    # other fact recorded here about that tool), so nothing can make the forge
+    # itself reject a merge whose base moved. Between this read returning and the
+    # merge landing there remains a sub-second window in which the default branch
+    # can still move, and this check NARROWS that window to two back-to-back
+    # calls rather than closing it. Closing it needs a forge-side expected-base,
+    # which is what the deferred synchronous REST merge boundary would carry.
+    #
+    # GITHUB ONLY, and stated so rather than implied: GitLab binds its own merge
+    # to the head it verified through --sha and reads every pre-merge condition
+    # live, and extending this contract there is deferred with the rest of the
+    # GitLab target work (HelloWorldSungin/firstmate#257).
+    if [ "$github_landed_observed" != true ]; then
+      if ! github_read_default_tip; then
+        github_refuse_unreadable_default_tip
+        exit 1
+      fi
+      if [ "$FM_PR_GITHUB_DEFAULT_TIP" != "$github_judged_default_tip" ]; then
+        printf 'error: refusing to merge %s because default branch %s moved from tip %s, which this run judged, to tip %s before the merge could execute\n' \
+          "$URL" "$FM_PR_GITHUB_DEFAULT" "$github_judged_default_tip" \
+          "$FM_PR_GITHUB_DEFAULT_TIP" >&2
+        printf 'action: bring the branch up to current %s and re-run validation\n' \
+          "$FM_PR_GITHUB_DEFAULT" >&2
+        exit 1
+      fi
+    fi
     if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
       "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
     else
       merge_status=$?
       [ -z "$merge_output" ] || printf '%s\n' "$merge_output" >&2
-      if github_read_outcome; then
-        if [ "$FM_PR_GITHUB_MERGED" != true ] && [ "$FM_PR_GITHUB_QUEUED" != true ]; then
-          github_report_unmerged_outcome
-        else
+      if [ "$github_landed_observed" = true ] || github_read_outcome; then
+        if [ "$FM_PR_GITHUB_MERGED" = true ]; then
+          # The forge state is the authority, not the command status. A merge the
+          # forge confirms LANDED is not a failed merge just because the command
+          # reporting it failed, so this falls through to outcome reporting
+          # instead of exiting non-zero and leaving the landed merge unrecorded.
+          report_landed_after_failed_command \
+            "state=$FM_PR_GITHUB_STATE, merged=$FM_PR_GITHUB_MERGED, isInMergeQueue=$FM_PR_GITHUB_QUEUED"
+          github_landed_observed=true
+        elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
           printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
             "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
+        else
+          github_report_unmerged_outcome
         fi
       fi
-      exit "$merge_status"
+      [ "$github_landed_observed" = true ] || exit "$merge_status"
     fi
-    if ! github_read_outcome; then
+    # A landed merge this run has ALREADY OBSERVED must not be re-read, whether
+    # the preflight target read or the post-failure read is what observed it.
+    # Asking the forge a second time can fail transiently - a rate limit, a 5xx,
+    # a token blip between two back-to-back calls - and exiting on that would
+    # strand a merge that is already on the default branch with nothing recording
+    # it, which is the invariant this script asserts positively.
+    if [ "$github_landed_observed" != true ] \
+      && ! github_read_outcome; then
       github_report_forge_output "$merge_output"
       exit 1
     fi
@@ -690,15 +1310,38 @@ case "$PROVIDER" in
     fi
     ;;
   gitlab)
+    gitlab_require_attested_merge || exit 1
     gitlab_verify_mergeable || exit 1
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;
     # the conditions above are what authorize the merge.
+    # Capture the command status rather than letting set -e abort here: if the
+    # forge LANDS the merge and a post-execution step or the response transport
+    # then fails, aborting would skip the confirmation read entirely and leave a
+    # merge that really happened with nothing recording it. The forge state read
+    # below is the authority; only a merge confirmed not to have landed fails.
+    gitlab_merge_rc=0
     GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
-      --sha "$FM_PR_MERGE_HEAD" --yes "$@"
+      --sha "$FM_PR_MERGE_HEAD" --yes "$@" || gitlab_merge_rc=$?
+    # Before the command status was captured, set -e guaranteed the merge command
+    # had succeeded whenever this ran, so "accepted the merge request" was always
+    # true. It is not any more, and a confirm that claims acceptance on a failed
+    # command contradicts the refusal printed immediately after it.
     gitlab_confirm_rc=0
+    if [ "$gitlab_merge_rc" -ne 0 ]; then
+      FM_PR_GITLAB_ACCEPTANCE='rejected the merge command'
+    fi
     gitlab_confirm_merged || gitlab_confirm_rc=$?
+    if [ "$gitlab_confirm_rc" -ne 0 ] && [ "$gitlab_merge_rc" -ne 0 ]; then
+      printf 'error: refusing to treat %s as merged because the merge command failed and the forge does not confirm it landed; the merge poll remains armed\n' \
+        "$URL" >&2
+      printf 'action: bring the branch up to the current default branch and re-run validation\n' >&2
+      exit 1
+    fi
+    if [ "$gitlab_merge_rc" -ne 0 ] && [ "$gitlab_confirm_rc" -eq 0 ]; then
+      report_landed_after_failed_command 'state=merged'
+    fi
     [ "$gitlab_confirm_rc" -eq 0 ] || exit 0
     ;;
   *)

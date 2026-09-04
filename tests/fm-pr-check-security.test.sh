@@ -86,7 +86,8 @@ case "${1:-} ${2:-}" in
       'state=MERGED' \
       'merged=true' \
       'queued=false' \
-      'base=main'
+      'base=main' \
+      'default=main'
     exit 0
     ;;
 esac
@@ -107,6 +108,22 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
     ;;
+  # The guarded merge establishes its target through this passthrough before
+  # mutating, so the default-target contract holds on the degraded path too.
+  api\ *)
+    # This fixture answers ONE query: the per-field object whose TOON encoding
+    # puts each branch on its own line. The SHAPE OF THE REQUEST is what decides
+    # the shape of the reply - a jq expression that is not JSON comes back inside
+    # an api_response envelope instead - so a run that asks the older
+    # whitespace-joined question gets the error a fixture owes a question it does
+    # not model, rather than an answer that hides the difference.
+    case " $* " in
+      *'{base:'*) ;;
+      *) echo "gh-axi mock: unmodelled api query: $*" >&2 ; exit 2 ;;
+    esac
+    printf 'base: %s\ndef: %s\n' \
+      "${FM_TEST_GH_AXI_BASE:-main}" "${FM_TEST_GH_AXI_DEFAULT:-main}"
+    ;;
 esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH
@@ -117,6 +134,10 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+case "${1:-} ${2:-}" in
+  # merge_method=merge is the case where GitLab cannot rebase at merge time.
+  "api projects/"*|"api version") printf '{"merge_method":"merge"}\n' ; exit 0 ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
