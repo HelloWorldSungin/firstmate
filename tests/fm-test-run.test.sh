@@ -15,6 +15,17 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+# ruby and python3 are both optional here: bin/fm-bootstrap.sh installs neither.
+# A case that cannot run without one announces the missing precondition as a TAP
+# skip naming it, so a sweep on a host that simply lacks the interpreter loses
+# that case rather than the whole verdict. Emitted per case, never file-level,
+# so the cases that do run still report individually.
+skip_without() {  # <interpreter> <case-title>
+  command -v "$1" >/dev/null 2>&1 && return 1
+  printf 'ok - %s # skip %s not found (optional interpreter, not installed by bin/fm-bootstrap.sh)\n' \
+    "$2" "$1"
+}
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -376,6 +387,7 @@ SH
 }
 
 test_empty_selection_emits_summary() {
+  skip_without python3 "empty changed selection emits deterministic text and JSON summaries" && return 0
   local tmp repo out json rc fake_bin real_git
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-empty.XXXXXX")
   repo="$tmp/repo"
@@ -438,6 +450,7 @@ SH
 }
 
 test_timing_markers_and_json() {
+  skip_without python3 "timing markers and JSON artifact are valid" && return 0
   local tmp fixture out json begin_n end_n summary
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timing.XXXXXX")
   fixture="$tmp/ok.test.sh"
@@ -513,6 +526,7 @@ SH
 }
 
 test_gate_skip_accounting() {
+  skip_without python3 "gate-skip accounting is honest and non-failing" && return 0
   local tmp skip_f out json
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
   skip_f="$tmp/skip.test.sh"
@@ -823,7 +837,7 @@ test_concurrent_runs_are_ordered_longest_first() {
 # finishes. A hung script has to become a bounded failure, because an unbounded
 # suite is exactly what silently outruns its caller's invocation budget.
 test_per_script_timeout_bounds_a_hang() {
-  local tmp repo runner hang rc began ended grandchild_pid grandchild waited
+  local tmp repo runner hang rc began ended grandchild_pid grandchild waited duration
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-hang.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -855,6 +869,11 @@ SH
     || fail "the terminated script was not named: $(cat "$tmp/out")"
   grep -Eq 'FM_TEST_END .* exit=124 ' "$tmp/out" \
     || fail "a terminated script must be recorded as exit 124: $(cat "$tmp/out")"
+  # The fixture sleeps 600s, so a recorded duration anywhere near that means it
+  # was waited out rather than terminated.
+  duration=$(sed -n 's/^FM_TEST_END .* duration_ms=\([0-9]*\) .*/\1/p' "$tmp/out")
+  [ -n "$duration" ] && [ "$duration" -lt 60000 ] \
+    || fail "bounded kill recorded ${duration:-no} ms; the script was not actually terminated"
   # The run still completes and accounts for the script, rather than dying.
   grep -Fq 'FM_TEST_SUMMARY total=1 failed=1' "$tmp/out" \
     || fail "the bounded run did not report a complete summary: $(cat "$tmp/out")"
@@ -945,6 +964,7 @@ SH
 }
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
+  skip_without python3 "jobs scheduler runs proven scripts; failure propagates; non-proven refused" && return 0
   local tmp repo runner evidence fake_bin a b c d rc begin_n end_n
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-sched.XXXXXX")
   repo="$tmp/repo"
@@ -957,6 +977,9 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  # The copied runner's per-script timeout default (see bin/fm-test-run.sh) needs
+  # the timeout helper next to it; the runner refuses the run otherwise.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -1074,8 +1097,9 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  local title='Herdr CI family-run step times out at 20 min under a 75 min job backstop'
+  skip_without ruby "$title" && return 0
+  skip_without python3 "$title" && return 0
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -1101,10 +1125,475 @@ puts JSON.generate(
     || fail "family-run step timeout must be 20 minutes, got $step_timeout"
   [ "$step_timeout" -lt "$job_timeout" ] \
     || fail "family-run step timeout must be below the job backstop"
-  pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
+  pass "$title"
+}
+
+# A per-script bound only earns its keep if a stuck script becomes an ordinary
+# red. These drive the runner's real CLI over fixtures that genuinely hang.
+test_per_script_timeout_bounds_a_hung_script_under_jobs() {
+  local tmp repo runner proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-bound-jobs.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  cat >"$repo/$proven" <<'SH'
+#!/usr/bin/env bash
+echo "ok - hung parallel fixture started"
+sleep 600
+SH
+  chmod +x "$runner" "$repo/$proven"
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 2 "$proven" ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a bounded kill under --jobs must make the run red"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $proven exit=124 " "$tmp/out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/out" || true)
+    rm -rf "$tmp"
+    fail "parallel bounded kill not recorded as exit=124: $diag"
+  fi
+  if ! grep -Fq "not ok - $proven exceeded the per-script bound of 2s and was terminated" "$tmp/out"; then
+    diag=$(cat "$tmp/out")
+    rm -rf "$tmp"
+    fail "parallel bound annotation never reached stdout: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "the per-script bound also terminates and reports a hung script under --jobs"
+}
+
+test_per_script_timeout_zero_is_a_real_opt_out() {
+  local tmp repo runner fixture rc diag changed_repo changed_script
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-optout.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/slow.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+sleep 3
+echo "ok - slow but healthy fixture"
+SH
+  chmod +x "$repo/$fixture"
+
+  # No timeout helper is installed next to this runner, so an armed bound must
+  # refuse the run. That refusal is what distinguishes a genuinely disabled
+  # bound from one silently rearmed at the default.
+  rc=0
+  ( cd "$repo" && "$runner" "$fixture" ) >"$tmp/armed.out" 2>"$tmp/armed.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "the default bound must refuse to run without its timeout helper"
+  fi
+  if ! grep -Fq 'per-script timeout helper not found' "$tmp/armed.err"; then
+    diag=$(cat "$tmp/armed.err")
+    rm -rf "$tmp"
+    fail "unset bound did not arm: $diag"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 0 "$fixture" ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/err")
+    rm -rf "$tmp"
+    fail "--per-script-timeout-secs 0 must disable the bound entirely: $diag"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=0 " "$tmp/out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/out" || true)
+    rm -rf "$tmp"
+    fail "opt-out run did not complete normally: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/out"; then
+    rm -rf "$tmp"
+    fail "the bound fired despite the explicit opt-out"
+  fi
+
+  # With the helper available the opt-out still runs unbounded rather than
+  # quietly falling back to the default.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 0 "$fixture" ) \
+    >"$tmp/out2" 2>"$tmp/err2" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/err2")
+    rm -rf "$tmp"
+    fail "opt-out must stay green with the helper present: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/out2"; then
+    rm -rf "$tmp"
+    fail "the bound fired despite the explicit opt-out"
+  fi
+
+  # --changed carries its own automatic bound, so the opt-out has to be read
+  # from the flag there too rather than from a zero that also means "unset".
+  # The stub helper kills every bounded script, so the script's own marker is
+  # what separates a bounded run from an unbounded one.
+  changed_repo="$tmp/changed"
+  changed_script=tests/fm-calm-pi-extension.test.sh
+  mkdir -p "$changed_repo/bin" "$changed_repo/tests"
+  cp "$RUNNER" "$changed_repo/bin/fm-test-run.sh"
+  cat >"$changed_repo/bin/fm-timeout-lib.sh" <<'SH'
+fm_run_timed() {
+  return 124
+}
+SH
+  cat >"$changed_repo/$changed_script" <<'SH'
+#!/usr/bin/env bash
+touch ran-unbounded
+echo "ok - unbounded changed script"
+SH
+  chmod +x "$changed_repo/bin/fm-test-run.sh" "$changed_repo/$changed_script"
+  git -C "$changed_repo" init -q
+  git -C "$changed_repo" add .
+  git -C "$changed_repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+  printf '\n' >>"$changed_repo/$changed_script"
+
+  rc=0
+  ( cd "$changed_repo" && bin/fm-test-run.sh --changed --base HEAD ) \
+    >"$tmp/changed-armed.out" 2>"$tmp/changed-armed.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "--changed must still arm its automatic bound when no flag is given"
+  fi
+  if [ -e "$changed_repo/ran-unbounded" ]; then
+    rm -rf "$tmp"
+    fail "--changed bypassed its automatic bound"
+  fi
+
+  rc=0
+  ( cd "$changed_repo" && bin/fm-test-run.sh --changed --base HEAD --per-script-timeout-secs 0 ) \
+    >"$tmp/changed-optout.out" 2>"$tmp/changed-optout.err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/changed-optout.err")
+    rm -rf "$tmp"
+    fail "--changed --per-script-timeout-secs 0 must run unbounded: $diag"
+  fi
+  if [ ! -e "$changed_repo/ran-unbounded" ]; then
+    diag=$(cat "$tmp/changed-optout.out")
+    rm -rf "$tmp"
+    fail "--changed rearmed its default bound despite the explicit opt-out: $diag"
+  fi
+
+  rm -rf "$tmp"
+  pass "--per-script-timeout-secs 0 is a real opt-out, not the default in disguise"
+}
+
+# The bound puts each script in its own process group, so the runner relays a
+# terminal interrupt there before leaving. The status it leaves with is the
+# only thing an operator or CI wrapper can read to learn which signal stopped
+# the sweep, so INT and TERM must not report the same cause.
+test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
+  local tmp repo runner fixture sig expected pid rc waited relayed mechanism
+  # Only an arm that publishes a process-group id can be relayed to at all:
+  # bin/fm-timeout-lib.sh documents the perl arm as keeping the id inside perl
+  # and publishing nothing, so on a host that selects it - stock macOS without
+  # coreutils - the relay correctly finds no id and leaves that group to the
+  # deadline. The exit status is what every arm owes; the marker is not.
+  mechanism=$(. "$ROOT/bin/fm-timeout-lib.sh" && fm_timeout_mechanism)
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-signal.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/slow.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  chmod +x "$runner"
+  # The fixture distinguishes the two signals the way several suites in this
+  # repo do, so the relayed signal is observable and not just the runner's own
+  # exit status read back. It idles in `wait` rather than a foreground sleep:
+  # bash defers a trap until the foreground command returns, so a script parked
+  # directly in sleep can be killed by the bound owner's escalation before its
+  # handler ever runs, while wait is interrupted by the trap immediately.
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+trap 'printf INT >"$FM_SIGNAL_MARKER"; exit 130' INT
+trap 'printf TERM >"$FM_SIGNAL_MARKER"; exit 143' TERM
+echo "ok - signal fixture started"
+sleep 30 &
+wait $!
+SH
+  chmod +x "$repo/$fixture"
+
+  for sig in INT TERM; do
+    case "$sig" in
+      INT) expected=130 ;;
+      TERM) expected=143 ;;
+    esac
+    export FM_SIGNAL_MARKER="$tmp/$sig.marker"
+    rm -f "$FM_SIGNAL_MARKER"
+    # Job control is required: a non-interactive shell otherwise makes an async
+    # command ignore SIGINT, so the runner would never see the signal at all.
+    set -m
+    ( cd "$repo" && exec "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+      >"$tmp/$sig.out" 2>"$tmp/$sig.err" &
+    pid=$!
+    set +m
+    waited=0
+    while [ "$waited" -lt 200 ]; do
+      grep -Fq 'ok - signal fixture started' "$tmp/$sig.out" && break
+      waited=$((waited + 1))
+      sleep 0.05
+    done
+    if ! grep -Fq 'ok - signal fixture started' "$tmp/$sig.out"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -rf "$tmp"
+      fail "the $sig fixture never started, so the relay was never exercised"
+    fi
+    kill -"$sig" "$pid" 2>/dev/null || true
+    rc=0
+    wait "$pid" 2>/dev/null || rc=$?
+    if [ "$rc" -ne "$expected" ]; then
+      unset FM_SIGNAL_MARKER
+      rm -rf "$tmp"
+      fail "a sweep stopped by SIG$sig reported $rc, not the conventional $expected"
+    fi
+    if [ "$mechanism" = perl ]; then
+      printf 'ok - a sweep stopped by SIG%s relays it to the bounded script # skip the perl bound arm publishes no process-group id to relay to\n' \
+        "$sig"
+      continue
+    fi
+    # The bounded child is in its own group and is signalled as the runner
+    # leaves, so its handler can still be running when wait returns.
+    waited=0
+    while [ "$waited" -lt 60 ] && [ ! -s "$tmp/$sig.marker" ]; do
+      waited=$((waited + 1))
+      sleep 0.05
+    done
+    relayed=$(cat "$tmp/$sig.marker" 2>/dev/null || true)
+    if [ "$relayed" != "$sig" ]; then
+      unset FM_SIGNAL_MARKER
+      rm -rf "$tmp"
+      fail "a sweep stopped by SIG$sig relayed '${relayed:-nothing}' to the bounded script, not SIG$sig"
+    fi
+  done
+  unset FM_SIGNAL_MARKER
+  rm -rf "$tmp"
+  pass "a sweep stopped by a signal reports and relays the signal that stopped it"
+}
+
+# fm_run_timed returns 125 when nothing was attempted - the bound could not be
+# armed and the script never ran. Recorded verbatim that is indistinguishable
+# from a test that failed silently, so both bounded paths must say which
+# happened, and must not say it when the script itself exits 125.
+test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run() {
+  local tmp repo runner fixture proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unarmed.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/unarmed.test.sh
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  # The bound owner's documented "no bounded runner could start" outcome, in
+  # the one file the runner sources to get it.
+  cat >"$repo/bin/fm-timeout-lib.sh" <<'SH'
+#!/usr/bin/env bash
+fm_run_timed() { return 125; }
+SH
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - unarmed fixture actually ran"
+SH
+  cp "$repo/$fixture" "$repo/$proven"
+  chmod +x "$repo/$fixture" "$repo/$proven"
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/serial.out" 2>"$tmp/serial.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script the bound could not be armed for must make the run red"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=125 " "$tmp/serial.out"; then
+    diag=$(grep '^FM_TEST_END' "$tmp/serial.out" || true)
+    rm -rf "$tmp"
+    fail "an unarmable bound was not recorded as exit=125: $diag"
+  fi
+  if ! grep -Fq "not ok - $fixture was not run: the 60s per-script bound could not be armed" "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the serial path recorded exit=125 without saying the script was never run: $diag"
+  fi
+  if grep -Fq 'ok - unarmed fixture actually ran' "$tmp/serial.out"; then
+    rm -rf "$tmp"
+    fail "the script ran after all, so 125 did not mean the bound was unarmable"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 60 "$proven" ) \
+    >"$tmp/jobs.out" 2>"$tmp/jobs.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "an unarmable bound under --jobs must make the run red"
+  fi
+  if ! grep -Fq "not ok - $proven was not run: the 60s per-script bound could not be armed" "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path recorded exit=125 without saying the script was never run: $diag"
+  fi
+
+  # With a real bound owner, a script that exits 125 itself must keep its own
+  # status and its own output, and must not be described as never run.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - self-inflicted 125 fixture ran"
+exit 125
+SH
+  chmod +x "$repo/$fixture"
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/self.out" 2>"$tmp/self.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 125 on its own must still make the run red"
+  fi
+  if ! grep -Fq 'ok - self-inflicted 125 fixture ran' "$tmp/self.out"; then
+    diag=$(cat "$tmp/self.out")
+    rm -rf "$tmp"
+    fail "the script that exited 125 on its own never ran: $diag"
+  fi
+  if grep -Fq 'could not be armed' "$tmp/self.out"; then
+    diag=$(cat "$tmp/self.out")
+    rm -rf "$tmp"
+    fail "a script that exited 125 on its own was reported as never run: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "a bound that could not be armed is reported as a script that never ran"
+}
+
+# 124 is also a status a script may choose for itself, and the bound owner's
+# own contract leaves the caller to tell the two apart. A script that exits 124
+# well inside its bound was never terminated, so reporting it as a bound kill
+# would send an operator hunting a hang that never happened.
+test_a_script_that_exits_124_itself_is_not_reported_as_a_bound_kill() {
+  local tmp repo runner fixture proven rc diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-self124.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/self124.test.sh
+  # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
+  proven=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - self-inflicted 124 fixture ran"
+exit 124
+SH
+  cp "$repo/$fixture" "$repo/$proven"
+  chmod +x "$repo/$fixture" "$repo/$proven"
+
+  rc=0
+  ( cd "$repo" && "$runner" --per-script-timeout-secs 60 "$fixture" ) \
+    >"$tmp/serial.out" 2>"$tmp/serial.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 124 on its own must still make the run red"
+  fi
+  if ! grep -Fq 'ok - self-inflicted 124 fixture ran' "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the script that exited 124 on its own never ran: $diag"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "a script that exited 124 on its own was reported as terminated by the bound: $diag"
+  fi
+  if ! grep -Eq "^not ok - $fixture exited 124 on its own after [0-9]+s; the 60s per-script bound did not fire\$" "$tmp/serial.out"; then
+    diag=$(cat "$tmp/serial.out")
+    rm -rf "$tmp"
+    fail "the serial path never said the 124 came from the script itself: $diag"
+  fi
+
+  rc=0
+  ( cd "$repo" && "$runner" --jobs 2 --per-script-timeout-secs 60 "$proven" ) \
+    >"$tmp/jobs.out" 2>"$tmp/jobs.err" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmp"
+    fail "a script exiting 124 on its own under --jobs must still make the run red"
+  fi
+  if grep -Fq 'exceeded the per-script bound' "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path reported a self-inflicted 124 as a bound kill: $diag"
+  fi
+  if ! grep -Eq "^not ok - $proven exited 124 on its own after [0-9]+s; the 60s per-script bound did not fire\$" "$tmp/jobs.out"; then
+    diag=$(cat "$tmp/jobs.out")
+    rm -rf "$tmp"
+    fail "the parallel path never said the 124 came from the script itself: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "a script that exits 124 on its own is not reported as killed by the bound"
+}
+
+test_per_script_timeout_default_arms_for_standard_modes() {
+  local tmp repo runner fixture mode rc out diag
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-default-arm.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/fm-brief.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - fixture"
+SH
+  chmod +x "$repo/$fixture"
+
+  # The helper is absent, so every mode that arms the default must refuse.
+  # A mode that silently ran here would be a mode the bound never covers.
+  for mode in "$fixture" "--all" "--family pure-contract-unit"; do
+    rc=0
+    # shellcheck disable=SC2086 # $mode intentionally supplies multiple words.
+    ( cd "$repo" && "$runner" $mode ) >"$tmp/out" 2>"$tmp/err" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -rf "$tmp"
+      fail "the default bound did not arm for mode: $mode"
+    fi
+    if ! grep -Fq 'per-script timeout helper not found' "$tmp/err"; then
+      diag=$(cat "$tmp/err")
+      rm -rf "$tmp"
+      fail "mode $mode did not arm the default bound: $diag"
+    fi
+  done
+
+  # And with the helper present the armed default leaves healthy work alone.
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  rc=0
+  out="$tmp/green.out"
+  ( cd "$repo" && "$runner" "$fixture" ) >"$out" 2>"$tmp/green.err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(cat "$tmp/green.err")
+    rm -rf "$tmp"
+    fail "the armed default must not disturb a healthy script: $diag"
+  fi
+  if ! grep -Eq "^FM_TEST_END .+ $fixture exit=0 " "$out"; then
+    diag=$(grep '^FM_TEST_END' "$out" || true)
+    rm -rf "$tmp"
+    fail "healthy script under the default bound was not green: $diag"
+  fi
+  rm -rf "$tmp"
+  pass "the per-script bound default arms for every standard mode without a flag"
 }
 
 test_aggregate_json() {
+  skip_without python3 "aggregate-json merges lane timing artifacts" && return 0
   local tmp a b
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
   cat >"$tmp/a.json" <<'JSON'
@@ -1171,5 +1660,11 @@ test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
+test_per_script_timeout_bounds_a_hung_script_under_jobs
+test_per_script_timeout_zero_is_a_real_opt_out
+test_per_script_timeout_default_arms_for_standard_modes
+test_signal_relay_reports_the_signal_that_stopped_the_sweep
+test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run
+test_a_script_that_exits_124_itself_is_not_reported_as_a_bound_kill
 test_aggregate_json
 printf '\nall fm-test-run tests passed\n'

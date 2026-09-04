@@ -23,7 +23,7 @@ unset TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_SESSION HERDR_SOCKET_PATH \
   2>/dev/null || true
 
 command -v python3 >/dev/null 2>&1 \
-  || fail "python3 is required to decode the fm-on.sh argv payload"
+  || { echo "skip: python3 not found (optional decoder for the fm-on.sh argv payload)"; exit 0; }
 
 REAL_GIT=$(command -v git) || fail "git is required"
 REAL_MKTEMP=$(command -v mktemp) || fail "mktemp is required"

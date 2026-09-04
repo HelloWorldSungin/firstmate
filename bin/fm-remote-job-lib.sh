@@ -7,6 +7,18 @@
 # isolated tests), the bounded job record, worker installation, and the remote
 # runtime PATH.
 #
+# Staging captures the caller's stdin to EOF under the byte-bound in
+# fm_remote_job_stage and a separate time-bound owned by
+# FM_REMOTE_JOB_STDIN_TIMEOUT (range-checked at load so an environment cannot
+# restore the unbounded read by naming a value the capture would never
+# enforce). A caller that hands over a stream it never closes is refused
+# instead of blocking staging forever; sshd hands the fixed entrypoint a pipe
+# for every remote command, so a pipe is the normal case here, not the
+# faulty one - only failing to reach EOF distinguishes them. The queue budget
+# FM_REMOTE_JOB_QUEUE_TIMEOUT owns is stamped after that capture, so a slow but
+# complete stream spends staging time rather than the queue time a worker is
+# given to admit the published job.
+#
 # A published job directory is mode 0700 and contains root, home, argv
 # (NUL-delimited), stdin, seq, stdout, stderr, queue_deadline, timeout, and
 # state; deadline and exit are added as execution advances, cancel is an
@@ -83,8 +95,22 @@
 # bin/fm-remote-job-reap-orphans.sh uses it to reap workers that were already
 # orphaned that way.
 
+_FM_REMOTE_JOB_LIB_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# Required, not optional: the stdin capture below must never run unbounded, so
+# a missing bound owner is a loud failure rather than a silent downgrade to the
+# blocking read that issue #178 reported.
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh" || {
+  printf 'fm-remote-job-lib.sh: required bound owner not found: %s\n' \
+    "$_FM_REMOTE_JOB_LIB_DIR/fm-timeout-lib.sh" >&2
+  # shellcheck disable=SC2317 # Reached only when the source above fails.
+  return 1 2>/dev/null || exit 1
+}
+
 FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
+FM_REMOTE_JOB_STDIN_TIMEOUT=${FM_REMOTE_JOB_STDIN_TIMEOUT:-360}
 FM_REMOTE_JOB_QUEUE_TIMEOUT=${FM_REMOTE_JOB_QUEUE_TIMEOUT:-360}
 FM_REMOTE_JOB_TIMEOUT=${FM_REMOTE_JOB_TIMEOUT:-360}
 FM_REMOTE_JOB_WAIT_GRACE=${FM_REMOTE_JOB_WAIT_GRACE:-30}
@@ -123,6 +149,8 @@ fm_remote_job_command_preemptible() { # <staged argv command>
 fm_remote_job_validate_settings() {
   case "$FM_REMOTE_JOB_MAX_BYTES" in ''|*[!0-9]*|0) return 1 ;; esac
   [ "$FM_REMOTE_JOB_MAX_BYTES" -le 1048576 ] || return 1
+  case "$FM_REMOTE_JOB_STDIN_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$FM_REMOTE_JOB_STDIN_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_QUEUE_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
   [ "$FM_REMOTE_JOB_QUEUE_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
@@ -522,6 +550,12 @@ fm_remote_job_read_deadline() { # <job-dir>
   fm_remote_job_read_number "$1" deadline
 }
 
+fm_remote_job_capture_stdin() {  # <destination>
+  local dest=$1
+  fm_run_timed "$FM_REMOTE_JOB_STDIN_TIMEOUT" \
+    head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$dest"
+}
+
 fm_remote_job_advance_seq_hint() { # <value>
   local value=$1 counter current tmp
   counter="$FM_REMOTE_JOB_STATE/seq"
@@ -633,16 +667,38 @@ fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdi
     return 1
   }
   chmod 700 "$stage" || { rm -rf -- "$stage"; return 1; }
-  queue_deadline=$(( $(date +%s) + FM_REMOTE_JOB_QUEUE_TIMEOUT ))
   if ! printf '%s\n' "$$" > "$stage/.owner-pid" ||
     ! printf '%s\n' "$owner_start" > "$stage/.owner-start" ||
     ! chmod 600 "$stage/.owner-pid" "$stage/.owner-start" ||
     ! printf '%s\n' "$root" > "$stage/root" ||
     ! printf '%s\n' "$home" > "$stage/home" ||
-    ! printf '%s\n' "$queue_deadline" > "$stage/queue_deadline" ||
     ! printf '%s\n' "$FM_REMOTE_JOB_TIMEOUT" > "$stage/timeout" ||
-    ! printf '%s\0' "$command" "$@" > "$stage/argv" ||
-    ! head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$stage/stdin"; then
+    ! printf '%s\0' "$command" "$@" > "$stage/argv"; then
+    rm -rf -- "$stage"
+    FM_REMOTE_JOB_ERROR="cannot capture remote job input"
+    return 1
+  fi
+  fm_remote_job_capture_stdin "$stage/stdin"
+  case $? in
+    0) ;;
+    124)
+      rm -rf -- "$stage"
+      FM_REMOTE_JOB_ERROR="remote job stdin never reached EOF within ${FM_REMOTE_JOB_STDIN_TIMEOUT}s; the caller must close the stream it hands over"
+      return 1
+      ;;
+    125)
+      rm -rf -- "$stage"
+      FM_REMOTE_JOB_ERROR="remote job stdin capture could not be bounded (FM_REMOTE_JOB_STDIN_TIMEOUT=$FM_REMOTE_JOB_STDIN_TIMEOUT)"
+      return 1
+      ;;
+    *)
+      rm -rf -- "$stage"
+      FM_REMOTE_JOB_ERROR="cannot capture remote job input"
+      return 1
+      ;;
+  esac
+  queue_deadline=$(( $(date +%s) + FM_REMOTE_JOB_QUEUE_TIMEOUT ))
+  if ! printf '%s\n' "$queue_deadline" > "$stage/queue_deadline"; then
     rm -rf -- "$stage"
     FM_REMOTE_JOB_ERROR="cannot capture remote job input"
     return 1

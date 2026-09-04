@@ -124,6 +124,21 @@ Upstream's lane loop was adopted whole and the reap re-threaded to run ahead of 
 A future round that reorders that call after the lane loop silently retires the entry.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
+### Bounded remote job stdin capture
+
+Upstream stops a caller-open stdin from stalling a remote command by handing ssh `/dev/null` unless `--stdin` is passed, taken byte-identical from `kunchenguid/firstmate#3210` on 2026-09-03; the fork keeps a second, independent bound underneath it in [`bin/fm-remote-job-lib.sh`](../bin/fm-remote-job-lib.sh).
+`fm_remote_job_capture_stdin` runs the staging read under `FM_REMOTE_JOB_STDIN_TIMEOUT`, so a `--stdin` caller that never closes its stream is refused with `FM_REMOTE_JOB_ERROR` naming the unclosed stream rather than blocking staging forever, and the queue deadline is stamped after that capture so a slow but complete stream spends staging time instead of the budget a worker is given to admit the published job.
+That makes [`bin/fm-timeout-lib.sh`](../bin/fm-timeout-lib.sh) a required dependency of the job library rather than an optional one, because degrading silently to the unbounded read is the defect `HelloWorldSungin/firstmate#178` reported.
+Upstream's staging carries no time bound at all, so every upstream change to `fm_remote_job_stage` arrives against a capture this fork replaced, and [`tests/fm-remote-job.test.sh`](../tests/fm-remote-job.test.sh) pins the refusal, the byte-for-byte payload on every timeout mechanism arm, and that deadline ordering, so a round restoring the plain read fails loudly.
+
+### Default per-script bound on every test sweep
+
+[`bin/fm-test-run.sh`](../bin/fm-test-run.sh) arms `DEFAULT_PER_SCRIPT_TIMEOUT_SECS` on every standard-mode sweep, introduced on 2026-09-03 in `HelloWorldSungin/firstmate#254`, so a hung script becomes an ordinary `exit=124` red instead of a sweep that ends with no verdict at all - the shape a deadlocked `tests/fm-on.test.sh` cost in `HelloWorldSungin/firstmate#178`.
+Upstream bounds only its automatic `--changed` path through `CHANGED_DEFAULT_TIMEOUT_SECS`, which the fork takes unchanged, so a single named script, `--family`, `--lane`, and `--all` are bounded here and unbounded upstream.
+Serving that bound, [`bin/fm-timeout-lib.sh`](../bin/fm-timeout-lib.sh) publishes the bounded command's process group id through `FM_TIMEOUT_PGID_FILE` on the arms that can, which is how the runner relays a terminal interrupt into a bounded script's own group rather than leaving it running to the deadline.
+The rationale beside the constant owns why 480s and what the bound costs each CI lane, including the accepted margin on the required real-Herdr lane recorded in `HelloWorldSungin/firstmate#256`, and the script's `--help` owns the flag contract and its `0` opt-out.
+[`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh) pins the default arming, the opt-out, the exit 124 versus exit 125 distinction, and the signal relay, so an upstream round that rewrites the timeout wiring cannot retire the default silently.
+
 ### No-mistakes run attribution
 
 The fork rewrote the branch-and-code-identity rule that binds a no-mistakes run to a task into a named relation table in [`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh) - `fm_nm_head_relation` returning `equal`, `run-ahead`, `run-behind`, `unresolved`, `missing`, or `diverged`, consumed by `fm_nm_head_attributable` - and built the surrounding current-state surface upstream has no equivalent of: the `abandoned` verdict, the degraded run-step replay, and the recorded `branch=` task identity that makes a disagreeing ambient branch an attribution fault rather than another task's run.

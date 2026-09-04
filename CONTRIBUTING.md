@@ -90,7 +90,7 @@ while IFS= read -r script; do /bin/bash -n "$script" || exit; done < <(bin/fm-li
 bin/fm-lint.sh   # lint that shell surface plus GitHub workflows via pinned actionlint; the single owner CI and the no-mistakes gate both run
 bin/fm-test-run.sh tests/<subject>.test.sh   # one script (primary local focus path, timed)
 bin/fm-test-run.sh --family pure-contract-unit   # ordinary family-scoped local path (serial, timed)
-bin/fm-test-run.sh --changed   # conservative changed-file-informed set (never silent full suite), with automatic bounded concurrency and a per-script bound
+bin/fm-test-run.sh --changed   # conservative changed-file-informed set (never silent full suite), with automatic bounded concurrency and its own longer per-script bound
 bin/fm-test-run.sh --changed --jobs 1   # explicit serial override
 bin/fm-test-run.sh --changed --max-wall-ms 300000   # same automatic path with a post-run five-minute result check
 bin/fm-test-run.sh --proven-isolated --jobs 4   # explicit local parallel of the proven set only (default is serial)
@@ -111,6 +111,7 @@ tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVE
 
 `bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
+Every standard-mode sweep above also arms an automatic per-script bound, so a hung script becomes an ordinary `exit=124` red instead of a sweep that ends with no verdict; `--help` owns that bound's value, the shapes that leave it off, and the `0` opt-out.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
@@ -122,6 +123,7 @@ A fixture may shorten a production timeout to keep a failure path prompt, but ne
 Where a case's assertion is not about the timeout itself, give that window headroom over the measured loaded cost, and bound the test's own waiting with iteration-counted poll loops, which stretch under load where a wall-clock budget does not.
 Waiting on a process the case spawned needs that same bound: a bare `wait <pid>` has none, so one child that never exits stalls the whole run, while `wait_for_exit` in `tests/wake-helpers.sh` polls, terminates a target that outlives its budget, and returns a 124 sentinel the case can assert on.
 Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests and live harness regressions) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools, and those opt-in live tests stay outside portable lanes entirely.
+A portable test that needs an optional interpreter `bin/fm-bootstrap.sh` does not install, such as `ruby` or `python3`, announces that missing precondition as a skip instead of failing - a whole-script gate skip when every case needs it, a per-case skip otherwise - so a host without the interpreter loses only the affected coverage rather than the suite's verdict.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 
 ## Questions

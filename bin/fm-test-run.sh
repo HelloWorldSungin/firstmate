@@ -58,11 +58,18 @@
 #                   unproven remainder runs serially after that group.
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
-#                   record it as exit 124 (0 disables, the default). The
-#                   --changed applies 900s automatically: no real script
-#                   approaches it, so it only converts a HUNG
-#                   script into a bounded failure. --max-wall-ms is checked
-#                   after the run and so cannot catch a hang on its own.
+#                   record it as exit 124. N overrides every automatic bound,
+#                   and 0 is the opt-out that runs unbounded. With the flag
+#                   absent a standard-mode sweep applies 480s, and plain
+#                   --changed applies 900s. Two shapes stay unbounded: a
+#                   standard-mode sweep carrying --max-wall-ms, and --changed
+#                   with an explicit --jobs, whose bound belongs to the
+#                   automatic scheduler this overrides. Both automatic bounds
+#                   sit above every measured script - 900s is roughly 2.6x the
+#                   slowest, 480s roughly 1.4x - so a bound normally converts a
+#                   HUNG script into a bounded failure rather than failing a
+#                   slow but healthy one. --max-wall-ms is checked after the
+#                   run and so cannot catch a hang on its own.
 #                   External interruption cleanup is outside this runner's
 #                   guarantee; configured per-script bounds remain authoritative.
 #   --max-wall-ms N fail the run when its measured invocation wall clock exceeds
@@ -140,15 +147,49 @@ JOBS_EXPLICIT=0
 JOBS_MAX=8
 MAX_WALL_MS=
 PER_SCRIPT_TIMEOUT_SECS=0
+# Set by --per-script-timeout-secs so an explicit 0 is a real opt-out rather
+# than indistinguishable from an unset bound.
+PER_SCRIPT_TIMEOUT_SET=
+# Bound applied automatically to every standard-mode sweep. What settles it is
+# the family WALL, not the average. The real-Herdr family is 12 scripts inside
+# a ~7 min healthy wall (.github/workflows/ci.yml), so its mean slot is ~35s.
+# That wall is a measurement, not a ceiling: the only bound that lane enforces
+# is the family-run step's 1200s, and the family's slowest measured script is
+# the 341s presentation E2E. So 480s is 1.41x over that script - materially
+# thinner than the 2x+ the portable lanes get over their 210s
+# tests/fm-watch-triage.test.sh worst case, and a Herdr E2E running 1.41x
+# slower than measured turns red as exit=124 on a required lane. That margin
+# is accepted rather than widened (HelloWorldSungin/firstmate#256).
+#
+# Below, the arithmetic is replacement, not addition: a hung script spends the
+# bound INSTEAD of its own healthy slot. portable-serial is a ~434s shard wall
+# (3471s over PORTABLE_SERIAL_SHARDS; docs/fm-test-portable-shards.md owns that
+# measurement) less the ~23s mean slot plus 480s, so ~891s against the 900s
+# cap: thin but still inside, and thin BEFORE the lane's own checkout and
+# bootstrap steps. What that buys an operator there is usually - not always -
+# exit=124 attribution; when the hung slot sits late in the shard and setup
+# overhead runs high, the job cap cancels the lane first and the attribution
+# is lost. real-Herdr is 420s less its ~35s slot plus 480s, well inside the
+# 1200s step cap. portable-parallel is tighter still: the lane runs serially in
+# CI, so its measured shard wall is ~134s (~2.2 min), and ~134s less its ~12s
+# mean slot plus 480s is ~602s - already past its 600s cap before that lane's
+# setup steps, so it loses per-script attribution to a job cancellation more
+# often than occasionally. That is an honest cost of the bound, not a claim
+# against it - raising the bound past a lane cap would only guarantee it never
+# fires, which is the defect it exists to replace, so no lane raises it.
+#
+# It is a guard, not a speed control: a HUNG script becomes a bounded failure
+# instead of an unbounded suite, which is the shape that silently outruns a
+# caller's invocation budget and stalled whole sweeps with no verdict in
+# HelloWorldSungin/firstmate#178.
+DEFAULT_PER_SCRIPT_TIMEOUT_SECS=480
 # Bound applied automatically on the automatic --changed path, derived from
 # measured healthy runtimes with margin rather than picked: the slowest measured
 # behavior test is the 341s Herdr presentation E2E, and the slowest script in a
 # runner-file changed selection is tests/fm-calm-pi-extension.test.sh at 77s
 # once its Chrome reap terminates. 900s leaves roughly 2.6x headroom over the
 # slowest real script, so this can only ever fire on a script that is genuinely
-# stuck. It is a guard, not a speed control: a HUNG script becomes a bounded
-# failure instead of an unbounded suite, which is the shape that silently
-# outruns a caller's invocation budget.
+# stuck.
 CHANGED_DEFAULT_TIMEOUT_SECS=900
 
 # How many separate-runner shards the portable serial remainder splits into.
@@ -1616,10 +1657,12 @@ while [ "$#" -gt 0 ]; do
     --per-script-timeout-secs)
       [ "$#" -gt 1 ] || die "--per-script-timeout-secs requires a whole number of seconds"
       PER_SCRIPT_TIMEOUT_SECS=$2
+      PER_SCRIPT_TIMEOUT_SET=1
       shift 2
       ;;
     --per-script-timeout-secs=*)
       PER_SCRIPT_TIMEOUT_SECS=${1#--per-script-timeout-secs=}
+      PER_SCRIPT_TIMEOUT_SET=1
       shift
       ;;
     --list)
@@ -1854,11 +1897,20 @@ for s in "${SCRIPTS[@]}"; do
   [ -x "$s" ] || [ -r "$s" ] || die "test script not readable: $s"
 done
 
+# A hung script is what silently outruns the caller's invocation budget, so
+# every standard-mode sweep applies a generous per-script bound by default.
+# The bound is opt-out (--per-script-timeout-secs 0) and authoritative when
+# set; DEFAULT_PER_SCRIPT_TIMEOUT_SECS above owns why 480s and what it costs
+# each CI lane.
+if [ -z "$PER_SCRIPT_TIMEOUT_SET" ] && [ "${MODE:-}" != changed ] && [ -z "$MAX_WALL_MS" ]; then
+  PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
+fi
+
 # Plain --changed uses the bounded representative-suite scheduler; numeric
 # --jobs retains the strict all-script admission rule below.
 AUTO_CONCURRENCY=0
 if [ "$MODE" = changed ] && [ "$JOBS_EXPLICIT" -eq 0 ]; then
-  if [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
+  if [ "${#SCRIPTS[@]}" -gt 0 ] && [ -z "$PER_SCRIPT_TIMEOUT_SET" ]; then
     PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
   fi
   auto_admissible=0
@@ -1944,6 +1996,42 @@ cleanup_run() {
 
 trap cleanup_run EXIT
 
+# The bound runs each script in its own process group, which is what lets it
+# reap a hung script's whole descendant tree - but it also means a terminal
+# Ctrl-C, which reaches only this runner's group, leaves the in-flight script
+# and everything it spawned running until the deadline. The shell that starts a
+# bounded script names a private slot under $RUN_TMP for the bounded runner to
+# record its group id in, so relay the interrupt there before leaving. That
+# slot is never exported: a test script that bounds its own work through the
+# same helper would otherwise inherit the name and overwrite the slot with its
+# inner group, leaving nothing to relay to once that inner call returned.
+#
+# Best-effort: the trap may be silently skipped on some bash versions. That
+# trades a guarantee for never regressing below the status quo - if it is
+# dropped the developer sees today's behaviour, a stalled script surviving
+# Ctrl-C, which the deadline still bounds.
+#
+# Both the relayed signal and the runner's own exit status are per signal on
+# purpose. The status is the conventional 128+signal, so an operator or CI
+# wrapper reading it still learns whether the sweep was interrupted from a
+# terminal (INT, 130) or terminated by a supervisor (TERM, 143); the group
+# receives that same signal rather than a blanket TERM, so a script whose own
+# trap distinguishes the two runs the branch matching the reported cause.
+# shellcheck disable=SC2329 # Registered by the INT and TERM traps below.
+run_forward_signal() {  # <exit-status> <signal>
+  local f pgid status=${1:-130} signal=${2:-TERM}
+  trap - INT TERM
+  for f in "$RUN_TMP"/pgid.*; do
+    [ -f "$f" ] || continue
+    pgid=$(cat "$f" 2>/dev/null || true)
+    case "$pgid" in ''|*[!0-9]*) continue ;; esac
+    kill -s "$signal" -- "-$pgid" 2>/dev/null || true
+  done
+  exit "$status"
+}
+trap 'run_forward_signal 130 INT' INT
+trap 'run_forward_signal 143 TERM' TERM
+
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
 FAILED=0
@@ -2015,39 +2103,66 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
-# Run <script>, capturing output to <out>. <stream> 1 also echoes it live.
-# <id> only has to be unique within this run. When PER_SCRIPT_TIMEOUT_SECS is
-# positive, a script that outruns it is terminated and reported as exit 124: a
-# hung script must become a bounded failure rather than an unbounded suite,
-# because an unbounded suite is what silently outruns its caller's budget.
-run_script_bounded() {  # <script> <out> <stream> <id>
-  local script=$1 out=$2 stream=$3 id=$4
-  local rc
-  : "$id"
-  set +e
-  if [ "$stream" -eq 1 ]; then
-    if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-      # Expansion is intentionally deferred to the child bash passed to -c.
-      # shellcheck disable=SC2016
-      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
-        'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
-      rc=$?
-    else
-      bash "$script" 2>&1 | tee "$out"
-      rc=${PIPESTATUS[0]}
-    fi
-  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$out" 2>&1
+# Both run paths must give the same account of a bound outcome, so the account
+# lives here once and each caller supplies its own sink. 124 and 125 are both
+# statuses a script may also exit with on its own, so the two facts the bound
+# owner's contract leaves for the caller decide which happened: elapsed time
+# against the bound tells a real bound kill from a self-inflicted 124, and the
+# marker the bounded command writes before exec tells an unarmable bound from a
+# self-inflicted 125. Prints nothing when the status needs no gloss.
+run_bound_outcome_note() {  # <script> <rc> <elapsed-secs> <bound> <started-marker>
+  local script=$1 rc=$2 elapsed=$3 bound=$4 started=$5
+  [ "$bound" -gt 0 ] || return 0
+  case "$rc" in
+    124)
+      if [ "$elapsed" -ge "$bound" ]; then
+        printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
+          "$script" "$bound"
+      else
+        printf 'not ok - %s exited 124 on its own after %ss; the %ss per-script bound did not fire\n' \
+          "$script" "$elapsed" "$bound"
+      fi
+      ;;
+    125)
+      if [ ! -e "$started" ]; then
+        printf 'not ok - %s was not run: the %ss per-script bound could not be armed\n' \
+          "$script" "$bound"
+      fi
+      ;;
+  esac
+}
+
+# Run <script>, capturing output to <out>. When PER_SCRIPT_TIMEOUT_SECS is
+# positive, a script that outruns it is terminated and reported as exit 124:
+# a hung script must become a bounded failure rather than an unbounded suite,
+# because an unbounded suite is what silently outruns a caller's budget.
+# Caller must have `set +e` active so a non-zero return only seeds `$?` for the
+# follow-up rc=$? assignment; this function does not re-enable errexit, which
+# would leak errexit to the caller and turn a failing test into a script exit.
+run_script_bounded() {  # <script> <out>
+  local script=$1 out=$2 rc began elapsed
+  local FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.serial"
+  local started="$RUN_TMP/started.serial"
+  rm -f "$started"
+  began=$(now_ms)
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+    # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
+    # The first statement records that the bound did reach the script, which is
+    # what separates fm_run_timed's "never started" 125 from a script that
+    # exits 125 itself. Expansion is deferred to the child bash passed to -c.
+    # shellcheck disable=SC2016
+    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+      ': >"$3"; bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out" "$started"
     rc=$?
   else
-    bash "$script" >"$out" 2>&1
-    rc=$?
+    bash "$script" 2>&1 | tee "$out"
+    rc=${PIPESTATUS[0]}
   fi
-  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
-    printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
-      "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
-    [ "$stream" -eq 1 ] && tail -1 "$out"
-  fi
+  # Serial output is streamed live and never re-read, so any explanation has to
+  # reach stdout here or the operator only ever sees a bare exit status.
+  elapsed=$(( ($(now_ms) - began) / 1000 ))
+  run_bound_outcome_note "$script" "$rc" "$elapsed" "$PER_SCRIPT_TIMEOUT_SECS" "$started" \
+    | tee -a "$out"
   return "$rc"
 }
 
@@ -2066,7 +2181,7 @@ run_one_serial() {
 
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
-  run_script_bounded "$script" "$out" 1 "s$TOTAL"
+  run_script_bounded "$script" "$out"
   rc=$?
   set -e
   : "${rc:=1}"
@@ -2167,12 +2282,21 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
+      FM_TIMEOUT_PGID_FILE="$RUN_TMP/pgid.w$worker_n"
       unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      set +e
-      run_script_bounded "$script" "$work/output" 0 "w$worker_n"
+      if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+        # The marker records that the bound reached the script, which is what
+        # separates fm_run_timed's "never started" 125 from a script that exits
+        # 125 itself. exec keeps the process tree the bound reaps unchanged.
+        # shellcheck disable=SC2016
+        fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+          ': >"$2"; exec bash "$1"' _ "$script" "$work/started" >"$work/output" 2>&1
+      else
+        bash "$script" >"$work/output" 2>&1
+      fi
       rc=$?
       set -e
       end_ms=$(now_ms)
@@ -2180,6 +2304,8 @@ else
       if [ "$duration" -lt 0 ]; then
         duration=0
       fi
+      run_bound_outcome_note "$script" "$rc" "$((duration / 1000))" \
+        "$PER_SCRIPT_TIMEOUT_SECS" "$work/started" >>"$work/output"
       printf '%s\n' "$duration" >"$work/duration_ms"
       printf '%s\n' "$rc" >"$work/exit"
       exit 0

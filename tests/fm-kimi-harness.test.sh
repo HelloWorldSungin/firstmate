@@ -14,9 +14,18 @@ unset CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT CURSOR_AGENT CURSOR_IN
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 KIMI_HOOK="$ROOT/bin/fm-kimi-turnend-hook.sh"
+# python3 is optional here: bin/fm-bootstrap.sh does not install it and
+# bin/fm-remote-doctor.sh does not require it. Every case in this file needs it
+# - it seeds the PATH the spawned harness runs under - so a host without it
+# announces the missing precondition as a gate skip rather than costing the
+# sweep a red verdict. This has to precede the temp root so the skip leaves
+# nothing behind.
+PYTHON_BIN=$(command -v python3) || {
+  echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
+  exit 0
+}
 TMP_ROOT=$(fm_test_tmproot fm-kimi-harness)
 KIMI_RUNTIME_TASK_TMP=
-PYTHON_BIN=$(command -v python3) || fail "test needs python3"
 PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
 JQ_BIN=$(command -v jq) || fail "test needs jq"
 BASE_PATH=${FM_TEST_BASE_PATH:-$PYTHON_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin}

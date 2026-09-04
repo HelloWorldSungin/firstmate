@@ -6,6 +6,18 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ACTION_REF=32d396ac0f29135daf7fcb9964aba9d5f4e796d6
+
+# The pinned shared verifier is a Python program, and python3 is optional here:
+# bin/fm-bootstrap.sh does not install it and bin/fm-remote-doctor.sh does not
+# require it. Every case below runs that verifier, so a host without python3
+# announces the missing precondition as a gate skip rather than costing the
+# sweep a red verdict. This has to precede the temp root so the skip leaves
+# nothing behind.
+command -v python3 >/dev/null 2>&1 || {
+  echo "skip: python3 not found (optional interpreter, not installed by bin/fm-bootstrap.sh)"
+  exit 0
+}
+
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 VERIFY="$TMP_ROOT/verify.py"
 OLD_SHA=1111111111111111111111111111111111111111
@@ -15,7 +27,6 @@ COMPLETED_STEPS='[{"step":"review","status":"completed"},{"step":"test","status"
 
 fetch_shared_verifier() {
   command -v curl >/dev/null 2>&1 || fail "curl is required to exercise the pinned shared action"
-  command -v python3 >/dev/null 2>&1 || fail "python3 is required to exercise the pinned shared action"
   curl --fail --silent --show-error --location \
     "https://raw.githubusercontent.com/kunchenguid/no-mistakes/${ACTION_REF}/.github/actions/require-no-mistakes/verify.py" \
     > "$VERIFY" || fail "could not fetch the pinned shared action verifier"
