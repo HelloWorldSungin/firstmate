@@ -2257,6 +2257,41 @@ test_a_persistent_secondmate_is_never_a_backlog_item() {
   pass "dispatching a persistent secondmate needs no backlog item"
 }
 
+# The dispatch half of this exemption is pinned above. Retirement is the other
+# half and the one this fork moved: cleanup now routes the record removal through
+# the validated transition, so a mate whose kind is exempt must still be retired
+# without a backlog row, and without one appearing or a close landing.
+test_retiring_a_persistent_secondmate_needs_no_backlog_item() {
+  local case_dir home id mate out
+  id=atomic-mate-retire-b15
+  case_dir=$(make_home mate-retire-not-an-item)
+  home=$(home_of "$case_dir")
+  mate="$case_dir/mate-home"
+  mkdir -p "$mate/data"
+  printf '# Firstmate\n' > "$mate/AGENTS.md"
+  printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
+
+  # A real backlog with no row for this id: the gate must exempt the mate on its
+  # kind alone rather than on the backlog being absent.
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "worktree=$mate" \
+    "project=$mate" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "home=$mate" \
+    "projects=none" \
+    "spawn_gen=spawn-$id"
+
+  out=$(run_teardown "$case_dir" "$id") || fail "secondmate retirement failed: $out"
+  assert_absent "$home/state/$id.meta" "secondmate retirement left the persistent agent record"
+  assert_absent "$home/state/$id.backlog-close" "secondmate retirement recorded a close it never owed"
+  [ "$(row_state "$case_dir" "$id")" = "" ] \
+    || fail "secondmate retirement put the agent in the backlog as $(row_state "$case_dir" "$id")"
+  pass "retiring a persistent secondmate needs no backlog item and creates none"
+}
+
 test_dispatch_moves_the_item_in_flight_in_the_same_run
 test_dispatch_refuses_a_pending_authoritative_close
 test_dispatch_refuses_a_held_row_before_creating_resources
@@ -2336,3 +2371,4 @@ test_home_without_a_backlog_dispatches_and_completes
 test_manual_backend_home_dispatches_and_completes_without_touching_the_backlog
 test_a_secondmate_home_keeps_its_own_books
 test_a_persistent_secondmate_is_never_a_backlog_item
+test_retiring_a_persistent_secondmate_needs_no_backlog_item
