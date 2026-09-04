@@ -203,7 +203,8 @@ Reconciling the two, by retiring that allow-list entry as well or by rewording t
 Upstream fails the wrapper whenever the merge command exits non-zero, even when the forge then confirms the merge LANDED; this fork exits zero on that path and records the outcome.
 The command's exit status reports whether the CALL succeeded, while the forge's own state reports whether the MERGE HAPPENED, and only the second is the question anyone acts on; when they disagree the forge is the system of record and the command status is a transport detail.
 The failure modes are not symmetric, which is what decides it: exiting non-zero on a landed merge is a false negative that leaves work on the default branch while everything downstream reasons it is not, whereas exiting zero is only wrong if the forge lied about its own merged flag.
-[`tests/fm-pr-merge.test.sh`](../tests/fm-pr-merge.test.sh) pins both directions, and `bin/fm-pr-merge.sh`'s header carries an explicit warning against "correcting" it back, because an inverted form of this rule has already propagated into a test and into `docs/architecture.md` once.
+[`tests/fm-pr-merge.test.sh`](../tests/fm-pr-merge.test.sh) pins both directions, and `bin/fm-pr-merge.sh` states the verdict in one place, the comment above `report_landed_after_failed_command`, which names this entry as the divergence it implements and says that reversing or rewording the verdict is one edit there.
+Keeping it to one edit site matters because an inverted form of this rule has already propagated into a test and into `docs/architecture.md` once.
 Retiring the queue half above must not disturb this one: they were argued together and decided apart.
 
 REACHABILITY, which is what separated the two verdicts and is why it stays recorded.
