@@ -481,9 +481,11 @@ if event["pull_request"]["head"]["sha"] != sys.argv[3]:
 # body only for a credentialed request that identifies this pull request and
 # selects the body field, and answers with `errors` otherwise. The response
 # plan is one token per request it will serve - "data" (the body in live-body),
-# "stale" (the body in stale-body), "502", or "close", which accepts the request
-# and drops the connection without answering - so a case can model an endpoint
-# that succeeds, then blips, then succeeds, without racing a teardown.
+# "stale" (the body in stale-body), "502", "notobject" (valid JSON that is not
+# an object, as a proxy or GHES error page can return), or "close", which
+# accepts the request and drops the connection without answering - so a case can
+# model an endpoint that succeeds, then blips, then succeeds, without racing a
+# teardown.
 write_graphql_stub() {  # <dir>
   cat > "$1/graphql-stub.py" <<'PY'
 #!/usr/bin/env python3
@@ -517,6 +519,14 @@ class Handler(BaseHTTPRequestHandler):
         served.append(mode)
         if mode == "close":
             self.close_connection = True
+            return
+        if mode == "notobject":
+            encoded = json.dumps([{"message": "upstream rejected the request"}]).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
             return
         if mode == "502":
             self.send_response(502)
@@ -707,7 +717,50 @@ if "truncated webhook snapshot" in body:
   pass "a budget spent against a failing endpoint keeps the last body read and annotates the run"
 }
 
-# Test 14: A transport that accepts the request and then drops the connection
+# Test 14: A response that is valid JSON but not an object degrades to the
+# webhook snapshot. json.loads accepts any JSON value, so a proxy or GHES error
+# page that answers with an array reaches the code that reads GraphQL errors off
+# a mapping; an AttributeError there is not a LiveBodyUnavailable and would
+# escape every degrade path.
+# What would have to break for this test to fail:
+# The response shape is trusted after decoding, so the helper aborts with a
+# traceback, the step fails under set -eu, and "PR must be raised via
+# no-mistakes" reports failure with the pinned action never having run.
+test_refresh_degrades_on_a_non_object_response() {
+  require_python3 || return 0
+  local tmp event rc=0
+  tmp=$(fm_test_tmproot fm-nm-required-refresh-nonobject)
+  event="$tmp/event.json"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  attestation_body "$NEW_HEAD" > "$tmp/live-body"
+
+  write_graphql_stub "$tmp"
+  start_graphql_stub "$tmp" notobject
+
+  GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$tmp/port")/graphql" \
+    fm_run_timed 90 python3 "$REFRESH_SCRIPT" \
+      --event-path "$event" \
+      --expected-head "$NEW_HEAD" \
+      --timeout-sec 0 \
+      --interval-sec 0 > "$tmp/helper.out" 2>&1 || rc=$?
+  stop_fixtures
+  [ "$rc" -eq 0 ] || \
+    fail "a non-object response reddened the required check (exit $rc): $(cat "$tmp/helper.out")"
+
+  assert_grep "::warning::" "$tmp/helper.out" \
+    "a non-object response must be annotated as a degrade rather than abort the helper"
+  python3 -c '
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
+if sys.argv[2] not in body:
+    raise SystemExit("the webhook snapshot was replaced despite a response the helper could not read")
+' "$event" "$OLD_HEAD" || fail "the degraded helper did not leave the webhook snapshot intact"
+
+  pass "a response that is valid JSON but not an object degrades to the webhook snapshot"
+}
+
+# Test 15: A transport that accepts the request and then drops the connection
 # degrades to the webhook snapshot. urllib wraps only the errors raised while
 # sending into URLError, so a response that never arrives surfaces as
 # http.client.RemoteDisconnected instead - an ordinary GitHub transient that
@@ -881,18 +934,19 @@ PY
     fail "the required-check workflow does not parse as GitHub Actions block YAML"
 }
 
-# Test 15: The required check's own job refreshes the live body before the
-# pinned action runs, fetches the helper from the merge commit its workflow
+# Test 16: The required check's own job refreshes the live body before the
+# pinned action runs, fetches the helper at the test-merge commit its workflow
 # definition came from, declares its wait budget, checks out no repository
-# code, and treats an unreachable helper as a degrade to the webhook snapshot
-# rather than a failed required check.
+# code, and annotates rather than reds the check on every degrade the step
+# owns: an unfetchable helper, no python interpreter, and a helper that exits
+# non-zero.
 # What would have to break for this test to fail:
 # The refresh step is dropped, reordered after the pinned action, moved into
 # another job, or made to check out code; the shared action is unpinned; the
-# helper is fetched at the PR head SHA, which carries it only once that branch
-# itself takes main; the wait budget drifts back to the helper's defaults; or
-# an unreachable helper fails the step and so reds "PR must be raised via
-# no-mistakes" with no compliance verdict at all.
+# helper is fetched at a ref whose tree does not carry it; the wait budget
+# drifts back to the helper defaults; or any degrade fails the step, or takes
+# it green with no warning annotation, so "PR must be raised via no-mistakes"
+# either reds with no compliance verdict or hides that it never refreshed.
 test_workflow_refreshes_live_body_before_pinned_action() {
   require_python3 || return 0
   local tmp fakebin event live step
@@ -930,9 +984,10 @@ if env.get("NM_REQUIRED_EXPECTED_HEAD") != "${{ github.event.pull_request.head.s
     raise SystemExit(f"the refresh step must judge the triggering head, got {env!r}")
 if env.get("NM_REQUIRED_SCRIPT_REF") != "${{ github.sha }}":
     raise SystemExit(
-        "the helper must be fetched from the pull-request merge commit, which "
-        "carries the copy on the base branch; a PR head ref carries it only "
-        f"once that branch itself takes main, got {env!r}"
+        "the helper must be fetched at github.sha, the GitHub test-merge of the "
+        "PR head into the base, whose tree carries the PR copy of the files it "
+        "touches and the base copy of the rest; base.sha would 404 the helper "
+        f"until it lands on main, got {env!r}"
     )
 if (env.get("NM_REQUIRED_BODY_TIMEOUT_SEC"), env.get("NM_REQUIRED_BODY_INTERVAL_SEC")) != ("120", "8"):
     raise SystemExit(
@@ -1000,6 +1055,8 @@ if sys.argv[2] not in body:
     bash "$step" > "$tmp/unreachable.out" 2>&1 || \
     fail "an unreachable helper reddened the required check instead of degrading: $(cat "$tmp/unreachable.out")"
 
+  assert_grep "::warning::" "$tmp/unreachable.out" \
+    "an unfetchable helper must annotate the run, not degrade silently"
   python3 -c '
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
@@ -1007,10 +1064,80 @@ if sys.argv[2] not in body:
     raise SystemExit("an unreachable helper must leave the webhook snapshot for the action to judge")
 ' "$event" "$OLD_HEAD" || fail "the degraded step did not leave the webhook snapshot intact"
 
-  pass "the required check refreshes the live body before the pinned action and degrades instead of reddening"
+  # A helper that exits non-zero for any reason must degrade the same way. The
+  # served "helper" is a script that fails, so this drives the step's own exit
+  # handling rather than a helper bug.
+  printf '#!/usr/bin/env python3\nraise SystemExit("helper blew up")\n' > "$tmp/broken-helper.py"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  PATH="$fakebin:$PATH" CURL_SERVE_FILE="$tmp/broken-helper.py" \
+    RUNNER_TEMP="$tmp/runner" GITHUB_API_URL="https://api.github.invalid" \
+    GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    NM_REQUIRED_SCRIPT_REF="$MERGE_SHA" GITHUB_EVENT_PATH="$event" \
+    NM_REQUIRED_EXPECTED_HEAD="$NEW_HEAD" NM_REQUIRED_BODY_FILE="$live" \
+    NM_REQUIRED_BODY_TIMEOUT_SEC=0 NM_REQUIRED_BODY_INTERVAL_SEC=0 \
+    bash "$step" > "$tmp/broken.out" 2>&1 || \
+    fail "a failing helper reddened the required check instead of degrading: $(cat "$tmp/broken.out")"
+  assert_grep "::warning::" "$tmp/broken.out" \
+    "a failing helper must annotate the run, not exit 0 in silence"
+
+  # The pinned action resolves python3 then python and only errors when neither
+  # exists, so this step must not red the gate on a runner it would accept. The
+  # restricted PATH carries only what the step's own shell needs, so both names
+  # are genuinely absent rather than shadowed by a stub that would still resolve.
+  local nopython pythononly
+  nopython="$tmp/nopython"
+  mkdir -p "$nopython"
+  cp "$fakebin/curl" "$nopython/curl"
+  ln -sf "$(command -v bash)" "$nopython/bash"
+  ln -sf "$(command -v cp)" "$nopython/cp"
+
+  # A runner carrying python but not python3 is one the pinned action accepts,
+  # so the step must actually refresh there rather than degrade past it.
+  pythononly="$tmp/pythononly"
+  mkdir -p "$pythononly"
+  cp "$nopython/curl" "$pythononly/curl"
+  ln -sf "$(command -v bash)" "$pythononly/bash"
+  ln -sf "$(command -v cp)" "$pythononly/cp"
+  ln -sf "$(command -v python3)" "$pythononly/python"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  PATH="$pythononly" CURL_SERVE_FILE="$REFRESH_SCRIPT" \
+    RUNNER_TEMP="$tmp/runner" GITHUB_API_URL="https://api.github.invalid" \
+    GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    NM_REQUIRED_SCRIPT_REF="$MERGE_SHA" GITHUB_EVENT_PATH="$event" \
+    NM_REQUIRED_EXPECTED_HEAD="$NEW_HEAD" NM_REQUIRED_BODY_FILE="$live" \
+    NM_REQUIRED_BODY_TIMEOUT_SEC=0 NM_REQUIRED_BODY_INTERVAL_SEC=0 \
+    bash "$step" > "$tmp/pythononly.out" 2>&1 || \
+    fail "a runner carrying python but not python3 failed the step: $(cat "$tmp/pythononly.out")"
+  python3 -c '
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
+if sys.argv[2] not in body:
+    raise SystemExit("the step degraded past a python the pinned action would have used")
+' "$event" "$NEW_HEAD" || \
+    fail "the step did not refresh the live body through python: $(cat "$tmp/pythononly.out")"
+
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+  PATH="$nopython" CURL_SERVE_FILE="$REFRESH_SCRIPT" \
+    RUNNER_TEMP="$tmp/runner" GITHUB_API_URL="https://api.github.invalid" \
+    GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    NM_REQUIRED_SCRIPT_REF="$MERGE_SHA" GITHUB_EVENT_PATH="$event" \
+    NM_REQUIRED_EXPECTED_HEAD="$NEW_HEAD" NM_REQUIRED_BODY_FILE="$live" \
+    NM_REQUIRED_BODY_TIMEOUT_SEC=0 NM_REQUIRED_BODY_INTERVAL_SEC=0 \
+    bash "$step" > "$tmp/nopython.out" 2>&1 || \
+    fail "a runner without python3 or python reddened the required check: $(cat "$tmp/nopython.out")"
+  assert_grep "::warning::" "$tmp/nopython.out" \
+    "a missing interpreter must annotate the run, not exit 0 in silence"
+  python3 -c '
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
+if sys.argv[2] not in body:
+    raise SystemExit("a degrade must leave the webhook snapshot for the action to judge")
+' "$event" "$OLD_HEAD" || fail "a degraded step did not leave the webhook snapshot intact"
+
+  pass "the required check refreshes the live body before the pinned action and annotates every degrade instead of reddening"
 }
 
-# Test 16: The pinned action's own verifier changes its verdict because of what
+# Test 17: The pinned action's own verifier changes its verdict because of what
 # this helper writes to GITHUB_EVENT_PATH. That is the one assumption the whole
 # change rests on, and every case above stops at event.json: if the pinned
 # verifier read the body from the job's in-memory event context instead of from
@@ -1068,7 +1195,7 @@ test_pinned_verifier_verdict_turns_on_the_refreshed_event() {
   pass "the pinned verifier goes from the issue-258 mismatch to compliant on the refreshed event payload"
 }
 
-# Test 17: Verify that PRs opened without no-mistakes remain strictly blocked.
+# Test 18: Verify that PRs opened without no-mistakes remain strictly blocked.
 # What would have to break for this test to fail:
 # A PR opened without no-mistakes is allowed to pass compliance or clear its failure
 # without a new commit pushed through git push no-mistakes.
@@ -1103,6 +1230,7 @@ main() {
   test_refresh_loads_the_live_body_over_graphql
   test_refresh_rides_out_a_transient_mid_wait
   test_refresh_annotates_a_budget_spent_against_a_failing_endpoint
+  test_refresh_degrades_on_a_non_object_response
   test_refresh_degrades_when_the_response_never_arrives
   test_workflow_refreshes_live_body_before_pinned_action
   test_pinned_verifier_verdict_turns_on_the_refreshed_event

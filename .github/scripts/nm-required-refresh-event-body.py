@@ -128,6 +128,8 @@ def fetch_live_body(args: argparse.Namespace, number: int, owner: str, repo: str
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, http.client.HTTPException, json.JSONDecodeError) as err:
         raise LiveBodyUnavailable(str(err)) from err
+    if not isinstance(payload, dict):
+        raise LiveBodyUnavailable(f"unexpected response shape: {payload!r}")
     errors = payload.get("errors")
     if errors:
         raise LiveBodyUnavailable(f"GraphQL errors: {errors}")
