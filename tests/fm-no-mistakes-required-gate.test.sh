@@ -103,14 +103,25 @@ test_reproduce_issue_98_sequence() {
 
 # Test 2: Verify workflow triggers and event scope in no-mistakes-required.yml.
 # What would have to break for this test to fail:
-# .github/workflows/no-mistakes-required.yml re-adds `edited` to on.pull_request.types
-# or removes opened/synchronize/reopened triggers.
+# .github/workflows/no-mistakes-required.yml re-adds `edited` to on.pull_request.types,
+# removes opened/synchronize/reopened, or widens the check past the main branch.
 test_workflow_triggers_exclude_edited_event() {
-  local types_line
+  require_python3 || return 0
+  local tmp
   assert_present "$WORKFLOW" "workflow file must exist"
-  types_line=$(sed -n '/^[[:space:]]*types:/p' "$WORKFLOW")
-  [ "$types_line" = '    types: [opened, synchronize, reopened]' ] || \
-    fail "workflow must trigger only on opened, synchronize, and reopened pull request events"
+  tmp=$(fm_test_tmproot fm-nm-required-triggers)
+  workflow_model_json "$tmp"
+  python3 -c '
+import json, sys
+model = json.load(open(sys.argv[1], encoding="utf-8"))
+trigger = (model.get("on") or {}).get("pull_request") or {}
+types, branches = trigger.get("types"), trigger.get("branches")
+if types != ["opened", "synchronize", "reopened"]:
+    raise SystemExit("the required check must evaluate opened, synchronize and reopened "
+                     f"only - an edited trigger reds green PRs on unchanged heads - got {types!r}")
+if branches != ["main"]:
+    raise SystemExit(f"the required check must be scoped to the main branch, got {branches!r}")
+' "$tmp/model.json" || fail "workflow trigger scope does not match the fork divergence it pins"
   pass "no-mistakes-required workflow triggers on code/branch events and excludes edited"
 }
 
@@ -119,14 +130,22 @@ test_workflow_triggers_exclude_edited_event() {
 # concurrency.group is removed or modified to re-introduce per-run_id fragmentation,
 # or cancel-in-progress no longer cancels an older compliance run for the same PR.
 test_workflow_concurrency_group_coalescing() {
-  local group_line cancel_line
-  group_line=$(sed -n '/^[[:space:]]*group:/p' "$WORKFLOW")
-  cancel_line=$(sed -n '/^[[:space:]]*cancel-in-progress:/p' "$WORKFLOW")
+  require_python3 || return 0
+  local tmp
+  assert_present "$WORKFLOW" "workflow file must exist"
+  tmp=$(fm_test_tmproot fm-nm-required-concurrency)
+  workflow_model_json "$tmp"
+  # The group is a GitHub Actions expression the workflow must carry verbatim,
+  # not a shell parameter for this suite to expand.
   # shellcheck disable=SC2016
-  [ "$group_line" = '  group: no-mistakes-required-${{ github.event.pull_request.number }}' ] || \
-    fail "workflow concurrency group must be scoped exactly per pull request"
-  [ "$cancel_line" = '  cancel-in-progress: true' ] || \
-    fail "workflow must cancel an in-progress compliance run when the same PR advances"
+  python3 -c '
+import json, sys
+concurrency = json.load(open(sys.argv[1], encoding="utf-8")).get("concurrency") or {}
+if concurrency.get("group") != "no-mistakes-required-${{ github.event.pull_request.number }}":
+    raise SystemExit(f"the compliance run must coalesce per pull request, got {concurrency!r}")
+if concurrency.get("cancel-in-progress") != "true":
+    raise SystemExit(f"an advancing PR must cancel its in-progress compliance run, got {concurrency!r}")
+' "$tmp/model.json" || fail "workflow concurrency does not coalesce one run per pull request"
   pass "no-mistakes-required workflow uses unified per-PR concurrency with cancellation enabled"
 }
 
@@ -461,9 +480,10 @@ if event["pull_request"]["head"]["sha"] != sys.argv[3]:
 # A stub that answers the way GitHub's GraphQL endpoint does: it serves the
 # body only for a credentialed request that identifies this pull request and
 # selects the body field, and answers with `errors` otherwise. The response
-# plan is one token per request it will serve ("data", "502", or "close", which
-# accepts the request and drops the connection without answering), so a case can
-# model an endpoint that succeeds and then fails without racing a teardown.
+# plan is one token per request it will serve - "data" (the body in live-body),
+# "stale" (the body in stale-body), "502", or "close", which accepts the request
+# and drops the connection without answering - so a case can model an endpoint
+# that succeeds, then blips, then succeeds, without racing a teardown.
 write_graphql_stub() {  # <dir>
   cat > "$1/graphql-stub.py" <<'PY'
 #!/usr/bin/env python3
@@ -478,6 +498,11 @@ port_file, body_file, log_file = sys.argv[1], sys.argv[2], sys.argv[3]
 plan = sys.argv[4].split(",")
 with open(body_file, encoding="utf-8") as handle:
     live_body = handle.read()
+stale_path = os.path.join(os.path.dirname(body_file), "stale-body")
+stale_body = ""
+if os.path.exists(stale_path):
+    with open(stale_path, encoding="utf-8") as handle:
+        stale_body = handle.read()
 EXPECTED_VARIABLES = {"o": "HelloWorldSungin", "n": "firstmate", "p": 254}
 served = []
 
@@ -506,7 +531,8 @@ class Handler(BaseHTTPRequestHandler):
         elif "pullRequest(number:$p){body}" not in query:
             answer = {"errors": [{"message": "Field doesn't exist on type 'PullRequest'"}]}
         else:
-            answer = {"data": {"repository": {"pullRequest": {"body": live_body}}}}
+            served_body = stale_body if mode == "stale" else live_body
+            answer = {"data": {"repository": {"pullRequest": {"body": served_body}}}}
         encoded = json.dumps(answer).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -589,41 +615,86 @@ if event["pull_request"]["head"]["sha"] != sys.argv[2]:
   pass "a successful live GraphQL fetch lands the live body in the event payload"
 }
 
-# Test 12: A fetch that fails after an earlier one succeeded still writes the
-# last body through, but says so. Without the warning the operator sees the
-# same "attestation head_sha does not match" text issue #258 was filed over,
-# with nothing to distinguish a budget that was genuinely exhausted from a wait
-# an API error cut short seconds in.
+# Test 12: A fetch that fails while the wait budget still has attempts left
+# costs that attempt only. The helper keeps polling, so a pipeline that has not
+# yet written its attestation is still picked up.
 # What would have to break for this test to fail:
-# The aborted-wait branch falls through silently and the run reports a clean
-# refresh over a body the helper had not finished waiting on.
-test_refresh_warns_when_an_api_failure_cuts_the_wait_short() {
+# One blip ends the whole wait instead of just that attempt, so a PR whose
+# pipeline is still writing its attestation gets the issue-258 head_sha
+# mismatch seconds into a budget that had every remaining attempt left.
+test_refresh_rides_out_a_transient_mid_wait() {
   require_python3 || return 0
   local tmp event rc=0
-  tmp=$(fm_test_tmproot fm-nm-required-refresh-aborted-wait)
+  tmp=$(fm_test_tmproot fm-nm-required-refresh-transient)
   event="$tmp/event.json"
   write_event "$event" "truncated webhook snapshot" "$NEW_HEAD"
-  attestation_body "$OLD_HEAD" > "$tmp/live-body"
+  attestation_body "$OLD_HEAD" > "$tmp/stale-body"
+  attestation_body "$NEW_HEAD" > "$tmp/live-body"
 
-  # The first fetch returns a signed body still bound to the previous head, so
-  # the helper keeps waiting; the second gets a 502, which is the transient the
-  # full 120s budget is meant to ride out.
+  # Fetch 1 returns the pre-push body, so the helper keeps waiting; fetch 2 is
+  # an ordinary GitHub 502; fetch 3 is the body the pipeline has since written.
+  # Only a helper that treats the failure as one lost attempt reaches fetch 3.
   write_graphql_stub "$tmp"
-  start_graphql_stub "$tmp" data,502
+  start_graphql_stub "$tmp" stale,502,data
 
   GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
     GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$tmp/port")/graphql" \
     fm_run_timed 90 python3 "$REFRESH_SCRIPT" \
       --event-path "$event" \
       --expected-head "$NEW_HEAD" \
-      --timeout-sec 120 \
+      --timeout-sec 20 \
       --interval-sec 0 > "$tmp/helper.out" 2>&1 || rc=$?
   stop_fixtures
   [ "$rc" -eq 0 ] || \
     fail "a mid-wait API failure reddened the required check (exit $rc): $(cat "$tmp/helper.out")"
 
+  python3 -c '
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
+if sys.argv[2] not in body:
+    raise SystemExit("a single transient ended the wait before the bound attestation arrived")
+if sys.argv[3] in body:
+    raise SystemExit("the pre-push attestation survived into the refreshed body")
+' "$event" "$NEW_HEAD" "$OLD_HEAD" || \
+    fail "the wait did not survive one failed attempt: $(cat "$tmp/helper.out")"
+
+  pass "a transient mid-wait costs one attempt, not the whole wait budget"
+}
+
+# Test 13: When the budget really is spent with the endpoint still failing, the
+# last body read is written through and the run says so, so the pinned action
+# still reaches a verdict.
+# What would have to break for this test to fail:
+# An exhausted budget reports a clean refresh over a body whose wait was cut
+# short by an API error, or discards that body and hands the action the webhook
+# snapshot it was refreshed to replace.
+test_refresh_annotates_a_budget_spent_against_a_failing_endpoint() {
+  require_python3 || return 0
+  local tmp event rc=0
+  tmp=$(fm_test_tmproot fm-nm-required-refresh-spent-budget)
+  event="$tmp/event.json"
+  write_event "$event" "truncated webhook snapshot" "$NEW_HEAD"
+  attestation_body "$OLD_HEAD" > "$tmp/stale-body"
+  attestation_body "$NEW_HEAD" > "$tmp/live-body"
+
+  # The stub answers once and then serves nothing further, so every remaining
+  # attempt fails until the short budget is genuinely spent.
+  write_graphql_stub "$tmp"
+  start_graphql_stub "$tmp" stale,502
+
+  GITHUB_TOKEN=stub-token GITHUB_REPOSITORY="HelloWorldSungin/firstmate" \
+    GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$tmp/port")/graphql" \
+    fm_run_timed 90 python3 "$REFRESH_SCRIPT" \
+      --event-path "$event" \
+      --expected-head "$NEW_HEAD" \
+      --timeout-sec 1 \
+      --interval-sec 0.1 > "$tmp/helper.out" 2>&1 || rc=$?
+  stop_fixtures
+  [ "$rc" -eq 0 ] || \
+    fail "a spent budget reddened the required check (exit $rc): $(cat "$tmp/helper.out")"
+
   assert_grep "::warning::" "$tmp/helper.out" \
-    "a wait cut short by an API failure must be annotated, not reported as a clean refresh"
+    "a budget spent against a failing endpoint must be annotated, not reported as a clean refresh"
   python3 -c '
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["body"]
@@ -631,12 +702,12 @@ if sys.argv[2] not in body:
     raise SystemExit("the last body read was not written through for the action to judge")
 if "truncated webhook snapshot" in body:
     raise SystemExit("the webhook snapshot survived a fetch that had already succeeded once")
-' "$event" "$OLD_HEAD" || fail "the aborted wait did not keep the last live body"
+' "$event" "$OLD_HEAD" || fail "the spent budget did not keep the last live body"
 
-  pass "an API failure mid-wait annotates the run instead of reporting a clean refresh"
+  pass "a budget spent against a failing endpoint keeps the last body read and annotates the run"
 }
 
-# Test 13: A transport that accepts the request and then drops the connection
+# Test 14: A transport that accepts the request and then drops the connection
 # degrades to the webhook snapshot. urllib wraps only the errors raised while
 # sending into URLError, so a response that never arrives surfaces as
 # http.client.RemoteDisconnected instead - an ordinary GitHub transient that
@@ -810,7 +881,7 @@ PY
     fail "the required-check workflow does not parse as GitHub Actions block YAML"
 }
 
-# Test 14: The required check's own job refreshes the live body before the
+# Test 15: The required check's own job refreshes the live body before the
 # pinned action runs, fetches the helper from the merge commit its workflow
 # definition came from, declares its wait budget, checks out no repository
 # code, and treats an unreachable helper as a degrade to the webhook snapshot
@@ -939,7 +1010,65 @@ if sys.argv[2] not in body:
   pass "the required check refreshes the live body before the pinned action and degrades instead of reddening"
 }
 
-# Test 15: Verify that PRs opened without no-mistakes remain strictly blocked.
+# Test 16: The pinned action's own verifier changes its verdict because of what
+# this helper writes to GITHUB_EVENT_PATH. That is the one assumption the whole
+# change rests on, and every case above stops at event.json: if the pinned
+# verifier read the body from the job's in-memory event context instead of from
+# disk, the refresh would be an inert no-op, every other case here would stay
+# green, and the required check would keep reporting the issue-258 mismatch.
+# PR_BODY is deliberately not set - that is the branch the workflow never uses.
+# What would have to break for this test to fail:
+# A pin bump moves the verifier off GITHUB_EVENT_PATH, or the helper stops
+# writing a body the verifier binds to the triggering head.
+test_pinned_verifier_verdict_turns_on_the_refreshed_event() {
+  require_python3 || return 0
+  command -v curl >/dev/null 2>&1 || {
+    echo "skip: curl not found, so the pinned verifier cannot be fetched"
+    return 0
+  }
+  local tmp verify event live rc=0 out
+  tmp=$(fm_test_tmproot fm-nm-required-pinned-verifier)
+  verify="$tmp/verify.py"
+  # The pinned verifier is public source at a fixed ref, fetched rather than
+  # vendored so this case cannot drift from the ref the workflow actually runs.
+  curl --fail --silent --show-error --location \
+    "https://raw.githubusercontent.com/kunchenguid/no-mistakes/${PINNED_ACTION##*@}/.github/actions/require-no-mistakes/verify.py" \
+    > "$verify" 2>"$tmp/curl.err" || {
+    echo "skip: could not fetch the pinned verifier at ${PINNED_ACTION##*@} ($(cat "$tmp/curl.err"))"
+    return 0
+  }
+  [ -s "$verify" ] || fail "the pinned verifier fetched empty"
+
+  event="$tmp/event.json"
+  live="$tmp/live-body"
+  attestation_body "$NEW_HEAD" > "$live"
+  write_event "$event" "$(attestation_body "$OLD_HEAD")" "$NEW_HEAD"
+
+  rc=0
+  out=$(GITHUB_EVENT_PATH="$event" python3 "$verify" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || \
+    fail "the pinned verifier passed the pre-refresh webhook snapshot, so this suite cannot see the defect"
+  assert_contains "$out" "Pipeline attestation head_sha does not match the current PR head" \
+    "the pre-refresh snapshot did not reproduce the issue-258 verdict"
+
+  python3 "$REFRESH_SCRIPT" \
+    --event-path "$event" \
+    --body-file "$live" \
+    --expected-head "$NEW_HEAD" \
+    --timeout-sec 0 \
+    --interval-sec 0 > "$tmp/refresh.out" 2>&1 || \
+    fail "the refresh helper failed on a matching live body: $(cat "$tmp/refresh.out")"
+
+  rc=0
+  out=$(GITHUB_EVENT_PATH="$event" python3 "$verify" 2>&1) || rc=$?
+  expect_code 0 "$rc" "the pinned verifier still failed after the helper refreshed the event payload: $out"
+  assert_contains "$out" "Found structurally compliant pipeline step attestation." \
+    "the pinned verifier did not report the refreshed body as compliant"
+
+  pass "the pinned verifier goes from the issue-258 mismatch to compliant on the refreshed event payload"
+}
+
+# Test 17: Verify that PRs opened without no-mistakes remain strictly blocked.
 # What would have to break for this test to fail:
 # A PR opened without no-mistakes is allowed to pass compliance or clear its failure
 # without a new commit pushed through git push no-mistakes.
@@ -972,9 +1101,11 @@ main() {
   test_refresh_does_not_wait_on_a_hand_written_body
   test_refresh_degrades_when_the_live_body_is_unreachable
   test_refresh_loads_the_live_body_over_graphql
-  test_refresh_warns_when_an_api_failure_cuts_the_wait_short
+  test_refresh_rides_out_a_transient_mid_wait
+  test_refresh_annotates_a_budget_spent_against_a_failing_endpoint
   test_refresh_degrades_when_the_response_never_arrives
   test_workflow_refreshes_live_body_before_pinned_action
+  test_pinned_verifier_verdict_turns_on_the_refreshed_event
   test_manual_pr_without_signature_remains_blocked
 }
 

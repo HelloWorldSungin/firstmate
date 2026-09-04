@@ -182,34 +182,50 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(number, int):
         raise SystemExit("event pull_request.number is missing")
     expected = expected_head_from(args, pr)
-    deadline = time.monotonic() + max(args.timeout_sec, 0)
-    body: str | None = None
+    owner = repo = ""
     try:
-        owner = repo = ""
         if not args.body_file:
             owner, repo = repository_parts()
-        while True:
+    except LiveBodyUnavailable as err:
+        print(f"::warning::live pull-request body unavailable ({err}); "
+              "leaving the webhook snapshot in the event payload")
+        return 0
+
+    deadline = time.monotonic() + max(args.timeout_sec, 0)
+    interval = args.interval_sec if args.interval_sec > 0 else 0
+    body: str | None = None
+    last_error = ""
+    warned = False
+    while True:
+        try:
             body = fetch_live_body(args, number, owner, repo)
+        except LiveBodyUnavailable as err:
+            # The budget decides when to give up, not the first blip: an
+            # attempt that fails leaves the previous body in place and the wait
+            # runs on, so one transient cannot strand a push the pipeline is
+            # still writing the attestation for.
+            last_error = str(err)
+            if body is not None and not warned:
+                warned = True
+                print(f"::warning::live pull-request body fetch failed ({last_error}); "
+                      "retrying on the last body read until the wait budget is spent")
+        else:
             if attestation_head(body) == expected:
                 break
             if not raised_through_no_mistakes(body):
                 break
-            if time.monotonic() >= deadline:
-                break
-            interval = args.interval_sec if args.interval_sec > 0 else 0
-            if interval > 0:
-                time.sleep(interval)
-    except LiveBodyUnavailable as err:
+        if time.monotonic() >= deadline:
+            break
+        if interval > 0:
+            time.sleep(interval)
+
+    if body is None:
         # The pinned action, not this helper, owns the compliance verdict: an
         # unreachable API leaves the webhook snapshot for it to judge instead
         # of reddening the required check with no verdict at all.
-        if body is None:
-            print(f"::warning::live pull-request body unavailable ({err}); "
-                  "leaving the webhook snapshot in the event payload")
-            return 0
-        print(f"::warning::live pull-request body fetch failed ({err}); "
-              "the wait ended early on the last body read, so the verdict "
-              "below may be a push behind rather than an exhausted budget")
+        print(f"::warning::live pull-request body unavailable ({last_error}); "
+              "leaving the webhook snapshot in the event payload")
+        return 0
 
     pr["body"] = body
     bound = attestation_head(body) or "(missing)"
