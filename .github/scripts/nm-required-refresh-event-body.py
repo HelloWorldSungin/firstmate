@@ -10,6 +10,17 @@ afterwards.
 This helper fetches the live body (or a test fixture) and writes it into the
 event payload before the pinned action runs. It does not check out the PR
 and it does not change the triggering head SHA.
+
+The fetch is a bounded wait, not a single read: it polls every --interval-sec
+for up to --timeout-sec until the live attestation binds the expected head,
+because the pipeline writes that body shortly after publishing the head. It
+stops early on a body no pipeline owns, since no attestation is coming for
+one. A body still stale when the budget is spent is written through anyway,
+so the action reports the real mismatch instead of a missing signature.
+
+Failing to read a live body is a degrade, never a verdict: the helper warns
+and exits 0, leaving the webhook snapshot in the payload for the pinned
+action, which owns the compliance verdict, to judge.
 """
 
 from __future__ import annotations

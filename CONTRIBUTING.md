@@ -10,7 +10,7 @@ We require this to reduce the maintainer's burden of reviewing and merging contr
 Pushing through it runs an AI-driven review/test/lint pipeline in an isolated worktree, forwards the push to the recorded target only after every check passes, and opens a clean PR automatically.
 
 A GitHub Actions check (`Require no-mistakes`) evaluates the body when a PR targeting `main` opens, when its candidate head changes, and when the PR reopens.
-Each of those runs reads the live pull-request body rather than the triggering webhook snapshot, so a synchronize rerun can see an attestation the pipeline wrote after the original event.
+Each of those runs reads the live pull-request body rather than the triggering webhook snapshot, so a synchronize rerun can see an attestation the pipeline wrote after the original event; when that live read fails, the run judges the webhook snapshot instead.
 On each of those events, it requires both the deterministic signature that no-mistakes writes and a parseable structured attestation from no-mistakes v1.46.0 or newer.
 The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
 Every later head published after no-mistakes writes the PR body, regardless of whether an active gate or another follow-up produced it and regardless of its contents, must go through a fresh `git push no-mistakes`, never directly to `origin`, so the pipeline replaces the attestation with one bound to that head.

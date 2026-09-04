@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Regression coverage for .github/workflows/no-mistakes-required.yml.
+# Regression coverage for .github/workflows/no-mistakes-required.yml and the
+# live-body refresh helper that workflow runs,
+# .github/scripts/nm-required-refresh-event-body.py.
 #
 # Prevents GitHub issue 98's defect: intermediate PR body edits on unchanged
 # commits creating orphan failed check runs that permanently linger on green PRs.
+# Prevents GitHub issue 258's defect: a synchronize webhook snapshot, or a rerun
+# replaying it, judged in place of the body the pipeline wrote afterwards; the
+# refresh cases cover that wait, the still-stale body it writes through, and the
+# degrade paths that leave the snapshot for the pinned action to judge.
 set -u
 
 # shellcheck source=tests/lib.sh
