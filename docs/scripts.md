@@ -141,7 +141,6 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-issue-lib.sh`        | Own the registry tracker declaration, the accepted work-item reference forms, and their project-scoped resolution |
 | `fm-forge-lib.sh`        | Own per-host forge credential resolution, the argv-free authenticated transport, and the tracker write-operation allowlist |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
-| `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-endpoint-binding-migrate.sh` | Add cleanup bindings to legacy non-tmux task records only after live identity verification |
 | `fm-run-attribution-legacy-transition.sh` | Migrate legacy task branch identity only from a matching recorded GitHub PR head, then diagnose every task still unreadable |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |

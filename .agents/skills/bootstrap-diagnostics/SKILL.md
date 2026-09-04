@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, GBRAIN_CAPTURE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, PR_CHECK_MIGRATION, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, VAULT_DRIFT, UPSTREAM, GBRAIN_SERVING_CREDENTIAL, GBRAIN_PIN, GBRAIN_CAPTURE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH (invalid or backend mismatch), FLEET_SYNC, BOARD_SWEEP, NETWORK_CHECKS, HOME_SUMMARY, ENDPOINT_BINDING_MIGRATION, RUN_ATTRIBUTION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, USAGE_STORE, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -60,16 +60,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `BOARD_SWEEP: <project>: this sweep saw only part of ... so it planned no changes at all` - the write path deliberately failed closed: a partial view cannot tell an item that is missing from one the walk never read, so nothing was written.
   Nothing is wrong and nothing was skipped that should not have been; the sweep did the safe thing.
 - `BOARD_SWEEP: <project>: ... declares more than one board=` / `is not a board URL` / `tracker=... is malformed` / `no usable tracker` - the project's `data/projects.md` entry cannot be resolved, so its board was skipped; fix the registry entry (docs/configuration.md "Project issue trackers").
-- `PR_CHECK_MIGRATION: canonical polls rebuilt and armed; resume supervision for this home` - the non-executing migration rebuilt canonical task polls from validated metadata, and those polls are already armed.
-  Independently verify the private per-task outcome record, then resume the emitted supervision protocol after finishing the session-start wake handling.
-- `PR_CHECK_MIGRATION: validated replacement polls armed; resume supervision for this home` - a retry proved canonical publication provenance, metadata identity binding, and single-link integrity for a replacement poll resolving an earlier ambiguous migration outcome.
-  Independently verify the private per-task outcome record, then resume the emitted supervision protocol after finishing the session-start wake handling.
-- `PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming` - one or more ambiguous or invalid task polls were quarantined without execution and remain unarmed.
-  Read the private mode-`0600` per-task outcome record, verify the task's recorded PR independently, and rearm only through `bin/fm-pr-check.sh` with canonical inputs.
-- `PR_CHECK_MIGRATION: migration completed safely; resume supervision for this home` - migration crossed the update boundary without rebuilding or quarantining a task poll after pausing the prior watcher.
-  Resume the emitted supervision protocol after finishing the session-start wake handling.
-- Any other `PR_CHECK_MIGRATION:` refusal means migration did not complete safely, whether because watcher exclusion, a private path, a diagnostic, quarantine validation, or marker publication could not be proved.
-  Keep each affected poll unavailable, inspect the named private state path, and do not bypass the migration or execute a quarantined artifact; a completed safe-scan marker allows unrelated authenticated polls to continue while private repair remains pending.
+- `HOME_SUMMARY: this home has never published state/home-summary.json` or `... has not been republished since <stamp>` - this home's structured summary publication has failed repeatedly, and the line carries the failure count and the newest recorded reason from `state/.home-summary-refresh.log`.
+  Publication is deliberately best-effort, so it cannot change another session-start, spawn, teardown, or watcher-poll result, and the watcher runs it detached so a slow attempt cannot delay the liveness beacon.
+  Read the named record for the recorded reasons, then reproduce with a direct `bin/fm-home-summary-refresh.sh` (no `--best-effort`, which is what keeps the failure quiet) so the refresh error reaches you.
+  A recorded deadline means the complete refresh did not finish inside `FM_HOME_SUMMARY_TIMEOUT`, so inspect lock acquisition and producer completion before validation or publication, and fix the blocked phase rather than raising this load-bearing bound.
 - `ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>; record left unchanged` - this non-tmux task record lacks its cleanup binding, and the one-shot migration could not verify that the recorded endpoint still belongs to this task, so cleanup will keep refusing it.
   This is correct and deliberate: an unproven binding would let cleanup destroy another task's endpoint, so never hand-write the binding, relax `fm_backend_validate_task_endpoint`, or force cleanup past the refusal.
   A `gone` reason means the endpoint no longer exists, and a label or identity mismatch means the recorded task identity failed verification.

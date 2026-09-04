@@ -13,7 +13,8 @@
 #                 "CREW_DISPATCH: backend mismatch - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "BOARD_SWEEP: <project>: <board drift the sweep corrected, or a status option the captain must add by hand>",
-#                 "PR_CHECK_MIGRATION: <private remediation>",
+#                 "HOME_SUMMARY: <ledger never published|not republished since
+#                 <stamp>>; <n> failed attempt(s) ... last: <recorded failure>",
 #                 "ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>",
 #                 "RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup",
 #                 "TANGLE: <remediation>",
@@ -134,9 +135,9 @@
 #          A sweep that corrected nothing and found no gap is silent; refreshed
 #          pages, a parity gap, and a sweep that could not finish each report
 #          themselves on GBRAIN_CAPTURE lines.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eleven MUTATING sweeps
-#          (PR-check migration, endpoint-binding migration, run-attribution
-#          transition, secondmate_sync, secondmate_liveness_sweep,
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the ten MUTATING sweeps
+#          (endpoint-binding migration, run-attribution transition,
+#          secondmate_sync, secondmate_liveness_sweep,
 #          secondmate_handoff_resume, x_mode_setup, fleet_sync, board_sweep,
 #          gbrain_capture_sweep, usage_store_refresh)
 #          while still printing every read-only detect line
@@ -144,7 +145,7 @@
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
-#          PR-check artifacts, secondmate homes, pending handoff outboxes,
+#          secondmate homes, pending handoff outboxes,
 #          X-mode artifacts, project clones, the usage store and its per-task
 #          session maps, or repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
@@ -159,8 +160,8 @@
 #                 `gh auth status`, secondmate_liveness_sweep, secondmate_sync,
 #                 secondmate_handoff_resume, fleet_sync, and board_sweep.
 #            only - ONLY those network steps and nothing else. No tool detection,
-#                 no version floors, no tangle check, no PR-check migration, no
-#                 x_mode_setup: those already ran on the local pass.
+#                 no version floors, no tangle check, no x_mode_setup: those
+#                 already ran on the local pass.
 #          FM_BOOTSTRAP_DETECT_ONLY composes with it unchanged, so `only` plus
 #          detect-only is the read-only `gh auth status` probe on its own.
 #          bin/fm-startup-network.sh owns the deferral: it runs the `only` phase
@@ -374,6 +375,8 @@ usage_store_refresh() {
   # leaves behind exactly the WAL-at-rest shape the read-only dashboard cannot
   # open (issue #65).
   (
+    # shellcheck disable=SC2030  # subshell-local on purpose: every other
+    # fm_run_timed call in this script must keep the owner's default grace.
     export FM_TIMEOUT_KILL_GRACE=5
     fm_run_timed "$timeout" node "$SCRIPT_DIR/fm-usage.mjs" ingest --home "$FM_HOME"
   ) >/dev/null 2>&1 || status=$?
@@ -468,6 +471,8 @@ board_sweep() {
     # budget cannot cover. Both are scoped to this one call so no other sweep
     # inherits either.
     (
+      # shellcheck disable=SC2030  # subshell-local on purpose: see the comment
+      # above, no other sweep may inherit this budget.
       export FM_WRITE_BACK_BUDGET=$budget
       fm_run_timed "$((budget + BOARD_SWEEP_GRACE))" \
         "$FM_ROOT/bin/fm-project-board.sh" reconcile --quiet
@@ -1534,13 +1539,10 @@ if [ "${1:-}" = "install" ]; then
   exit 0
 fi
 
-# This is the first mutating sweep at a locked session boundary. It pauses an
-# identity-matched watcher, holds its lock, and neutralizes legacy PR checks
-# before any tool detection or later bootstrap mutation can leave old artifacts
-# runnable. Detect-only sessions never touch state, and the deferred network pass
-# never repeats it: the local pass that ran first already closed that window.
+# This is the first mutating sweep at a locked session boundary. Detect-only
+# sessions never touch state, and the deferred network pass never repeats it:
+# the local pass that ran first already closed that window.
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
-  "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
   # Endpoint-binding migration: converge legacy non-tmux task records that
   # predate `endpoint_task_id=` so they stay cleanable. It only ever adds a
   # binding it verified live, so it is safe to re-run every locked session and
@@ -1622,6 +1624,57 @@ detect_local_config() {
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"
+  fi
+  detect_home_summary_publication
+}
+
+# This home's ledger publication is deliberately best-effort: every lifecycle
+# trigger calls it with --best-effort so a failure can never change the result
+# of a session start, a spawn, a teardown, or a watcher poll. That is correct,
+# and it also means a home that never manages to publish says nothing at all -
+# the failures land only in the bounded home-local record nobody reads.
+#
+# So read that same record here, where a session start already looks, and say so
+# once when the evidence is a pattern rather than a blip: the ledger has not
+# been (re)published, and at least FM_HOME_SUMMARY_FAILURE_REPORT attempts have
+# failed since whenever it last was. No new record, no new state, no retry
+# policy - just the existing evidence, surfaced.
+detect_home_summary_publication() {
+  local log="$STATE/.home-summary-refresh.log" ledger="$STATE/home-summary.json"
+  local since='' counted failures last threshold
+  threshold=${FM_HOME_SUMMARY_FAILURE_REPORT:-2}
+  case "$threshold" in ''|*[!0-9]*|0) threshold=2 ;; esac
+  [ -f "$log" ] && [ -r "$log" ] && [ ! -L "$log" ] || return 0
+  if [ -f "$ledger" ] && [ -r "$ledger" ] && [ ! -L "$ledger" ]; then
+    since=$(LC_ALL=C sed -n 's/.*"generated"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$ledger" 2>/dev/null | head -1)
+  fi
+  # Publication and failure stamps have whole-second precision, so failures in
+  # the publication's own second remain quiet until a later failure advances
+  # the record. That bounded delay avoids a precision dependency in bootstrap.
+  counted=$(LC_ALL=C awk -v since="$since" '
+    match($0, /^\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z\]/) {
+      stamp = substr($0, 2, RLENGTH - 2)
+      if (since == "" || stamp > since) {
+        n += 1
+        last = substr($0, RLENGTH + 2)
+      } else if (stamp == since) {
+        same_second += 1
+      }
+    }
+    END {
+      if (since != "" && n > 0) n += same_second
+      printf "%d\t%s", n + 0, last
+    }' "$log" 2>/dev/null) || return 0
+  failures=${counted%%$'\t'*}
+  last=${counted#*$'\t'}
+  case "$failures" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$failures" -ge "$threshold" ] || return 0
+  last=$(printf '%s' "$last" | cut -c1-200)
+  if [ -z "$since" ]; then
+    echo "HOME_SUMMARY: this home has never published state/home-summary.json; $failures failed attempt(s) recorded in state/.home-summary-refresh.log, last: $last"
+  else
+    echo "HOME_SUMMARY: state/home-summary.json has not been republished since $since; $failures failed attempt(s) recorded in state/.home-summary-refresh.log, last: $last"
   fi
 }
 

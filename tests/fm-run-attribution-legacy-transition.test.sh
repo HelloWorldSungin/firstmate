@@ -70,8 +70,7 @@ run_transition() {  # <home> [args...]
 }
 
 # The exact downstream contract a published branch= must not break: the parser
-# every PR poll artifact check and the legacy PR-check migration run on the same
-# task metadata.
+# every PR poll artifact check runs on the same task metadata.
 meta_pr_identity_parses() {  # <meta>
   bash -c '. "$1/bin/fm-pr-lib.sh"; fm_pr_metadata_identity_parse "$2"' _ "$ROOT" "$1"
 }

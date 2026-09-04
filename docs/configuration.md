@@ -454,7 +454,7 @@ agy (Antigravity CLI/Gemini) is additionally verified only for crewmate and scou
 muse is verified for crewmate and scout launches ONLY, and `fm-spawn.sh` refuses it for a secondmate, because muse ships no usable hook surface for a primary session's turn-end supervision; [`docs/verification/muse.md`](verification/muse.md) owns that evidence.
 muse also needs a worker-reachable credential before spawning, and the portable fleet path is the `<config>/muse/auth.json` credential stored by `muse login`, because a caller-only `META_API_KEY` does not cross a long-lived backend daemon.
 New harnesses get verified through a supervised trial task before joining either set.
-The verified adapter evidence lives in the [`harness-adapters` skill](../.agents/skills/harness-adapters/SKILL.md): its shared head owns the fleet-wide contracts, cross-harness comparisons, and skill-invocation forms, while each harness's own busy-state source, interrupt and exit behavior, and quirks live in the per-harness variant file that head routes to.
+The verified adapter evidence lives in the skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md): its router and common references own the fleet-wide contracts, cross-harness comparisons, and skill-invocation forms, while each harness's own busy-state source, interrupt and exit behavior, and quirks live in the per-harness reference that router selects.
 The executable interrupt and exit mechanics live in [`bin/fm-control-lib.sh`](../bin/fm-control-lib.sh), and [`docs/agent-control.md`](agent-control.md) owns their lifecycle-control architecture.
 Exact launch-command construction, including the verified templates and model/effort flags, lives in [`bin/fm-launch-lib.sh`](../bin/fm-launch-lib.sh); [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) owns the surrounding gates, workspace-trust orchestration, and non-template hook installation.
 Pi-family launches adapt the regular-TUI safeguard to the installed CLI's capabilities so fullscreen mode cannot rewrite scrollback and bury steers; [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the exact version-safe launch mechanics.
@@ -951,6 +951,7 @@ FM_POLL=15              # seconds between watcher poll cycles
 FM_HOME_SUMMARY_INTERVAL=300   # seconds before a live watcher refreshes this home's state/home-summary.json even without a status signal; invalid or zero values use 300
 FM_HOME_SUMMARY_TIMEOUT=60     # seconds bounding the complete best-effort home-summary refresh, including lock acquisition, validation, atomic publication, and worker-side failure logging; invalid or zero values use 60
 FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES=65536   # approximate size cap for state/.home-summary-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
+FM_HOME_SUMMARY_FAILURE_REPORT=2   # recorded publication failures since the ledger's own last publication before session start reports a HOME_SUMMARY line; invalid or zero values use 2
 FM_HEARTBEAT=600        # base seconds between heartbeat scans; no-change heartbeats are absorbed while idle
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
 FM_INACTIVE_RECONCILE_SECS=900  # 60..1800-second watcher cadence and inactivity threshold; locked session start also scans immediately

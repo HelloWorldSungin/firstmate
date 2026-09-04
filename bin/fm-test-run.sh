@@ -251,6 +251,7 @@ family_for_basename() {
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-harness-adapter-references.test.sh|\
     fm-pointer-check.test.sh|\
     fm-run-progress.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
@@ -309,6 +310,7 @@ family_for_basename() {
     fm-gbrain-readonly-e2e.test.sh|fm-gbrain-capture-e2e.test.sh|\
     fm-agy-smoke.test.sh|fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-cmux-claude-composer-live-e2e.test.sh|\
+    fm-harness-adapter-instructions-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|fm-muse-signals-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
@@ -574,12 +576,18 @@ tests/fm-bootstrap.test.sh 59805
 tests/fm-brief-repo-lib.test.sh 222
 tests/fm-busy-adapter-wiring.test.sh 15163
 tests/fm-busy-state.test.sh 876
+tests/fm-calm-pi-extension.test.sh 464
 tests/fm-classify-decision-key.test.sh 575
 tests/fm-claude-stop-autoarm-live-e2e.test.sh 20
 tests/fm-claude-stop-autoarm.test.sh 60670
+tests/fm-cmux-claude-composer-live-e2e.test.sh 20
+tests/fm-codex-continuity-live-e2e.test.sh 19
+tests/fm-composer-matrix-live-e2e.test.sh 21
 tests/fm-control-relaunch.test.sh 31257
 tests/fm-control.test.sh 36700
-tests/fm-cursor-agy-adapter.test.sh 31555
+tests/fm-cursor-harness.test.sh 30071
+tests/fm-cursor-primary-live-e2e.test.sh 20
+tests/fm-cursor-primary.test.sh 52324
 tests/fm-daemon.test.sh 15999
 tests/fm-dashboard-access.test.sh 21023
 tests/fm-dashboard-backlog.test.sh 387
@@ -595,26 +603,40 @@ tests/fm-documentation-audiences.test.sh 791
 tests/fm-endpoint-binding-migrate.test.sh 1366
 tests/fm-fleet-snapshot-view.test.sh 76290
 tests/fm-fleet-sync.test.sh 21726
+tests/fm-gate-refuse.test.sh 4071
 tests/fm-gbrain-capture.test.sh 23044
 tests/fm-gbrain-eval.test.sh 5354
 tests/fm-gbrain-health.test.sh 6623
 tests/fm-gbrain-lib.test.sh 17072
 tests/fm-gitignore-config.test.sh 31
 tests/fm-gotmp.test.sh 1056
+tests/fm-grok-continuity-live-e2e.test.sh 19
+tests/fm-grok-stop-live-e2e.test.sh 21
 tests/fm-guard-stale-banner.test.sh 6119
+tests/fm-harness-adapter-instructions-live-e2e.test.sh 20
+tests/fm-harness-adapter-references.test.sh 2
+tests/fm-harness-liveness-drift-live-e2e.test.sh 19
 tests/fm-herdr-session-cleanup.test.sh 6714
+tests/fm-herdr-submit-confirm-live-e2e.test.sh 20
+tests/fm-herdr-version-floor-live-e2e.test.sh 20
 tests/fm-inactive-reconcile.test.sh 39771
 tests/fm-issue-linkage.test.sh 12629
 tests/fm-issue-writeback.test.sh 28984
 tests/fm-kimi-harness.test.sh 15227
 tests/fm-launch-lib.test.sh 425
+tests/fm-lint-workflows.test.sh 744
 tests/fm-merge-local.test.sh 509
 tests/fm-model-verify.test.sh 4042
 tests/fm-muse-harness.test.sh 28369
+tests/fm-muse-signals-live-e2e.test.sh 21
 tests/fm-no-mistakes-required-gate.test.sh 91
 tests/fm-on.test.sh 8756
+tests/fm-opencode-primary-live-e2e.test.sh 22
+tests/fm-operational-input.test.sh 246
 tests/fm-outcome-manifest.test.sh 4788
+tests/fm-peek-remote.test.sh 848
 tests/fm-pending-reply.test.sh 17970
+tests/fm-pi-primary-live-e2e.test.sh 41
 tests/fm-pi-watch-extension.test.sh 23739
 tests/fm-pointer-check.test.sh 1314
 tests/fm-pr-check-security.test.sh 186061
@@ -623,6 +645,7 @@ tests/fm-procevent-when.test.sh 14757
 tests/fm-procevent.test.sh 59835
 tests/fm-project-origin.test.sh 93
 tests/fm-public-followup.test.sh 40390
+tests/fm-quota-array-dispatch-live-e2e.test.sh 18
 tests/fm-quota-sidecar.test.sh 549
 tests/fm-recall.test.sh 10856
 tests/fm-remote-backlog-handoff.test.sh 20328
@@ -641,10 +664,14 @@ tests/fm-secondmate-lifecycle-e2e.test.sh 5893
 tests/fm-secondmate-liveness.test.sh 9502
 tests/fm-secondmate-safety.test.sh 51942
 tests/fm-secondmate-sync.test.sh 14898
+tests/fm-send-remote-delivery.test.sh 4892
 tests/fm-send-resolve-key.test.sh 8635
+tests/fm-send-secondmate-marker-herdr-e2e.test.sh 45
 tests/fm-send-secondmate-marker.test.sh 4514
 tests/fm-session-lock-ancestry.test.sh 1233
 tests/fm-session-start.test.sh 112136
+tests/fm-sessionstart-hook-live-e2e.test.sh 21
+tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 21
 tests/fm-sessionstart-nudge.test.sh 25611
 tests/fm-shared-captain-inheritance.test.sh 4334
 tests/fm-spawn-dispatch-profile.test.sh 73282
@@ -653,13 +680,18 @@ tests/fm-spawn-worktree-settle.test.sh 9225
 tests/fm-startup-memory-budget.test.sh 5404
 tests/fm-startup-network.test.sh 52754
 tests/fm-stow-cascade.test.sh 2667
+tests/fm-subagent-pretool-check.test.sh 1066
+tests/fm-supervision-events.test.sh 1431
 tests/fm-tangle-guard.test.sh 7782
 tests/fm-task-delivery.test.sh 2572
+tests/fm-teardown-endpoint-safety.test.sh 7295
 tests/fm-teardown.test.sh 152255
 tests/fm-test-fixture-cleanup.test.sh 1197
+tests/fm-test-fixtures.test.sh 1045
 tests/fm-test-isolation-proof.test.sh 590
 tests/fm-tmux-agent-liveness.test.sh 32302
 tests/fm-tool-status.test.sh 880
+tests/fm-tool-update-check.test.sh 12846
 tests/fm-trace-context-lib.test.sh 261
 tests/fm-trace-context-spawn.test.sh 36086
 tests/fm-trigger-validation.test.sh 957
@@ -669,6 +701,7 @@ tests/fm-upstream-status.test.sh 4058
 tests/fm-usage.test.sh 4988
 tests/fm-vault-drift.test.sh 4973
 tests/fm-vendor-auth-probe.test.sh 43079
+tests/fm-wake-daemon-lifecycle-e2e.test.sh 6219
 tests/fm-wake-drain-open-decisions-cursor.test.sh 19626
 tests/fm-wake-drain-open-decisions.test.sh 2344
 tests/fm-wake-drain-unread-status.test.sh 4000
@@ -1339,6 +1372,10 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
       ;;
+    .agents/skills/harness-adapters/SKILL.md|.agents/skills/harness-adapters/references/*)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
+      ;;
     .agents/skills/*/SKILL.md|.agents/skills/*/*.md)
       printf '%s\n' pure-contract-unit
       ;;
@@ -1354,7 +1391,7 @@ families_for_changed_path() {
     docs/configuration.md|docs/supervision-protocols/*)
       printf '%s\n' pure-contract-unit
       ;;
-    tests/lib.sh|tests/*-helpers.sh)
+    tests/lib.sh|tests/*-helpers.sh|tests/fixtures.sh)
       families_for_test_reference "$(basename "$path")" \
         || printf '%s\n' "__unmapped__:$path"
       ;;

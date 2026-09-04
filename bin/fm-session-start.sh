@@ -19,7 +19,7 @@
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
-# bootstrap running its detect-only diagnostics without its ten mutating
+# bootstrap running its detect-only diagnostics without its nine mutating
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
@@ -31,13 +31,12 @@
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
 #                       diagnostics always run. Bootstrap's mutating sweeps
-#                       (legacy PR-check and endpoint-binding migrations,
-#                       proven run attribution, secondmate convergence and
-#                       liveness, pending handoff retry, Relay artifact writes,
-#                       fleet sync, project-board reconciliation, and
-#                       token-usage refresh) run only when locked; network
-#                       sweeps run in the deferred stage rather than this
-#                       synchronous bootstrap section.
+#                       (the endpoint-binding migration, proven run attribution,
+#                       secondmate convergence and liveness, pending handoff
+#                       retry, Relay artifact writes, fleet sync, project-board
+#                       reconciliation, and token-usage refresh) run only when
+#                       locked; network sweeps run in the deferred stage rather
+#                       than this synchronous bootstrap section.
 #   3. inactive outcomes + wake-drain - runs the local bounded inactive-outcome
 #                       reconciliation before presenting durable wakes and
 #                       advancing recovery handling state, so both mutate the
@@ -616,7 +615,7 @@ if [ "$REEMIT" -eq 1 ]; then
   printf 'This session already took the helm at its own startup and has only lost its\n'
   printf 'context. Lock ownership is re-verified and the durable records below are\n'
   printf 'reprinted, but the sweeps startup already reconciled - project clone refresh,\n'
-  printf 'secondmate convergence and liveness, PR-check migration, pending remote handoff\n'
+  printf 'secondmate convergence and liveness, pending remote handoff\n'
   printf 'retry, X-mode artifact writes, and stale Herdr child cleanup - are NOT repeated.\n'
   printf 'Queued wakes ARE still drained: they arrived after startup and are this turn work.\n'
 else
@@ -636,7 +635,7 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '%s\n' "$BAR"
     printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
     printf '●  %s\n' "$LOCK_OUT"
-    printf '●  Skipping every mutating step: PR-check migration, stale Herdr child cleanup,\n'
+    printf '●  Skipping every mutating step: stale Herdr child cleanup,\n'
     printf '●  secondmate convergence, secondmate liveness, pending remote handoff retry,\n'
     printf '●  X-mode artifacts, fleet sync, and wake-queue drain. Detect-only bootstrap\n'
     printf '●  diagnostics and the rest of this read-only-safe digest still ran below.\n'
