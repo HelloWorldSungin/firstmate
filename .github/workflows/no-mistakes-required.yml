@@ -32,21 +32,29 @@ jobs:
       # The pinned action reads GITHUB_EVENT_PATH when pr-body is unset.
       # A synchronize webhook snapshots the previous head's body, and a
       # GitHub rerun replays that snapshot, so this step loads the live
-      # pull-request body without checking out PR code. The helper lives
-      # in this repository and is fetched at the PR head SHA through the API.
+      # pull-request body without checking out PR code. The helper lives in
+      # this repository and is fetched through the API at github.sha - the
+      # pull-request merge commit this workflow definition itself was loaded
+      # from, so it resolves for every open PR once this reaches main, which
+      # the PR head SHA does not. The refresh is best effort: an unreachable
+      # helper leaves the webhook snapshot in place for the pinned action to
+      # judge rather than reddening the required check without a verdict.
       - name: Load the live pull-request body into the event payload
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NM_REQUIRED_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-          NM_REQUIRED_SCRIPT_REF: ${{ github.event.pull_request.head.sha }}
+          NM_REQUIRED_SCRIPT_REF: ${{ github.sha }}
         run: |
           set -eu
           script="$RUNNER_TEMP/nm-required-refresh-event-body.py"
-          curl -fsSL \
+          if ! curl -fsSL \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.raw" \
             "$GITHUB_API_URL/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/nm-required-refresh-event-body.py?ref=${NM_REQUIRED_SCRIPT_REF}" \
-            -o "$script"
+            -o "$script"; then
+            echo "::warning::live-body refresh helper unavailable at ${NM_REQUIRED_SCRIPT_REF}; judging the webhook snapshot"
+            exit 0
+          fi
           python3 "$script"
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)

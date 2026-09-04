@@ -26,6 +26,10 @@ ATTESTATION_PREFIX = "<!-- no-mistakes-pipeline-attestation:v1 "
 ATTESTATION_SUFFIX = " -->"
 
 
+class LiveBodyUnavailable(Exception):
+    """The live pull-request body could not be read on this attempt."""
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -76,12 +80,15 @@ def attestation_head(body: str) -> str:
 
 def fetch_live_body(args: argparse.Namespace, number: int, owner: str, repo: str) -> str:
     if args.body_file:
-        with open(args.body_file, encoding="utf-8") as handle:
-            return handle.read()
+        try:
+            with open(args.body_file, encoding="utf-8") as handle:
+                return handle.read()
+        except OSError as err:
+            raise LiveBodyUnavailable(str(err)) from err
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if not token:
-        raise SystemExit("GITHUB_TOKEN is required to fetch the live pull-request body")
+        raise LiveBodyUnavailable("GITHUB_TOKEN is required to fetch the live pull-request body")
     api = os.environ.get("GITHUB_GRAPHQL_URL") or "https://api.github.com/graphql"
     query = {
         "query": (
@@ -105,14 +112,14 @@ def fetch_live_body(args: argparse.Namespace, number: int, owner: str, repo: str
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
-        raise SystemExit(f"live pull-request body fetch failed: {err}") from err
+        raise LiveBodyUnavailable(str(err)) from err
     errors = payload.get("errors")
     if errors:
-        raise SystemExit(f"live pull-request body fetch failed: {errors}")
+        raise LiveBodyUnavailable(f"GraphQL errors: {errors}")
     try:
         body = payload["data"]["repository"]["pullRequest"]["body"]
     except (KeyError, TypeError) as err:
-        raise SystemExit(f"live pull-request body fetch returned no body: {payload}") from err
+        raise LiveBodyUnavailable(f"no body in response: {payload}") from err
     return body if isinstance(body, str) else ""
 
 
@@ -145,7 +152,7 @@ def expected_head_from(args: argparse.Namespace, pr: dict) -> str:
 def repository_parts() -> tuple[str, str]:
     slug = os.environ.get("GITHUB_REPOSITORY") or ""
     if "/" not in slug:
-        raise SystemExit("GITHUB_REPOSITORY is required to fetch the live pull-request body")
+        raise LiveBodyUnavailable("GITHUB_REPOSITORY is required to fetch the live pull-request body")
     owner, repo = slug.split("/", 1)
     return owner, repo
 
@@ -160,17 +167,27 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(number, int):
         raise SystemExit("event pull_request.number is missing")
     expected = expected_head_from(args, pr)
-    owner = repo = ""
-    if not args.body_file:
-        owner, repo = repository_parts()
-
     deadline = time.monotonic() + max(args.timeout_sec, 0)
-    body = fetch_live_body(args, number, owner, repo)
-    while attestation_head(body) != expected and time.monotonic() < deadline:
-        interval = args.interval_sec if args.interval_sec > 0 else 0
-        if interval > 0:
-            time.sleep(interval)
-        body = fetch_live_body(args, number, owner, repo)
+    body: str | None = None
+    try:
+        owner = repo = ""
+        if not args.body_file:
+            owner, repo = repository_parts()
+        while True:
+            body = fetch_live_body(args, number, owner, repo)
+            if attestation_head(body) == expected or time.monotonic() >= deadline:
+                break
+            interval = args.interval_sec if args.interval_sec > 0 else 0
+            if interval > 0:
+                time.sleep(interval)
+    except LiveBodyUnavailable as err:
+        # The pinned action, not this helper, owns the compliance verdict: an
+        # unreachable API leaves the webhook snapshot for it to judge instead
+        # of reddening the required check with no verdict at all.
+        if body is None:
+            print(f"::warning::live pull-request body unavailable ({err}); "
+                  "leaving the webhook snapshot in the event payload")
+            return 0
 
     pr["body"] = body
     bound = attestation_head(body) or "(missing)"
