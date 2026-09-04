@@ -35,15 +35,24 @@ jobs:
       # pull-request body without checking out PR code. The helper lives in
       # this repository and is fetched through the API at github.sha - the
       # pull-request merge commit this workflow definition itself was loaded
-      # from, so it resolves for every open PR once this reaches main, which
-      # the PR head SHA does not. The refresh is best effort: an unreachable
-      # helper leaves the webhook snapshot in place for the pinned action to
-      # judge rather than reddening the required check without a verdict.
+      # from, so it carries whatever the base branch held when GitHub last
+      # recomputed that merge ref, which the PR head SHA never does. A PR that
+      # conflicts with the base keeps an older merge ref and can still 404 on
+      # the helper. The refresh is best effort for exactly that reason: a
+      # helper that cannot be fetched, like a live body that cannot be read,
+      # leaves the webhook snapshot in place for the pinned action to judge
+      # rather than reddening the required check without a verdict.
+      #
+      # The wait budget is set here rather than left to the helper's defaults:
+      # 120s at an 8s interval covers the post-push body write latencies
+      # observed on PR #254 (4s, and up to 112s).
       - name: Load the live pull-request body into the event payload
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NM_REQUIRED_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
           NM_REQUIRED_SCRIPT_REF: ${{ github.sha }}
+          NM_REQUIRED_BODY_TIMEOUT_SEC: "120"
+          NM_REQUIRED_BODY_INTERVAL_SEC: "8"
         run: |
           set -eu
           script="$RUNNER_TEMP/nm-required-refresh-event-body.py"

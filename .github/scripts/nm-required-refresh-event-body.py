@@ -24,6 +24,9 @@ import urllib.request
 
 ATTESTATION_PREFIX = "<!-- no-mistakes-pipeline-attestation:v1 "
 ATTESTATION_SUFFIX = " -->"
+SIGNATURE_MARKER = (
+    "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+)
 
 
 class LiveBodyUnavailable(Exception):
@@ -76,6 +79,18 @@ def attestation_head(body: str) -> str:
         return ""
     head = payload.get("head_sha") if isinstance(payload, dict) else None
     return head if isinstance(head, str) else ""
+
+
+def raised_through_no_mistakes(body: str) -> bool:
+    """Whether the pipeline has ever written to this body.
+
+    A body carrying neither marker was hand-authored, so no amount of waiting
+    can produce an attestation bound to the triggering head; the pinned action
+    can reject it now. A body carrying either marker is one the pipeline owns,
+    and its attestation may still be a push behind, which is the wait this
+    helper exists for.
+    """
+    return ATTESTATION_PREFIX in body or SIGNATURE_MARKER in body
 
 
 def fetch_live_body(args: argparse.Namespace, number: int, owner: str, repo: str) -> str:
@@ -175,7 +190,11 @@ def main(argv: list[str] | None = None) -> int:
             owner, repo = repository_parts()
         while True:
             body = fetch_live_body(args, number, owner, repo)
-            if attestation_head(body) == expected or time.monotonic() >= deadline:
+            if attestation_head(body) == expected:
+                break
+            if not raised_through_no_mistakes(body):
+                break
+            if time.monotonic() >= deadline:
                 break
             interval = args.interval_sec if args.interval_sec > 0 else 0
             if interval > 0:
@@ -188,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::warning::live pull-request body unavailable ({err}); "
                   "leaving the webhook snapshot in the event payload")
             return 0
+        print(f"::warning::live pull-request body fetch failed ({err}); "
+              "the wait ended early on the last body read, so the verdict "
+              "below may be a push behind rather than an exhausted budget")
 
     pr["body"] = body
     bound = attestation_head(body) or "(missing)"
