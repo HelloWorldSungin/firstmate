@@ -1022,21 +1022,21 @@ if sys.argv[2] not in body:
 # writing a body the verifier binds to the triggering head.
 test_pinned_verifier_verdict_turns_on_the_refreshed_event() {
   require_python3 || return 0
-  command -v curl >/dev/null 2>&1 || {
-    echo "skip: curl not found, so the pinned verifier cannot be fetched"
-    return 0
-  }
   local tmp verify event live rc=0 out
   tmp=$(fm_test_tmproot fm-nm-required-pinned-verifier)
   verify="$tmp/verify.py"
   # The pinned verifier is public source at a fixed ref, fetched rather than
   # vendored so this case cannot drift from the ref the workflow actually runs.
+  # An unreachable ref fails here rather than skipping, the same way the sibling
+  # suite treats this fetch: this is the only case that proves the verdict turns
+  # on the rewritten event payload, and a mid-run skip is not the first output
+  # line, so bin/fm-test-run.sh would record the suite green with it never run.
+  command -v curl >/dev/null 2>&1 || \
+    fail "curl is required to exercise the pinned verifier against the refreshed event payload"
   curl --fail --silent --show-error --location \
     "https://raw.githubusercontent.com/kunchenguid/no-mistakes/${PINNED_ACTION##*@}/.github/actions/require-no-mistakes/verify.py" \
-    > "$verify" 2>"$tmp/curl.err" || {
-    echo "skip: could not fetch the pinned verifier at ${PINNED_ACTION##*@} ($(cat "$tmp/curl.err"))"
-    return 0
-  }
+    > "$verify" 2>"$tmp/curl.err" || \
+    fail "could not fetch the pinned verifier at ${PINNED_ACTION##*@}: $(cat "$tmp/curl.err")"
   [ -s "$verify" ] || fail "the pinned verifier fetched empty"
 
   event="$tmp/event.json"
