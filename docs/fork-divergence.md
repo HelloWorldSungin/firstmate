@@ -20,7 +20,7 @@ The fork carries an Antigravity CLI adapter so workers can use the operator's pa
 Upstream has no agy support at all, so every part of it is fork-local.
 It is deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise that CLI without treating screen text as authority.
 It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
-The adapter contract lives in the [`harness-adapters` skill's agy variant file](../.agents/skills/harness-adapters/harnesses/agy.md), and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
+The adapter contract lives in the [`harness-adapters` skill's agy reference](../.agents/skills/harness-adapters/references/harness/agy.md), reachable through that skill's routing artifact, and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
 Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
 Upstream's durable steering inbox (`kunchenguid/firstmate#2856`, reached 2026-08-25) moved ordinary local text off the typed submit path, so both verdicts now describe the typed plane alone - a harness-native invocation or an explicit backend target - while an ordinary steer's delivery is its durable record.
 The distinction itself is unchanged and still exits 3 either way; a round that touches the send verdicts must re-read which plane it is changing before assuming a verdict is dead code, and `tests/fm-agy-adapter.test.sh` names that plane explicitly so a verdict case cannot go vacuous by silently riding the inbox.
@@ -104,6 +104,7 @@ The fork also widens the recheck window while one wait stands unchanged, through
 The divergence lives inside upstream-owned functions on this repo's highest-collision file, so every upstream change to declared-wait handling arrives beside fork routing rather than as a fork-only file.
 It first collided on 2026-09-02 with `kunchenguid/firstmate#3155` and `kunchenguid/firstmate#3147`: upstream's busy-pane routing and its away-mode handoff were both adopted, the daemon's `0)` busy arm was dropped as upstream requires while the fork's streak record moved to the surviving `2)` arm, and the fork's per-iteration window replaced upstream's fixed `pause_secs` read.
 [`tests/fm-watch-triage.test.sh`](../tests/fm-watch-triage.test.sh) and [`tests/fm-daemon.test.sh`](../tests/fm-daemon.test.sh) pin both halves, the live-declaration routing and the streak reconciliation, beside upstream's own handoff cases, so a round that restores upstream's classification fails loudly instead of silently retiring the cadence.
+It collided again on 2026-09-04 with `kunchenguid/firstmate#3268`, which made the away daemon advance a declared wait's recheck marker only when the escalation was actually buffered; that gating was adopted whole and the fork's `pause_streak_bump` moved inside it, so a recheck that was never recorded no longer widens the window it never sent.
 This divergence went unrecorded from its introduction until 2026-09-02.
 
 ### Herdr pre-Enter footer read on a native working baseline
@@ -122,6 +123,13 @@ It first collided on 2026-08-26 with `kunchenguid/firstmate#2942`, whose total-r
 It collided again on 2026-09-03 with `kunchenguid/firstmate#3210`, which replaced the single supervised execution with an array of bounded transport lanes and rewrote `worker_stop_active_execution` around it.
 Upstream's lane loop was adopted whole and the reap re-threaded to run ahead of it rather than beside each lane, because a lane's serving child spawns its own commands and those orphans are re-parented away from the supervisor the moment that child dies, after which the descendant walk can no longer reach them; a failed reap is folded into the loop's verdict so every lane still releases its recorded claim.
 A future round that reorders that call after the lane loop silently retires the entry.
+
+One consequence of the reaping, rather than a second divergence: a whole-group stop of this worker deliberately leaves ownership quarantined.
+The supervisor and its serving child share one process group, and `worker_reap_descendants` escalates TERM to KILL in a single pass with no grace between them, so a group signal reaches both at the same instant and the supervisor kills the child between publishing its shutdown quarantine and clearing it.
+`worker.pid`, `worker.ready`, `worker.identity`, and `lock/quarantine` therefore all survive such a stop, and the next `fm_remote_job_ensure_worker` refuses rather than starting.
+That is the fail-safe working as designed, but it means any fixture that stops this worker in order to reach a stopped-and-releasable state must TERM the recorded serving child first and let it complete its own shutdown; the child's clean exit ends the supervisor with it.
+`kunchenguid/firstmate#3299` moved `tests/fm-remote-job.test.sh`'s staged-record tamper setup to a bare whole-tree stop on 2026-09-04 and reached exactly that quarantined state, so the setup was re-sequenced around the child while upstream's assertions were kept byte-identical, with a bounded process-group check added after them so the tree stop cannot pass vacuously on an already-dead pid.
+Whether the reap should instead grant its own serving child time to finish shutting down is a change to signal-time supervision behaviour and is deliberately not decided here.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
 ### Bounded remote job stdin capture
@@ -160,6 +168,7 @@ The fork also carries `abandoned_children` beside upstream's `active_children` t
 Both halves collided on 2026-09-03 with `kunchenguid/firstmate#3222`, which added the `state/home-summary.json` ledger and [`bin/fm-home-summary-refresh.sh`](../bin/fm-home-summary-refresh.sh) in place of the per-home read the fork had extended.
 The fork's single timeout contract was kept and upstream's second name was not introduced, `abandoned_children` was carried into the new ledger, and the ledger publisher now validates that field so a producer regression fails at publication rather than at the consumer that requires it.
 `kunchenguid/firstmate#3210`'s deletion of `FM_SNAPSHOT_SECONDMATE_TIMEOUT` and its rewrite of the bearings per-child rows are the same collision continuing in later rounds, so a round touching either file must re-read this entry rather than trusting a clean merge.
+Upstream reintroduced `FM_SNAPSHOT_CREW_STATE_TIMEOUT` a second time on 2026-09-04 with `kunchenguid/firstmate#3273`, which made this snapshot the producer behind the home-summary ledger; the fork's single contract was kept again, upstream's second name and its `docs/configuration.md` row were again not introduced, and `tests/fm-home-summary-refresh.test.sh`'s bounded-read case was repointed at `FM_SNAPSHOT_TASK_TIMEOUT` so it still bounds the read it names.
 
 ### Pi away-mode supervision standby
 
@@ -307,6 +316,15 @@ Retiring the fork arm also removed the standing cost of carrying a parallel impl
 Concretely, the round deleted the fork's cursor launch template, its crew-only and Herdr-only spawn gates, its cursor half of the raw-launch restricted-harness guard, and its cursor arm of the Herdr atomic-prompt submit path, and narrowed the shared cursor/agy mechanisms - the native-idle debounce in `bin/fm-transition-lib.sh`, the identity-gated Herdr busy arm, and the adapter suite now at [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh) - to agy alone.
 Cursor is now an ordinary verified harness here, so `AGENTS.md` section 4's crew-only, Herdr-only sentence restricts agy alone.
 This is the fourth capability collision resolved by the remote-doctor precedent above.
+
+### Fork-local harness-adapters split and its routing script - retired 2026-09-04
+
+The fork split the `harness-adapters` skill its own way in `HelloWorldSungin/firstmate#191`: a shared head in `SKILL.md` plus one variant file per harness under `harnesses/`, routed by a 114-line `bin/fm-harness-adapter-doc.sh` that refused an unknown harness name or an unreadable variant by name rather than serving the head alone.
+Upstream split the same skill independently in `kunchenguid/firstmate#3289` into `references/common/*.md` and `references/harness/<h>.md`, routed by an embedded `harness-adapter-routing-v1` JSON object in `SKILL.md` and pinned by `tests/fm-harness-adapter-references.test.sh`.
+Firstmate resolved that collision on 2026-09-04 under the already adopted TRACK strategy, applying the remote-doctor precedent above to two independently built implementations of one capability, and this is the sixth such resolution.
+Upstream's layout and routing artifact were taken whole, the fork's `harnesses/` tree and `bin/fm-harness-adapter-doc.sh` were deleted with `tests/fm-harness-adapter-doc.test.sh`, and the fork-only material was re-homed rather than dropped: `harnesses/agy.md` became [`references/harness/agy.md`](../.agents/skills/harness-adapters/references/harness/agy.md) with an `agy` routing row, the crew-only secondmate gate and `bin/fm-launch-lib.sh`'s ownership of launch-command construction moved into `references/common/dispatch.md`, and the dashboard's additive per-task event wiring moved into `references/common/primary-hooks.md`.
+The refusal property the fork's script existed for survives structurally rather than at runtime: upstream's own routing test fails the build when any routed target is unreadable, so a missing reference cannot reach a session at all, and the router's own text keeps a harness undispatchable until its entry and owners land.
+Every consumer moved with it - `docs/documentation-audiences.json`, `docs/scripts.md`, `bin/fm-test-run.sh`'s changed-file family map, `docs/verification/muse.md`, `CONTRIBUTING.md`, and this ledger's agy link.
 
 ### Fork-local herdr queued-Enter conversion - retired 2026-08-20
 
