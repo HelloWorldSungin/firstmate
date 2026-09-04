@@ -49,6 +49,20 @@ track_current_fixture_worker_group() { # <state-root>
   remember_current_fixture_worker_group "$1" || fail "the current fixture worker does not own a dedicated process group"
 }
 
+# Wait for a recorded fixture worker group to be completely gone. Bounded like
+# every other fixture wait here, and non-zero if anything in that group is still
+# alive when the bound is spent.
+wait_fixture_worker_group_stopped() { # <group>
+  local group=$1 attempt=0
+  [ -n "$group" ] || return 1
+  while [ "$attempt" -lt 100 ]; do
+    kill -0 -- "-$group" 2>/dev/null || return 0
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+  ! kill -0 -- "-$group" 2>/dev/null
+}
+
 # Every Linux fixture worker has a restart supervisor above the serving child
 # recorded in worker.pid. Track each dedicated group as it appears so cleanup
 # remains complete after a failed assertion, a replacement, or corrupt state.
@@ -617,9 +631,30 @@ pass "the worker drains bounded output without changing command results"
 
 SIDE_EFFECT="$TMP_ROOT/side-effect"
 WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+WORKER_GROUP=$(fm_remote_job_process_pgid "$WORKER_PID") \
+  || fail "the fixture worker reports no process group to stop before the staged-record tamper"
+# Stop the serving child FIRST, then the tree. That ordering is forced by this
+# fork's worker, not a preference, so do not normalise it back to a bare
+# whole-tree stop. The worker is a restart supervisor plus a serving child in one
+# process group, and `worker_reap_descendants` escalates TERM to KILL in a single
+# pass with no grace between them (docs/fork-divergence.md, "Remote job worker
+# descendant reaping"). A group stop therefore reaches supervisor and child at the
+# same instant, and the supervisor kills the child between publishing its shutdown
+# quarantine and clearing it: ownership stays quarantined, worker.pid survives, and
+# the tamper below cannot start a worker at all. TERMing the recorded child alone
+# lets it finish its own shutdown, release ownership, and exit 0, which ends the
+# supervisor with it. The group check below is what proves the supervisor really
+# went too, so the tree stop cannot pass vacuously on an already-dead pid.
+kill -TERM "$WORKER_PID"
+for _ in $(seq 1 100); do
+  [ ! -f "$STATE_ROOT/worker.pid" ] && break
+  sleep 0.05
+done
 fm_remote_job_stop_worker_tree "$WORKER_PID" \
   || fail "the worker tree did not stop before the staged-record tamper"
 assert_absent "$STATE_ROOT/worker.pid" "the worker did not clear its pid before the staged-record tamper"
+wait_fixture_worker_group_stopped "$WORKER_GROUP" \
+  || fail "the worker's restart supervisor outlived the stop before the staged-record tamper"
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-touch-job.sh "$SIDE_EFFECT" < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
 JOB_DIR="$STATE_ROOT/jobs/$JOB_ID"

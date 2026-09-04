@@ -123,6 +123,13 @@ It first collided on 2026-08-26 with `kunchenguid/firstmate#2942`, whose total-r
 It collided again on 2026-09-03 with `kunchenguid/firstmate#3210`, which replaced the single supervised execution with an array of bounded transport lanes and rewrote `worker_stop_active_execution` around it.
 Upstream's lane loop was adopted whole and the reap re-threaded to run ahead of it rather than beside each lane, because a lane's serving child spawns its own commands and those orphans are re-parented away from the supervisor the moment that child dies, after which the descendant walk can no longer reach them; a failed reap is folded into the loop's verdict so every lane still releases its recorded claim.
 A future round that reorders that call after the lane loop silently retires the entry.
+
+One consequence of the reaping, rather than a second divergence: a whole-group stop of this worker deliberately leaves ownership quarantined.
+The supervisor and its serving child share one process group, and `worker_reap_descendants` escalates TERM to KILL in a single pass with no grace between them, so a group signal reaches both at the same instant and the supervisor kills the child between publishing its shutdown quarantine and clearing it.
+`worker.pid`, `worker.ready`, `worker.identity`, and `lock/quarantine` therefore all survive such a stop, and the next `fm_remote_job_ensure_worker` refuses rather than starting.
+That is the fail-safe working as designed, but it means any fixture that stops this worker in order to reach a stopped-and-releasable state must TERM the recorded serving child first and let it complete its own shutdown; the child's clean exit ends the supervisor with it.
+`kunchenguid/firstmate#3299` moved `tests/fm-remote-job.test.sh`'s staged-record tamper setup to a bare whole-tree stop on 2026-09-04 and reached exactly that quarantined state, so the setup was re-sequenced around the child while upstream's assertions were kept byte-identical, with a bounded process-group check added after them so the tree stop cannot pass vacuously on an already-dead pid.
+Whether the reap should instead grant its own serving child time to finish shutting down is a change to signal-time supervision behaviour and is deliberately not decided here.
 This divergence went unrecorded from its introduction until 2026-08-26.
 
 ### Bounded remote job stdin capture
