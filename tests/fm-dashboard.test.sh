@@ -106,6 +106,10 @@ make_runtime() {  # <name> [with-command]
 #!/usr/bin/env bash
 set -u
 control=${DASH_TEST_CONTROL:?}
+[ "${FM_SNAPSHOT_CACHE_READ_ONLY:-}" = 1 ] || {
+  echo "dashboard did not force the snapshot's read-only cache contract" >&2
+  exit 94
+}
 printf 'run\n' >> "$control/executions"
 if command -v flock >/dev/null 2>&1; then
   exec 9> "$control/execution.lock"
@@ -132,7 +136,7 @@ SH
 start_fixture_server() {  # <case-root> <timeout> <poll> [stale]
   local case_root=$1 timeout=$2 poll=$3 stale=${4:-2}
   TEST_PORT=$(free_port)
-  FM_HOME="$case_root/home" \
+  FM_SNAPSHOT_CACHE_READ_ONLY=0 FM_HOME="$case_root/home" \
     FM_DASHBOARD_PORT="$TEST_PORT" \
     FM_DASHBOARD_TIMEOUT_SECONDS="$timeout" \
     FM_DASHBOARD_POLL_SECONDS="$poll" \

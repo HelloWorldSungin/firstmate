@@ -133,7 +133,7 @@ state/               runtime records and signals; gitignored
   <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication (bin/fm-pr-lib.sh)
   <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire (bin/fm-pr-lib.sh)
   <id>.pr-poll-merge-notified  canonical PR identity of the last merge outcome delivered for this task; bin/fm-pr-lib.sh owns the marker format and identity mechanics, while bin/fm-merge-outcome-lib.sh owns locked publication, duplicate suppression, and replacement
-  branch-outcomes.jsonl .branch-outcomes-cursor  Pi supervision-branch durable outcome store and its read cursor; bin/fm-branch-outcome.sh owns the format
+  branch-outcomes.jsonl .branch-outcomes-cursor .branch-outcomes-processed .<task>.branch-outcome-index .branch-outcome-index-ready  Pi supervision-branch durable outcome store, its read cursor, main's processed marker, bounded latest per-task status-coverage caches, and their recovery marker; bin/fm-branch-outcome.sh owns the formats
   branch-session/ .branch-session .branch-mirror-cursor  the branch's persistent conversation, its pointer, and the dialog-mirror cursor; extension-owned (docs/pi-supervision-branch.md)
   .branch-eligible-rows .branch-eligible-owner .main-eligible-rows  per-actor wake-row claims and branch-owner evidence; docs/watcher-continuity.md owns the acknowledgement contract
   .lease-<task>      per-task supervision lease naming which actor (main or branch) may change that task; bin/fm-lease-lib.sh owns the contract the guarded scripts enforce
@@ -149,9 +149,9 @@ state/               runtime records and signals; gitignored
   x-inbox/           generated Relay pending mention payloads; fmx-respond drains it (section 14)
   x-context/         generated Relay durable per-request reply context and one-wake offer markers; survives inbox cleanup (section 14; bin/fm-x-lib.sh)
   x-outbox/          generated Relay dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
-  public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
+  public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, results staged for an owning home on another machine, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
-  .startup-network.*  deferred network stage records owned by bin/fm-startup-network.sh
+  .startup-network.*  deferred startup stage records owned by bin/fm-startup-network.sh
   .gbrain-capture-sweep  last captured-knowledge refresh and stored-versus-served audit; its mtime is the interval, safe to delete (forces one sweep)
   .gbrain-audit      last stored-versus-served audit verdict, replayed by the dashboard rather than re-measured; safe to delete (reads as never audited until the next sweep)
   .board-sweep       last fleet-wide project-board reconciliation sweep; its mtime is the interval, safe to delete (forces one sweep)
@@ -159,7 +159,7 @@ state/               runtime records and signals; gitignored
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
-  .status-presentation-cursor .status-presentation-lock  fleet-wide per-task status identity/byte-offset manifest and serialization lock preventing already-presented status lines from being replayed as new; owned by fm-classify-lib.sh, with each task's row retired by teardown
+  .status-presentation-cursor .status-presentation-lock  fleet-wide per-task status identity plus independent annotation and outcome-backstop byte offsets, with a serialization lock preventing already-presented lines from replaying while preserving delayed signal annotations; owned by fm-classify-lib.sh, with each task's row retired by teardown
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
@@ -192,11 +192,13 @@ A lock-refused session must not spawn, steer, merge, drain the wake queue, repai
 
 The digest itself makes no external-network call and never waits for one.
 Every network check a session start owes - GitHub auth, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh - runs off the digest's blocking path in a bounded worker owned by `bin/fm-startup-network.sh` and is reported in the digest's own `NETWORK CHECKS` section.
+The locked startup inactive-outcome scan joins that worker so a slow local current-state read cannot block the digest; its findings use the ordinary durable wake queue.
 When that section reports its checks still in progress it names exactly what is unconfirmed; treat none of those as passed until `bin/fm-startup-network.sh report` returns the finished result, while a failed or otherwise actionable result also arrives as a `check: startup-network` wake.
 
 The digest's ordered sections are lock, bootstrap, wake queue, supervision operating instructions, fleet-state digest, network checks, and context digest with its closing reminder; `bin/fm-session-start.sh`'s header owns each section's exact contents, bounds, and ordering rationale.
 Bootstrap's detect-only checks always run, while its mutating sweeps and the wake-queue presentation run only when this session actually holds the lock.
 A locked drain presents the raw wake records prominently as this turn's first work queue, plus a bounded fleet-wide `OPEN DECISIONS` section whenever durable decision records remain open, even when the queue itself is empty; reconcile those entries before continuing.
+A main drain may also print a bounded, one-shot `STATUS OUTCOME BACKSTOP` when a task's newest captain-facing status event has no covering supervision-branch outcome; handle it as a recovered wake even when no queue row remains.
 The same drain prints every still-unread `note:` line and pending-reply resolution in an `UNREAD STATUS` section so an answer buried under a later routine line is not dropped, and does not re-print those lines afterwards.
 It also prints a bounded `RECORD DIVERGENCE` section naming every captain call the status log reads as resolved while its backlog task is still held; nothing is closed for you, and `captain-hold-lifecycle` owns the reconciliation.
 Presented records stay durable until the handling turn runs the generation-bound acknowledgement the drain prints, so an interrupted turn re-handles them idempotently rather than losing them.

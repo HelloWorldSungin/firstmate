@@ -147,6 +147,21 @@ Serving that bound, [`bin/fm-timeout-lib.sh`](../bin/fm-timeout-lib.sh) publishe
 The rationale beside the constant owns why 480s and what the bound costs each CI lane, including the accepted margin on the required real-Herdr lane recorded in `HelloWorldSungin/firstmate#256`, and the script's `--help` owns the flag contract and its `0` opt-out.
 [`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh) pins the default arming, the opt-out, the exit 124 versus exit 125 distinction, and the signal relay, so an upstream round that rewrites the timeout wiring cannot retire the default silently.
 
+The upstream `kunchenguid/firstmate#3489` rebalance refreshes shared duration hints and raises the portable serial job cap to 20 minutes.
+The fork retains eight shards and its fork-only timing hints, while adopting that cap; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
+
+### Locale-independent test coverage comparisons
+
+The fork retains the C-collation invariant owned by the coverage guard in [`bin/fm-test-run.sh`](../bin/fm-test-run.sh).
+Upstream `kunchenguid/firstmate#3489` adds an unhinted-script set comparison, which must use that same collation to preserve the existing guarantee.
+[`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh) exercises the public coverage command under installed locales, including a dictionary-collation locale when available.
+
+### Queued wakes remain a supervision requirement
+
+The fork retains pending-queue supervision through the shared predicate in [`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh), including a home with no task metadata, process-event source, or Relay poll.
+The new presentation-deadline case from upstream `kunchenguid/firstmate#3475` must therefore allow the deliberate guard advisory while continuing to reject helper-process diagnostics.
+[`tests/fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh), [`tests/fm-guard-stale-banner.test.sh`](../tests/fm-guard-stale-banner.test.sh), and [`tests/fm-turnend-guard.test.sh`](../tests/fm-turnend-guard.test.sh) preserve the queued-wake cause and the guarded handling behavior.
+
 ### No-mistakes run attribution
 
 The fork rewrote the branch-and-code-identity rule that binds a no-mistakes run to a task into a named relation table in [`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh) - `fm_nm_head_relation` returning `equal`, `run-ahead`, `run-behind`, `unresolved`, `missing`, or `diverged`, consumed by `fm_nm_head_attributable` - and built the surrounding current-state surface upstream has no equivalent of: the `abandoned` verdict, the degraded run-step replay, and the recorded `branch=` task identity that makes a disagreeing ambient branch an attribution fault rather than another task's run.
@@ -197,6 +212,10 @@ The fork's single timeout contract was kept and upstream's second name was not i
 `kunchenguid/firstmate#3210`'s deletion of `FM_SNAPSHOT_SECONDMATE_TIMEOUT` and its rewrite of the bearings per-child rows are the same collision continuing in later rounds, so a round touching either file must re-read this entry rather than trusting a clean merge.
 Upstream reintroduced `FM_SNAPSHOT_CREW_STATE_TIMEOUT` a second time on 2026-09-04 with `kunchenguid/firstmate#3273`, which made this snapshot the producer behind the home-summary ledger; the fork's single contract was kept again, upstream's second name and its `docs/configuration.md` row were again not introduced, and `tests/fm-home-summary-refresh.test.sh`'s bounded-read case was repointed at `FM_SNAPSHOT_TASK_TIMEOUT` so it still bounds the read it names.
 
+Upstream `kunchenguid/firstmate#3481` and `kunchenguid/firstmate#3501` replace on-demand remote summaries with one bounded concurrent remote-ledger collection and remove remote endpoint probes from the snapshot.
+Those changes are taken, including removal of the legacy cross-home timeout, while local rows retain the fork's `FM_SNAPSHOT_TASK_TIMEOUT` and bounded fan-out.
+The shared validator used for live and cached ledgers still requires `abandoned_children`, and one exit cleanup owns both the fork task-reader scratch and the upstream collector scratch.
+
 ### Pi away-mode supervision standby
 
 The fork's Pi watcher extension hands supervision to the away daemon while `state/.afk` exists: [`.pi/extensions/fm-primary-pi-watch.ts`](../.pi/extensions/fm-primary-pi-watch.ts) arms nothing, retires any arm child it already owns, injects no ordinary wake, and resumes exactly one extension-owned cycle once the flag clears.
@@ -205,6 +224,11 @@ The divergence lives inside an upstream-owned file and adds an away check on eve
 It first collided on 2026-08-26 with `kunchenguid/firstmate#2939`, which added a `repairFailed` argument to `deliverActionableWake`; the argument was adopted and the fork's away check kept ahead of it, so a wake that arrives while away mode is active still stays with the daemon rather than reaching the supervision branch.
 The away-standby cases in [`tests/fm-pi-watch-extension.test.sh`](../tests/fm-pi-watch-extension.test.sh) pin that behavior.
 This divergence went unrecorded from its introduction until 2026-08-26.
+
+Upstream `kunchenguid/firstmate#3498` adds tokenized pending-actionable delivery across session replacement.
+That pending processor now owns serial restoration in place of the fork's promise tail, while the away checks cover the pending processor, both delivery doors, arm/retry, and resumption after the flag clears.
+Late retiring-generation closes still enter upstream's replacement handoff before delivery is deferred.
+The streaming-follow-up regression also runs a replacement while away, proving that the pending wake and watcher cycle resume only after the away flag clears.
 
 ### Fork-local no-mistakes compliance-gate event scope
 
@@ -318,6 +342,10 @@ A merge must also keep the dashboard off the fleet's critical path as [`dashboar
 That rule has one granted exception that [`dashboard-events.md`](dashboard-events.md) owns and [`bin/fm-dashboard-install.sh`](../bin/fm-dashboard-install.sh) emits: a `ReadWritePaths` grant for `data/gbrain/`, because a GBrain search updates the index it reads.
 The grant names the brain directory alone, so `data/` itself and every fleet record under it stay read-only to the service, and a merge must not read that grant as a violation of the rule above and narrow it away.
 This entry and the GBrain entry above are bridged by the dashboard surfaces that read the home's brain read-only rather than duplicating it - the Knowledge view and health strip served behind [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs) from `assets/dashboard/gbrain.js`, the read-only snapshot [`bin/fm-gbrain-health.sh`](../bin/fm-gbrain-health.sh) takes, the capture status the History view reads off each outcome record, and the `tests/fm-dashboard-gbrain.test.sh` and `tests/fm-dashboard-gbrain-ui.test.sh` suites that pin them - alongside the `data/gbrain/` grant above that lets a search write the index it reads.
+
+Upstream `kunchenguid/firstmate#3481` makes the default snapshot refresh a parent-side remote-ledger cache.
+The dashboard forces the snapshot's `FM_SNAPSHOT_CACHE_READ_ONLY=1` mode so it can consume existing cached ledgers without creating or replacing those fleet-owned files; other snapshot callers retain upstream's default cache publication.
+The snapshot header owns that mode, `tests/fm-bearings-snapshot.test.sh` proves its no-create, no-overwrite, fresh-read, and cached-fallback behavior, and `tests/fm-dashboard.test.sh` proves the server forces it even over a write-enabled ambient setting.
 
 ## Retired divergences
 
