@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for the bearings projection wrapper over fm-fleet-snapshot.sh.
-# Covers the output/token bound, TOON/JSON parity, the local-only default (zero
-# GitHub/network calls), the --include-prs opt-in path, graceful degradation on a
+# Covers the output/token bound, TOON/JSON parity, bounded remote-ledger reads,
+# no default GitHub calls, the --include-prs opt-in path, graceful degradation on a
 # partial PR-fetch failure, end-to-end unresolved-decision durability, and current
 # report pointers.
 set -u
@@ -9,6 +9,9 @@ set -u
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/bin/fm-secondmate-registry-lib.sh"
 
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-bearings)
@@ -192,9 +195,112 @@ EOF
   printf 'needs-decision [key=race]: pick subscribe order\n' > "$mate/state/mate.status"
 }
 
+refresh_local_secondmate_ledgers() {  # <parent-home>
+  local parent=$1 registry line mate refresh_path=$PATH
+  registry="$parent/data/secondmates.md"
+  [ -f "$registry" ] && [ -r "$registry" ] || return 0
+  # Once this fixture's fake backend exists, ledger production must use it too;
+  # otherwise child state depends on whether the CI host has a live tmux server.
+  [ ! -x "$parent/fakebin/tmux" ] || refresh_path="$parent/fakebin:$refresh_path"
+  while IFS= read -r line || [ -n "$line" ]; do
+    secondmate_registry_parse_line "$line" || continue
+    [ "$SECONDMATE_REGISTRY_REMOTE" -eq 0 ] || continue
+    mate=$SECONDMATE_REGISTRY_HOME
+    [ -f "$mate/.fm-secondmate-home" ] && [ -f "$mate/AGENTS.md" ] \
+      && [ -d "$mate/bin" ] && [ -d "$mate/data" ] && [ -d "$mate/state" ] || continue
+    PATH="$refresh_path" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$mate" \
+      FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z FM_SNAPSHOT_NOW_EPOCH=1783792800 \
+      "$ROOT/bin/fm-home-summary-refresh.sh" >/dev/null 2>&1 || true
+  done < "$registry"
+}
+
 run() {  # <home> <fakebin> <args...>
   local home=$1 fakebin=$2; shift 2
+  case " $* " in
+    *" --all-landed "*) PATH="$fakebin:$PATH" FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 refresh_local_secondmate_ledgers "$home" ;;
+    *) PATH="$fakebin:$PATH" refresh_local_secondmate_ledgers "$home" ;;
+  esac
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z NET_LOG="$home/net.log" "$BEARINGS" "$@"
+}
+
+write_remote_home_summary() {  # <remote-home> <generated-epoch>
+  local home=$1 epoch=$2
+  mkdir -p "$home/state"
+  jq -n --arg home "$home" --argjson epoch "$epoch" '{
+    schema:"fm-secondmate-home-summary.v1",
+    generated:"2026-09-01T22:00:00Z",generated_epoch:$epoch,home:$home,
+    valid:true,reason:null,invalidity:{kind:null,ids:[]},state:"no_active_work",
+    active_children:[],abandoned_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],
+    counts:{active_children:0,abandoned_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[]
+  }' > "$home/state/home-summary.json"
+}
+
+make_remote_ledger_fleet() {  # <parent-home> <count>
+  local parent=$1 count=$2 i id remote_home
+  mkdir -p "$parent/data" "$parent/state" "$parent/config" "$parent/projects"
+  : > "$parent/data/backlog.md"
+  : > "$parent/data/secondmates.md"
+  i=1
+  while [ "$i" -le "$count" ]; do
+    id="ledger-$i"
+    remote_home="$TMP_ROOT/remote-ledger-home-$i"
+    mkdir -p "$remote_home/state"
+    remote_home=$(cd "$remote_home" && pwd -P)
+    printf -- '- %s - ledger fixture (host: host-%s; root: /remote/root; home: %s; scope: fixture; projects: sample; added 2026-09-01)\n' \
+      "$id" "$i" "$remote_home" >> "$parent/data/secondmates.md"
+    fm_write_meta "$parent/state/$id.meta" \
+      "kind=secondmate" "mode=secondmate" "harness=pi" \
+      "remote_host=host-$i" "remote_root=/remote/root" "home=$remote_home"
+    write_remote_home_summary "$remote_home" 1000
+    i=$((i + 1))
+  done
+}
+
+make_remote_ledger_ssh() {  # <dir>
+  local dir=$1 fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+set -u
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) shift 2 ;; --) shift; break ;; *) exit 90 ;; esac
+done
+shift 2
+remote_home=$(perl -MMIME::Base64=decode_base64 -e 'print decode_base64($ARGV[0])' "$3")
+args=()
+while IFS= read -r -d '' arg; do args+=("$arg"); done \
+  < <(perl -MMIME::Base64=decode_base64 -e 'print decode_base64($ARGV[0])' "$4")
+printf '%s\t%s\n' "$remote_home" "${args[0]:-}" >> "$FM_TEST_LEDGER_CALL_LOG"
+if [ -f "$remote_home/state/slow-ledger-read" ]; then
+  sleep 30 &
+  sleeper=$!
+  printf '%s %s\n' "$$" "$sleeper" >> "$FM_TEST_LEDGER_PID_LOG"
+  wait "$sleeper"
+fi
+case "${args[0]:-}" in
+  fm-remote-file.sh)
+    [ -f "$remote_home/state/home-summary.json" ] || exit 1
+    if [ -f "$remote_home/state/unbounded-ledger-read" ]; then
+      yes x
+    else
+      cat "$remote_home/state/home-summary.json"
+    fi
+    ;;
+  *) exit 91 ;;
+esac
+SH
+  chmod +x "$fb/fake-ssh"
+  printf '%s\n' "$fb"
+}
+
+run_remote_ledger_bearings() {  # <parent-home> <fakebin> <epoch>
+  local parent=$1 fakebin=$2 epoch=$3
+  FM_HOME="$parent" FM_ROOT_OVERRIDE="$ROOT" FM_SSH_BIN="$fakebin/fake-ssh" \
+    FM_TEST_LEDGER_CALL_LOG="$parent/ledger-calls.log" \
+    FM_TEST_LEDGER_PID_LOG="$parent/ledger-pids.log" \
+    FM_SNAPSHOT_CACHE_DIR="$parent/state/summary-cache" \
+    FM_SNAPSHOT_BUDGET=3 FM_SNAPSHOT_NOW_EPOCH="$epoch" \
+    FM_BEARINGS_NOW=2026-09-01T22:00:00Z "$BEARINGS" --json
 }
 
 # End-to-end Domain Alpha regression fixture.
@@ -223,6 +329,7 @@ EOF
       "$i" "$i" "$i" >> "$mate/data/backlog.md"
     i=$((i + 1))
   done
+  refresh_local_secondmate_ledgers "$home"
 }
 
 # This is the Domain Alpha failure shape exactly: the structured home says Phase 7 is Done
@@ -451,14 +558,14 @@ write_parent_secondmate_event() {  # <parent> <id> <home> <note>
 }
 
 test_bad_secondmate_homes_never_revive_parent_work() {
-  local home fakebin missing invalid unreadable malformed timedout wt json
+  local home fakebin missing invalid unreadable malformed unknown_child wt json
   home=$(make_home bad-homes)
   : > "$home/data/secondmates.md"
   missing="$TMP_ROOT/missing-home"
   invalid="$TMP_ROOT/invalid-home"
   unreadable="$TMP_ROOT/unreadable-home"
   malformed="$TMP_ROOT/malformed-home"
-  timedout="$TMP_ROOT/timedout-home"
+  unknown_child="$TMP_ROOT/unknown-child-home"
 
   append_secondmate_registry "$home" missing "$missing"
 
@@ -477,36 +584,39 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   append_secondmate_registry "$home" malformed "$malformed"
   write_parent_secondmate_event "$home" malformed "$malformed" "old malformed work"
 
-  make_valid_secondmate_home timedout "$timedout"
-  wt="$timedout/projects/slow"
+  make_valid_secondmate_home unknown-child "$unknown_child"
+  wt="$unknown_child/projects/slow"
   fm_git_init_commit "$wt"
   git -C "$wt" checkout -q -b fm/slow
-  printf '## In flight\n- [ ] slow - Slow child (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' > "$timedout/data/backlog.md"
-  fm_write_meta "$timedout/state/slow.meta" \
+  printf '## In flight\n- [ ] slow - Slow child (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' > "$unknown_child/data/backlog.md"
+  fm_write_meta "$unknown_child/state/slow.meta" \
     "window=firstmate:fm-slow" "worktree=$wt" "project=sample" \
     "harness=codex" "kind=ship" "mode=no-mistakes"
-  append_secondmate_registry "$home" timedout "$timedout"
-  write_parent_secondmate_event "$home" timedout "$timedout" "old timed work"
+  append_secondmate_registry "$home" unknown-child "$unknown_child"
+  write_parent_secondmate_event "$home" unknown-child "$unknown_child" "old unknown work"
 
   fakebin=$(make_fakebin "$home")
-  json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
+  json=$(run "$home" "$fakebin" --json)
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
       and all(.secondmates[]; .state == "unknown")
-      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed" and . != "timedout"))
+      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed" and . != "unknown-child"))
       and (.secondmates | any(.[]; .id == "missing" and .provenance == "unknown"
         and .freshness == "unknown" and (.reason | contains("invalid home"))))
-      and ([.secondmates[] | select(.id != "missing")]
+      and ([.secondmates[] | select(.id == "invalid" or .id == "unreadable" or .id == "malformed")]
         | all(.provenance == "parent-event-fallback" and .freshness == "historical-event"))
+      and (.secondmates | any(.[]; .id == "unknown-child" and .provenance == "structured-home"
+        and .freshness == "fresh"))
       and (.secondmates | any(.[]; .id == "invalid" and (.reason | contains("marked for"))))
       and (.secondmates | any(.[]; .id == "unreadable" and (.reason | test("invalid home|unreadable"))))
       and (.secondmates | any(.[]; .id == "malformed" and (.reason | contains("unstructured current backlog row"))))
-      and (.secondmates | any(.[]; .id == "timedout" and (.reason | contains("timed out"))))
-      and ([.secondmate_reconcile[].id] == ["malformed"])
+      and (.secondmates | any(.[]; .id == "unknown-child" and (.reason | contains("child current state unavailable"))))
+      and ([.secondmate_reconcile[].id] == ["malformed", "unknown-child"])
       and (.secondmate_reconcile[0].kind == "unstructured_current")
+      and (.secondmate_reconcile[1].kind == "child_current_unavailable")
   ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
-  pass "missing, invalid, unreadable, malformed, and timed-out homes stay explicit unknowns"
+  pass "missing, invalid, unreadable, malformed, and unavailable-child homes stay explicit unknowns"
 }
 
 test_oversized_secondmate_summary_stays_strict_unknown() {
@@ -540,7 +650,7 @@ EOF
       and (.decisions_open | any(.owner == "oversized") | not)
       and (.landed | any(.owner == "oversized") | not)
   ' >/dev/null || fail "oversized summary revived or retained unvalidated surfaces: $json"
-  pass "an oversized secondmate summary retains the strict empty unknown fallback"
+  pass "oversized ledgers stay strict unknown"
 }
 
 test_secondmate_and_child_bounds_are_disclosed() {
@@ -569,6 +679,7 @@ test_secondmate_and_child_bounds_are_disclosed() {
   done
   printf '\n## Queued\n\n## Done\n' >> "$mate/data/backlog.md"
   fakebin=$(make_fakebin "$home")
+  PATH="$fakebin:$PATH" FM_SNAPSHOT_SECONDMATE_CHILDREN=2 refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     FM_SNAPSHOT_SECONDMATES=2 FM_SNAPSHOT_SECONDMATE_CHILDREN=2 "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -605,6 +716,7 @@ test_parent_decision_is_untrusted_contradiction_only() {
   fm_write_secondmate_meta "$home/state/authority.meta" "$mate" "firstmate:fm-authority" sample
   printf 'needs-decision [key=stale]: old parent question\n' > "$home/state/authority.status"
   fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -676,6 +788,7 @@ EOF
   record_claude_state "$decision/state" "$child" idle
   printf 'needs-decision [key=live-route]: choose the current route\n' > "$decision/state/$child.status"
   fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -729,6 +842,7 @@ EOF
   record_claude_state "$mate/state" parked idle
   printf 'needs-decision [key=parked]: choose a route\n' > "$mate/state/parked.status"
   fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -744,6 +858,7 @@ EOF
 
 ## Done
 EOF
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -776,6 +891,7 @@ EOF
   printf 'done: complete\n' > "$mate/state/done.status"
   printf 'failed: stopped\n' > "$mate/state/failed.status"
   rm "$mate/state/parked.meta" "$mate/state/parked.status"
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -812,6 +928,7 @@ EOF
   record_claude_state "$mate/state" abandoned-child busy
   printf 'working: validation is advancing\n' > "$mate/state/abandoned-child.status"
   fakebin=$(make_fakebin "$home")
+  FM_FAKE_AGENT_STATE=dead PATH="$fakebin:$PATH" refresh_local_secondmate_ledgers "$home"
   canonical=$(FM_FAKE_AGENT_STATE=dead PATH="$fakebin:$PATH" FM_HOME="$home" \
     FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -870,6 +987,7 @@ test_registry_unavailability_and_bounds_are_explicit() {
     append_secondmate_registry "$home" "$id" "$mate"
   done
   fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     FM_SNAPSHOT_REGISTRY_RECORDS=2 "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -910,6 +1028,7 @@ test_registry_unavailability_and_bounds_are_explicit() {
   make_valid_secondmate_home z-hidden "$mate"
   append_secondmate_registry "$home" z-hidden "$mate"
   fm_write_secondmate_meta "$home/state/z-hidden.meta" "$mate" "firstmate:fm-z-hidden" sample
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     FM_SNAPSHOT_REGISTRY_RECORDS=3 "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -1123,7 +1242,11 @@ test_perl_fallback_bounds_github_call() {
   # Deliberately without coreutils `timeout`, which is the point of this case.
   # Everything else the chain genuinely needs belongs here, including the
   # mktemp/mkdir/rm the fleet snapshot uses for its own private scratch space.
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp mkdir rm uname; do
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm mkdir chmod mv cp awk uname; do
+    ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
+  done
+  for cmd in shasum sha256sum; do
+    command -v "$cmd" >/dev/null 2>&1 || continue
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
@@ -1757,6 +1880,7 @@ EOF
   printf 'working: preparing canary\n' > "$ha/state/prep.status"
 
   fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -1815,6 +1939,7 @@ EOF
 - [ ] ordinary-orphan - Unowned release task (repo: sshhip) (kind: ship)' \
     "$sshhip/data/backlog.md" > "$sshhip/data/backlog.next"
   mv "$sshhip/data/backlog.next" "$sshhip/data/backlog.md"
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -1835,6 +1960,7 @@ EOF
 
   sed '/unreadable-child/d' "$sshhip/data/backlog.md" > "$sshhip/data/backlog.next"
   mv "$sshhip/data/backlog.next" "$sshhip/data/backlog.md"
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -1859,6 +1985,7 @@ EOF
     "harness=claude" "kind=scout" "mode=scout"
   record_claude_state "$wheel/state" production-observation idle
   printf 'paused: observation is deliberately held\n' > "$wheel/state/production-observation.status"
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -1922,6 +2049,7 @@ EOF
 
   sed 's/(kind: program)/(kind: mystery)/' "$hibit/data/backlog.md" > "$hibit/data/backlog.next"
   mv "$hibit/data/backlog.next" "$hibit/data/backlog.md"
+  refresh_local_secondmate_ledgers "$home"
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -2067,6 +2195,166 @@ test_oversized_backlog_survives_the_per_argument_execve_limit() {
 }
 
 test_oversized_backlog_survives_the_per_argument_execve_limit
+test_remote_ledgers_share_one_concurrent_budget_and_fall_back_to_cache() {
+  local parent fakebin json started elapsed i remote_home pid collector_pid sleeper_pid duplicate_base
+  parent=$(make_home concurrent-remote-ledgers)
+  make_remote_ledger_fleet "$parent" 5
+  fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
+  : > "$parent/ledger-calls.log"
+  : > "$parent/ledger-pids.log"
+
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 1100)
+  [ "$(wc -l < "$parent/ledger-calls.log" | tr -d ' ')" -eq 5 ] \
+    || fail "a healthy snapshot did not issue exactly one remote file read per home"
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 5
+      and all(.secondmates[]; .freshness == "fresh" and .age_seconds == 100)
+  ' >/dev/null || fail "healthy remote ledgers did not project their generated-epoch ages: $json"
+
+  duplicate_base="$TMP_ROOT/remote-ledger-home-1/state/home-summary.single"
+  cp "$TMP_ROOT/remote-ledger-home-1/state/home-summary.json" "$duplicate_base"
+  cat "$duplicate_base" "$duplicate_base" > "$TMP_ROOT/remote-ledger-home-1/state/home-summary.json"
+  : > "$parent/ledger-calls.log"
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 1100)
+  printf '%s' "$json" | jq -e '
+    ([.secondmates[] | select(.id == "ledger-1" and .freshness == "cached" and .age_seconds == 100)] | length) == 1
+      and ([.secondmates[] | select(.id != "ledger-1" and .freshness == "fresh")] | length) == 4
+  ' >/dev/null || fail "a multi-document live ledger bypassed the valid cache: $json"
+  [ "$(wc -l < "$parent/ledger-calls.log" | tr -d ' ')" -eq 5 ] \
+    || fail "rejecting a multi-document live ledger added remote reads"
+  mv "$duplicate_base" "$TMP_ROOT/remote-ledger-home-1/state/home-summary.json"
+
+  : > "$TMP_ROOT/remote-ledger-home-1/state/unbounded-ledger-read"
+  : > "$parent/ledger-calls.log"
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 1100)
+  printf '%s' "$json" | jq -e '
+    ([.secondmates[] | select(.id == "ledger-1" and .freshness == "cached")] | length) == 1
+      and ([.secondmates[] | select(.id != "ledger-1" and .freshness == "fresh")] | length) == 4
+  ' >/dev/null || fail "an unbounded primary ledger stream consumed the shared collector budget: $json"
+  [ "$(wc -l < "$parent/ledger-calls.log" | tr -d ' ')" -eq 5 ] \
+    || fail "bounding one faulty primary ledger added remote reads"
+  rm -f "$TMP_ROOT/remote-ledger-home-1/state/unbounded-ledger-read"
+
+  i=1
+  while [ "$i" -le 5 ]; do
+    remote_home="$TMP_ROOT/remote-ledger-home-$i"
+    : > "$remote_home/state/slow-ledger-read"
+    i=$((i + 1))
+  done
+  : > "$parent/ledger-calls.log"
+  : > "$parent/ledger-pids.log"
+  started=$(date +%s)
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  elapsed=$(( $(date +%s) - started ))
+  # The three-second bound covers remote collection, while setup, cache validation,
+  # and projection run outside it. Keep the end-to-end ceiling well below the
+  # fifteen seconds that five serial three-second reads would require, without
+  # treating slower stock-macOS jq/process startup as collector serialization.
+  [ "$elapsed" -lt 12 ] || fail "five wedged remote reads behaved serially despite the shared three-second budget (${elapsed}s)"
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 5
+      and all(.secondmates[]; .freshness == "cached" and .age_seconds == 1000
+        and .provenance == "structured-home-cache")
+      and ([.omitted[] | select(.surface | contains("served from cached home ledger"))] | length) == 5
+  ' >/dev/null || fail "wedged homes did not use and disclose age-labeled cache rows: $json"
+  sleep 0.3
+  while read -r collector_pid sleeper_pid; do
+    for pid in "$collector_pid" "$sleeper_pid"; do
+      [ -n "$pid" ] || continue
+      if kill -0 "$pid" 2>/dev/null; then
+        fail "a cancelled remote ledger collector process survived the total budget (pid $pid)"
+      fi
+    done
+  done < "$parent/ledger-pids.log"
+
+  i=1
+  while [ "$i" -le 5 ]; do
+    remote_home="$TMP_ROOT/remote-ledger-home-$i"
+    remote_home=$(cd "$remote_home" && pwd -P)
+    rm -f "$remote_home/state/slow-ledger-read"
+    write_remote_home_summary "$remote_home" 1990
+    i=$((i + 1))
+  done
+  : > "$TMP_ROOT/remote-ledger-home-1/state/slow-ledger-read"
+  : > "$parent/ledger-calls.log"
+  : > "$parent/ledger-pids.log"
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 2000)
+  printf '%s' "$json" | jq -e '
+    ([.secondmates[] | select(.freshness == "fresh" and .age_seconds == 10)] | length) == 4
+      and ([.secondmates[] | select(.id == "ledger-1" and .freshness == "cached"
+        and .age_seconds == 1000 and .provenance == "structured-home-cache")] | length) == 1
+      and ([.omitted[] | select(.surface == "secondmate ledger-1 served from cached home ledger")] | length) == 1
+  ' >/dev/null || fail "one slow home prevented four fresh rows or hid its cache disclosure: $json"
+  [ "$(wc -l < "$parent/ledger-calls.log" | tr -d ' ')" -eq 5 ] \
+    || fail "the mixed-speed snapshot made more than one remote read per ledger home"
+  pass "remote ledgers collect concurrently under one budget, reuse aged cache, and cancel wedged collectors"
+}
+
+test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute() {
+  local parent fakebin remote_home json
+  parent=$(make_home remote-ledger-missing)
+  make_remote_ledger_fleet "$parent" 1
+  remote_home="$TMP_ROOT/remote-ledger-home-1"
+  rm -f "$remote_home/state/home-summary.json" "$remote_home/state/slow-ledger-read"
+  fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
+  : > "$parent/ledger-calls.log"
+  : > "$parent/ledger-pids.log"
+
+  json=$(run_remote_ledger_bearings "$parent" "$fakebin" 1100)
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 1
+      and .secondmates[0].state == "unknown"
+      and .secondmates[0].provenance == "unknown"
+      and (.secondmates[0].reason | contains("home ledger is missing, unreadable, or invalid"))
+      and (.omitted | any(.surface == "secondmate home(s) with unreadable structured state: 1"))
+  ' >/dev/null || fail "a no-ledger remote home was not explicitly disclosed as unreadable: $json"
+  [ "$(wc -l < "$parent/ledger-calls.log" | tr -d ' ')" -eq 1 ] \
+    || fail "a no-ledger remote home issued more than its single ledger read"
+  [ "$(awk -F '\t' 'NR == 1 { print $2 }' "$parent/ledger-calls.log")" = "fm-remote-file.sh" ] \
+    || fail "a no-ledger remote home triggered remote summary computation: $(cat "$parent/ledger-calls.log")"
+  pass "a missing remote ledger stays explicitly unreadable without remote summary computation"
+}
+
+test_remote_cache_read_only_preserves_fleet_state_and_scratch_cleanup() {
+  local parent fakebin json cache saved scratch leftover
+  parent=$(make_home readonly-remote-cache)
+  make_remote_ledger_fleet "$parent" 1
+  fakebin=$(make_remote_ledger_ssh "$parent/remote-ssh")
+  : > "$parent/ledger-calls.log"
+  : > "$parent/ledger-pids.log"
+  scratch="$parent/snapshot-scratch"
+  mkdir -p "$scratch"
+
+  json=$(TMPDIR="$scratch" FM_SNAPSHOT_CACHE_READ_ONLY=1 run_remote_ledger_bearings "$parent" "$fakebin" 1100 2> "$parent/snapshot.err")
+  [ ! -s "$parent/snapshot.err" ] || fail "read-only snapshot emitted diagnostics: $(cat "$parent/snapshot.err")"
+  printf '%s' "$json" | jq -e '.secondmates | length == 1 and .[0].freshness == "fresh"' >/dev/null \
+    || fail "read-only cache mode lost the live remote ledger"
+  [ ! -e "$parent/state/summary-cache" ] || fail "read-only cache mode created fleet-owned cache state"
+  leftover=$(find "$scratch" \( -name 'fm-fleet-snapshot.*' -o -name 'fm-fleet-ledgers.*' \) -print)
+  [ -z "$leftover" ] || fail "snapshot left task-reader or remote-collector scratch behind: $leftover"
+
+  run_remote_ledger_bearings "$parent" "$fakebin" 1100 >/dev/null
+  cache=$(find "$parent/state/summary-cache" -name '*.json' -type f -print)
+  [ -n "$cache" ] && [ -f "$cache" ] || fail "ordinary snapshot did not publish its remote cache"
+  saved="$parent/cache-before.json"
+  cp "$cache" "$saved"
+  write_remote_home_summary "$TMP_ROOT/remote-ledger-home-1" 2000
+  json=$(FM_SNAPSHOT_CACHE_READ_ONLY=1 run_remote_ledger_bearings "$parent" "$fakebin" 2100)
+  printf '%s' "$json" | jq -e '.secondmates[0] | .freshness == "fresh" and .age_seconds == 100' >/dev/null \
+    || fail "read-only cache mode did not use the newer live ledger"
+  cmp -s "$cache" "$saved" || fail "read-only cache mode overwrote the existing fleet cache"
+
+  rm "$TMP_ROOT/remote-ledger-home-1/state/home-summary.json"
+  json=$(FM_SNAPSHOT_CACHE_READ_ONLY=1 run_remote_ledger_bearings "$parent" "$fakebin" 2100)
+  printf '%s' "$json" | jq -e '.secondmates[0] | .freshness == "cached" and .age_seconds == 1100' >/dev/null \
+    || fail "read-only cache mode could not consume the preserved older cache"
+  cmp -s "$cache" "$saved" || fail "cached fallback changed a read-only fleet cache"
+  pass "read-only remote cache preserves fleet files, uses fresh and cached ledgers, and cleans both scratch directories"
+}
+
+test_remote_cache_read_only_preserves_fleet_state_and_scratch_cleanup
+test_remote_ledgers_share_one_concurrent_budget_and_fall_back_to_cache
+test_a_remote_home_without_any_ledger_is_explicitly_unreadable_without_remote_compute
 test_domain_alpha_stale_parent_event_does_not_become_current_work
 test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution
 test_parent_activity_evidence_is_bounded_and_disclosed

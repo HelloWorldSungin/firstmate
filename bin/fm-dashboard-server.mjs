@@ -1901,7 +1901,7 @@ class DashboardState {
   runSnapshot() {
     return runJsonCommand(SNAPSHOT_COMMAND, ["--json"], {
       timeoutMs: this.config.timeoutMs,
-      env: { ...process.env, FM_HOME: this.config.fmHome },
+      env: { ...process.env, FM_HOME: this.config.fmHome, FM_SNAPSHOT_CACHE_READ_ONLY: "1" },
       register: (child, previous) => {
         if (child) this.activeChild = child;
         else if (this.activeChild === previous) this.activeChild = null;

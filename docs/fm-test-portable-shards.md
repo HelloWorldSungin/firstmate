@@ -64,46 +64,55 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints came from run [32191955185](https://github.com/HelloWorldSungin/firstmate/actions/runs/32191955185) on 2026-08-18, which measured the lane as it stood then.
-The inherited `tests/fm-tool-update-check.test.sh` hint comes from upstream green run [32461816719](https://github.com/kunchenguid/firstmate/actions/runs/32461816719), the first run that measured it.
-Recomputed against the current lane on 2026-09-03: 124 of its 154 scripts carry a measured hint totalling 2871221 ms.
-The other 30 are unmeasured - tests added since those runs, plus the tail of the shard that was cancelled at its timeout before reaching them - so they keep the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default until a completed run measures them, which puts the lane's estimated total at 3471221 ms.
-A script with no hint gets that same default, and a hint naming a script the lane no longer contains is simply unused.
+The hints are the slowest measurement of each of the lane's 139 scripts across the `fm-test-timing-portable-serial-*` artifacts of three green CI runs on 2026-09-01, [33558082172](https://github.com/kunchenguid/firstmate/actions/runs/33558082172), [33523597838](https://github.com/kunchenguid/firstmate/actions/runs/33523597838), and [33463326167](https://github.com/kunchenguid/firstmate/actions/runs/33463326167).
+Shared scripts use those upstream per-script maxima; fork-only scripts retain their existing measured hints from run [32191955185](https://github.com/HelloWorldSungin/firstmate/actions/runs/32191955185).
+The current fork partition has 161 scripts, with five unmeasured scripts using the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default, for 4168699 ms of estimated balance weight.
+Taking the slowest of several runs rather than a single run keeps the balance honest on a slow runner: individual scripts varied by up to 20% between those three runs.
+A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
-Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
+That is not hypothetical: by 2026-09-01 the lane had grown from 116 to 139 scripts and from ~42 to ~63 minutes, 17 scripts were still unmeasured, and several hints were low by 2-5x, so shard 3 of 4 ran 17-20 minutes against its 20-minute cap while shard 1 ran 11.5 minutes and run [33574154856](https://github.com/kunchenguid/firstmate/actions/runs/33574154856) timed out seconds after a passing test.
+`bin/fm-test-run.sh --check-coverage` now reports the unmeasured share as `serial_unhinted=` and refuses past `PORTABLE_SERIAL_MAX_UNHINTED_PERCENT`, so hint drift fails the coverage guard instead of silently pushing one shard into its job cap.
+Refresh the hints whenever the serial lane gains scripts, rather than waiting for that bound to trip.
 
 Shard count is sized from that total rather than left where an earlier, smaller remainder put it.
-The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the current hints put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
-Eight shards put a balanced shard at about 7.2 minutes.
+The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the hints then put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
+The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 8.76 minutes.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 17 | 433890 ms (~433.9 s) |
-| `portable-serial-2of8` | 19 | 433922 ms (~433.9 s) |
-| `portable-serial-3of8` | 19 | 433897 ms (~433.9 s) |
-| `portable-serial-4of8` | 19 | 433900 ms (~433.9 s) |
-| `portable-serial-5of8` | 20 | 433900 ms (~433.9 s) |
-| `portable-serial-6of8` | 20 | 433895 ms (~433.9 s) |
-| `portable-serial-7of8` | 20 | 433908 ms (~433.9 s) |
-| `portable-serial-8of8` | 20 | 433909 ms (~433.9 s) |
-| imbalance | | 32 ms |
+| `portable-serial-1of8` | 19 | 525457 ms (~8.76 min) |
+| `portable-serial-2of8` | 20 | 518464 ms (~8.64 min) |
+| `portable-serial-3of8` | 19 | 525455 ms (~8.76 min) |
+| `portable-serial-4of8` | 20 | 518453 ms (~8.64 min) |
+| `portable-serial-5of8` | 20 | 518460 ms (~8.64 min) |
+| `portable-serial-6of8` | 21 | 518471 ms (~8.64 min) |
+| `portable-serial-7of8` | 21 | 525472 ms (~8.76 min) |
+| `portable-serial-8of8` | 21 | 518467 ms (~8.64 min) |
+| imbalance | | 7019 ms |
 
-The single longest script, `tests/fm-watch-triage.test.sh` at 210485 ms, is the floor for any shard count.
+The single longest script, `tests/fm-watch-triage.test.sh` at 262626 ms, is the floor for any shard count.
 
-Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
+Refresh the hints by downloading the per-shard timing artifacts from several green CI runs, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the slowest measured `duration_ms` per `path`, and updating the table above:
 
 ```sh
-gh run download <run-id> -R HelloWorldSungin/firstmate --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
-jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*.json | LC_ALL=C sort
+for run in <run-id> <run-id> <run-id>; do
+  gh run download "$run" -R HelloWorldSungin/firstmate --pattern 'fm-test-timing-portable-serial-*' -D "/tmp/fm-serial/$run"
+done
+jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*/*.json \
+  | awk -F'\t' '$2 > m[$1] { m[$1] = $2 } END { for (p in m) print p, m[p] }' \
+  | LC_ALL=C sort
 bin/fm-test-run.sh --check-coverage
 ```
+
+A timed-out shard uploads no artifact, so pick runs where every serial shard is green or the lane's slowest scripts go unmeasured in exactly the shard that needs them most.
 
 ## Coverage guard
 
 `bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
 It also verifies that the parallel lanes, portable serial lane, real-Herdr family, and live-harness opt-in family are disjoint and together cover every `tests/*.test.sh` script.
 It separately verifies that the portable serial CI shards are non-empty, disjoint, and together equal the portable serial lane.
+It reports the unmeasured serial share as `serial_unhinted=` and refuses when that share exceeds `PORTABLE_SERIAL_MAX_UNHINTED_PERCENT`, so the shards stay balanced on evidence rather than on the default weight.
 
 ## Timing artifacts
 
@@ -121,7 +130,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 2.2 minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 15` | Each balanced shard is about 7.2 minutes, leaving roughly 2.1x hang-tripwire margin. |
+| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 8.76 minutes, leaving roughly 2.3x margin for setup and runner-speed spread. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
@@ -129,6 +138,6 @@ Timeouts are hang tripwires rather than expected healthy durations.
 
 Inside each lane, `bin/fm-test-run.sh` applies its own default per-script bound, so a hung script usually turns red with per-script attribution before the job cap cancels the lane; its `--help` owns that bound's value and opt-out, and the rationale beside `DEFAULT_PER_SCRIPT_TIMEOUT_SECS` owns the per-lane margin arithmetic.
 Neither portable lane has room to spare, because a hung script spends the bound instead of its own healthy slot.
-On a serial shard the result lands just inside the 15-minute cap on script time alone, before this lane's checkout and bootstrap: expect per-script `exit=124` in the usual case, and the job timeout first when the hung slot sits late in the shard and setup overhead runs high.
+On the slowest estimated serial shard, replacing its average script with the 480-second bound puts script time around 16.3 minutes, inside the 20-minute cap before checkout and bootstrap overhead.
 The portable parallel cap is tighter still: the same arithmetic already lands past its 10-minute cap before setup, so expect the job timeout rather than per-script attribution when a script hangs there.
 On the required Herdr lane the bound has the thinnest margin over its slowest measured script, so a healthy but unusually slow Herdr end-to-end script can turn red as `exit=124`; that margin is accepted rather than widened, tracked in `HelloWorldSungin/firstmate#256`.

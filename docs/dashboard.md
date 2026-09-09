@@ -42,6 +42,7 @@ A later run with no checkout or home override preserves the installed home; pass
 
 [`bin/fm-dashboard-server.mjs`](../bin/fm-dashboard-server.mjs)'s header owns the environment configuration names and defaults.
 The server runs the fixed adjacent `fm-fleet-snapshot.sh --json` command with a hard deadline, keeps at most one execution active, and pushes result envelopes to the browser with server-sent events.
+It forces the snapshot's read-only cache mode, so upstream remote-ledger collection can read an existing parent cache without creating or updating fleet-owned cache files.
 A trigger arriving during a snapshot reads the last completed result rather than queueing a catch-up run, and the next periodic poll waits its full interval after completion, so a snapshot slower than its poll interval cannot keep the reader continuously saturated.
 No HTTP input can select a command, argument, or fleet path.
 
