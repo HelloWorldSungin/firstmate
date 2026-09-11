@@ -1974,7 +1974,7 @@ fi
 [ -f "$BRIEF" ] || { echo "error: task $ID has no brief at inaccessible data path $BRIEF" >&2; exit 1; }
 SOURCE_BRIEF=$BRIEF
 # A design task reads the installed mattpocock skill files live during its
-# interview, and the captain has that plugin on auto-update, so the instructions
+# interview, and the captain-owned install can change between tasks, so the instructions
 # behind one design result need not be the instructions behind the next. One
 # resolve call serves as both the dispatch gate and the provenance record, so
 # what is recorded is exactly what was verified present at dispatch. Reading the
