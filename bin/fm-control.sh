@@ -38,13 +38,13 @@
 #              axis for the replacement. With no explicit axis, a secondmate
 #              re-resolves its durable config/secondmate-harness pin (harness
 #              plus its optional model and effort tokens) exactly as any other
-#              respawn does, while a ship or scout keeps the exact adapter
-#              already recorded for it.
+#              respawn does, while a ship, design, or scout keeps the exact
+#              adapter already recorded for it.
 #              A prefixed raw-command basename cannot reconstruct its launch
 #              command, so relaunch requires an explicit --harness for it.
-#              --note is required for a ship or scout, whose replacement
-#              inherits the local copy but none of the conversation; a
-#              secondmate reconciles its own home's records at startup, so its
+#              --note is required for a ship, design, or scout, whose
+#              replacement inherits the local copy but none of the conversation;
+#              a secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent,
 #              then delegates the launch to its single owner,
@@ -644,10 +644,10 @@ resolve_relaunch_profile() {
     # A secondmate's harness, model, and effort are a durable configured pin
     # that every respawn re-resolves (the secondmate-provisioning contract), so
     # a relaunch with no explicit harness picks up a newly configured one
-    # instead of freezing whatever this incarnation happens to run. Crewmates
-    # and scouts deliberately do NOT resolve config here: their harness comes
-    # from firstmate's own dispatch-profile judgment at intake, and silently
-    # re-resolving it would bypass that consultation.
+    # instead of freezing whatever this incarnation happens to run. Crewmates,
+    # design workers, and scouts deliberately do NOT resolve config here: their
+    # harness comes from firstmate's own dispatch-profile judgment at intake,
+    # and silently re-resolving it would bypass that consultation.
     CONFIG_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" secondmate 2>/dev/null || true)
     CONFIG_MODEL=$("$SCRIPT_DIR/fm-harness.sh" secondmate-model 2>/dev/null || true)
     CONFIG_EFFORT=$("$SCRIPT_DIR/fm-harness.sh" secondmate-effort 2>/dev/null || true)
@@ -765,8 +765,27 @@ safe_checkpoint() {
   fi
 }
 
+# require_recorded_design_skill_pin: a design relaunch must keep the dispatch
+# pin already recorded for this task. Presence is proved here, before the
+# agent is stopped, so a missing pin refuses with nothing changed; spawn
+# reuses that same recorded release rather than resolving the plugin again
+# (docs/fleet-data-contracts.md "The design task's plugin release").
+require_recorded_design_skill_pin() {
+  local plugin version updated tasktmp dispatch_brief
+  plugin=$(fm_meta_get "$META" design_skills_plugin)
+  version=$(fm_meta_get "$META" design_skills_version)
+  updated=$(fm_meta_get "$META" design_skills_updated)
+  [ -n "$plugin" ] && [ -n "$version" ] && [ -n "$updated" ] \
+    || die "task $ID has no recorded design-skill release; refusing to relaunch rather than resolving a different plugin pin"
+  tasktmp=$(fm_meta_get "$META" tasktmp)
+  [ -n "$tasktmp" ] || tasktmp="/tmp/fm-$ID"
+  dispatch_brief="$tasktmp/brief.md"
+  [ -f "$dispatch_brief" ] && [ ! -L "$dispatch_brief" ] \
+    || die "task $ID has no dispatch-pinned design brief at $dispatch_brief; refusing to relaunch rather than resolving a different plugin release"
+}
+
 # record_note: put the required progress note somewhere durable, and - for a
-# ship or scout, whose only record of the interrupted reasoning is the
+# ship, design, or scout, whose only record of the interrupted reasoning is the
 # conversation about to be discarded - into the instructions the replacement
 # actually reads. A secondmate's charter is a durable standing document and is
 # never rewritten: a secondmate reconciles its own home's records at startup,
@@ -777,7 +796,7 @@ record_note() {
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '%s\n' "$NOTE" > "$NOTE_FILE"
   case "$KIND" in
-    ship|scout)
+    ship|design|scout)
       cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
         || die "could not preserve task $ID's instructions before recording the progress note"
       {
@@ -806,12 +825,15 @@ do_relaunch() {
   resolve_relaunch_profile
 
   case "$KIND" in
-    ship|scout)
+    ship|design|scout)
       RELAUNCH_BRIEF="$DATA/$ID/brief.md"
       [ -f "$RELAUNCH_BRIEF" ] \
         || die "task $ID has no instructions at $RELAUNCH_BRIEF; refusing to relaunch a worker with nothing to work from"
       [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
         || die "relaunch of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
+      if [ "$KIND" = design ]; then
+        require_recorded_design_skill_pin
+      fi
       ;;
     secondmate)
       # The charter in the secondmate's own home is its instruction source and

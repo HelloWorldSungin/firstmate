@@ -77,7 +77,7 @@ A home with no brain has nothing to capture, so it never republishes and its sin
 A design interview reads two skill files from the captain's installed `mattpocock-skills@mattpocock` plugin live, and that plugin auto-updates, so the instructions behind one design result need not be the instructions behind the next.
 `design_skills` records the `plugin`, `version`, and `last_updated` that [`bin/fm-design-skills.sh`](../bin/fm-design-skills.sh) reported to the one resolve call that gates the dispatch, and the worker-facing brief carries the concrete skill paths from that same result rather than resolving again.
 The recorded release is therefore definitionally the one whose files informed the interview; if either pinned file moves before it can be read, the task stops loudly instead of falling forward to another release.
-A relaunch resolves again, so the value names the release resolved at the task's most recent dispatch.
+A relaunch of the same design task reuses that recorded release and those pinned paths rather than resolving again.
 
 The key is optional and design-only: a non-design task, a design task dispatched before spawn recorded this, and any manifest published before this contract carry no `design_skills` key at all rather than a guess or an empty string.
 Its `version` and `last_updated` are provenance copied verbatim from a captain-owned plugin registry, so like `mode` they are bounded by type and length rather than by a closed vocabulary or a strict timestamp shape; refusing an unfamiliar-but-harmless string would block the teardown of the very task the record exists to explain.

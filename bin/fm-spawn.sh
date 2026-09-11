@@ -43,7 +43,7 @@
 #   transaction; call fm-control rather than this flag directly unless you are
 #   deliberately re-launching an already-stopped task. Every identity axis -
 #   backend, kind, project or home, worktree, endpoint - comes from the task's
-#   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
+#   validated state/<id>.meta, so --backend, --scout, --design, --secondmate, a project
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
@@ -179,9 +179,12 @@
 #   config reread generations because the new agent reads the converged files.
 #   --design records kind=design in the task's meta (interactive ADR deliverable;
 #   see the design-profile skill) and, from the one bin/fm-design-skills.sh
-#   resolve that gates the dispatch, records design_skills_plugin=,
+#   resolve that gates a fresh dispatch, records design_skills_plugin=,
 #   design_skills_version=, and design_skills_updated= so the auto-updating
-#   plugin release that informed the interview stays readable after cleanup;
+#   plugin release that informed the interview stays readable after cleanup.
+#   A --relaunch of that same design task reuses the recorded release and the
+#   dispatch-pinned skill paths rather than resolving again
+#   (docs/fleet-data-contracts.md "The design task's plugin release").
 #   --scout records kind=scout (report deliverable,
 #   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
 #   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
@@ -557,7 +560,7 @@ esac
 # refusal rather than a silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
-  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
+  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--design/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
 else
@@ -1978,8 +1981,10 @@ SOURCE_BRIEF=$BRIEF
 # resolve call serves as both the dispatch gate and the provenance record, so
 # what is recorded is exactly what was verified present at dispatch. Reading the
 # plugin later - at cleanup, say - could name a version that only arrived after
-# the interview ended, which is worse than recording none. A relaunch resolves
-# again, so the recorded value always names this task's most recent dispatch.
+# the interview ended, which is worse than recording none. A relaunch of the
+# same design task reuses that recorded release and the worker-facing pinned
+# paths rather than resolving again
+# (docs/fleet-data-contracts.md "The design task's plugin release").
 # The resolver's own refusal already names the missing install or skill.
 DESIGN_SKILLS_PLUGIN=
 DESIGN_SKILLS_VERSION=
@@ -2010,22 +2015,45 @@ design_skill_path_is_safe() {  # <path>
   esac
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')" = "$1" ]
 }
-if [ "$KIND" = design ]; then
-  DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
-    echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
-    exit 1
+# adopt_relaunch_design_skills: reuse the dispatch pin already recorded for
+# this design task. Never call fm-design-skills.sh resolve here; a later
+# plugin auto-update must not silently rebind the interview.
+adopt_relaunch_design_skills() {
+  local recorded_plugin recorded_version recorded_updated tasktmp dispatch_brief
+  local binding schema
+  recorded_plugin=$(fm_meta_get "$RELAUNCH_META" design_skills_plugin)
+  recorded_version=$(fm_meta_get "$RELAUNCH_META" design_skills_version)
+  recorded_updated=$(fm_meta_get "$RELAUNCH_META" design_skills_updated)
+  if [ -z "$recorded_plugin" ] || [ -z "$recorded_version" ] \
+    || [ -z "$recorded_updated" ]; then
+    echo "error: task $ID has no recorded design-skill release; refusing to relaunch rather than resolving a different plugin pin" >&2
+    return 1
+  fi
+  tasktmp=$(fm_meta_get "$RELAUNCH_META" tasktmp)
+  [ -n "$tasktmp" ] || tasktmp="/tmp/fm-$ID"
+  dispatch_brief="$tasktmp/brief.md"
+  if [ ! -f "$dispatch_brief" ] || [ -L "$dispatch_brief" ]; then
+    echo "error: task $ID has no dispatch-pinned design brief at $dispatch_brief; refusing to relaunch rather than resolving a different plugin release" >&2
+    return 1
+  fi
+  binding=$(sed -n '/^```json$/{n;p;q;}' "$dispatch_brief")
+  schema=$(printf '%s\n' "$binding" | jq -r '.schema // empty' 2>/dev/null) || schema=
+  [ "$schema" = fm-design-skills.dispatch.v1 ] || {
+    echo "error: task $ID's dispatch-pinned design brief is not a usable skill binding; refusing to relaunch rather than resolving a different plugin release" >&2
+    return 1
   }
-  DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
-  DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
-  DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
-  DESIGN_SKILLS_GRILLING=$(design_skill_path "$DESIGN_SKILLS_RECORD" grilling) || DESIGN_SKILLS_GRILLING=
-  DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$DESIGN_SKILLS_RECORD" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
-  if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
-    || [ -z "$DESIGN_SKILLS_UPDATED" ] \
+  DESIGN_SKILLS_PLUGIN=$(design_skills_field "$binding" plugin)
+  DESIGN_SKILLS_VERSION=$(design_skills_field "$binding" version)
+  DESIGN_SKILLS_UPDATED=$(design_skills_field "$binding" last_updated)
+  DESIGN_SKILLS_GRILLING=$(design_skill_path "$binding" grilling) || DESIGN_SKILLS_GRILLING=
+  DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$binding" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
+  if [ "$DESIGN_SKILLS_PLUGIN" != "$recorded_plugin" ] \
+    || [ "$DESIGN_SKILLS_VERSION" != "$recorded_version" ] \
+    || [ "$DESIGN_SKILLS_UPDATED" != "$recorded_updated" ] \
     || ! design_skill_path_is_safe "$DESIGN_SKILLS_GRILLING" \
     || ! design_skill_path_is_safe "$DESIGN_SKILLS_DOMAIN_MODELING"; then
-    echo "error: the installed mattpocock plugin resolved without a usable identity, version, update stamp, and absolute skill paths, so this design task's inputs could not be pinned and recorded; refusing rather than dispatching an untraceable design" >&2
-    exit 1
+    echo "error: task $ID's dispatch-pinned design skills do not match its recorded release; refusing to relaunch rather than substituting another plugin pin" >&2
+    return 1
   fi
   DESIGN_SKILLS_BINDING=$(jq -cn \
     --arg plugin "$DESIGN_SKILLS_PLUGIN" \
@@ -2036,9 +2064,43 @@ if [ "$KIND" = design ]; then
     '{schema:"fm-design-skills.dispatch.v1", plugin:$plugin, version:$version,
       last_updated:$last_updated,
       skills:{grilling:$grilling, domain_modeling:$domain_modeling}}') || {
-    echo "error: the resolved mattpocock design skills could not be serialized into the dispatch brief" >&2
-    exit 1
+    echo "error: task $ID's recorded design-skill pin could not be serialized into the replacement dispatch brief" >&2
+    return 1
   }
+}
+if [ "$KIND" = design ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    adopt_relaunch_design_skills || exit 1
+  else
+    DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
+      echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
+      exit 1
+    }
+    DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
+    DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
+    DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
+    DESIGN_SKILLS_GRILLING=$(design_skill_path "$DESIGN_SKILLS_RECORD" grilling) || DESIGN_SKILLS_GRILLING=
+    DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$DESIGN_SKILLS_RECORD" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
+    if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
+      || [ -z "$DESIGN_SKILLS_UPDATED" ] \
+      || ! design_skill_path_is_safe "$DESIGN_SKILLS_GRILLING" \
+      || ! design_skill_path_is_safe "$DESIGN_SKILLS_DOMAIN_MODELING"; then
+      echo "error: the installed mattpocock plugin resolved without a usable identity, version, update stamp, and absolute skill paths, so this design task's inputs could not be pinned and recorded; refusing rather than dispatching an untraceable design" >&2
+      exit 1
+    fi
+    DESIGN_SKILLS_BINDING=$(jq -cn \
+      --arg plugin "$DESIGN_SKILLS_PLUGIN" \
+      --arg version "$DESIGN_SKILLS_VERSION" \
+      --arg last_updated "$DESIGN_SKILLS_UPDATED" \
+      --arg grilling "$DESIGN_SKILLS_GRILLING" \
+      --arg domain_modeling "$DESIGN_SKILLS_DOMAIN_MODELING" \
+      '{schema:"fm-design-skills.dispatch.v1", plugin:$plugin, version:$version,
+        last_updated:$last_updated,
+        skills:{grilling:$grilling, domain_modeling:$domain_modeling}}') || {
+      echo "error: the resolved mattpocock design skills could not be serialized into the dispatch brief" >&2
+      exit 1
+    }
+  fi
 fi
 if [ "$KIND" = ship ] || [ "$KIND" = scout ] || [ "$KIND" = design ]; then
   if fm_brief_task_placeholders_present "$BRIEF"; then

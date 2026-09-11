@@ -62,6 +62,7 @@ Do not infer or pin a model because each harness's current authenticated catalog
 
 Scaffold with `bin/fm-brief.sh <id> <repo> --design --mode <mode>` plus any applicable work-item and Herdr flags.
 Spawn with `bin/fm-spawn.sh <id> <repo-path> --design --mode <mode> --yolo <on|off> --harness <harness>` plus the selected model and effort when present.
+Restart a live design worker with `bin/fm-control.sh relaunch`, which keeps `kind=design` and the dispatch-pinned skill release ([`docs/agent-control.md`](../../../docs/agent-control.md#transactional-relaunch); [`docs/fleet-data-contracts.md`](../../../docs/fleet-data-contracts.md#the-design-tasks-plugin-release)).
 
 ## Interview authority
 

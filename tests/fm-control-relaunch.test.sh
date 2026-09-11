@@ -6,6 +6,10 @@
 # real agent):
 #   1. A same-harness relaunch keeps every identity axis and reuses the SAME
 #      endpoint and worktree - it replaces an agent, it never forks a task.
+#      kind=design uses that same transaction on the supported design runtimes
+#      and keeps the dispatch-pinned skill release, pending inbox, and
+#      uncommitted work. An undefined kind, a missing design pin, and a
+#      contradicting --design flag are refused rather than relabeled.
 #   2. A harness switch is one ordinary relaunch: the record follows, the
 #      previous harness's per-task wiring is cleared, and profile axes chosen
 #      for the old harness do not silently carry to the new one.
@@ -166,6 +170,62 @@ EOF
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# add_design_task <case-dir> <id> [harness]
+# A live design worker: recorded skill pin, pending inbox, uncommitted work,
+# and a dispatch-pinned brief under the recorded tasktmp. No plugin registry
+# is installed, so a relaunch that resolved again would refuse.
+add_design_task() {
+  local dir=$1 id=$2 harness=${3:-claude}
+  local plugin grilling modeling tasktmp binding meta brief
+  add_ship_task "$dir" "$id" "$harness"
+  plugin="$dir/plugin"
+  grilling="$plugin/skills/productivity/grilling/SKILL.md"
+  modeling="$plugin/skills/engineering/domain-modeling/SKILL.md"
+  mkdir -p "$(dirname "$grilling")" "$(dirname "$modeling")"
+  printf 'grilling pin\n' > "$grilling"
+  printf 'domain pin\n' > "$modeling"
+  tasktmp="/tmp/fm-$id"
+  mkdir -p "$tasktmp"
+  binding=$(jq -cn \
+    --arg plugin 'mattpocock-skills@mattpocock' \
+    --arg version '1.2.0' \
+    --arg last_updated '2026-08-01T00:00:00Z' \
+    --arg grilling "$grilling" \
+    --arg domain_modeling "$modeling" \
+    '{schema:"fm-design-skills.dispatch.v1", plugin:$plugin, version:$version,
+      last_updated:$last_updated,
+      skills:{grilling:$grilling, domain_modeling:$domain_modeling}}')
+  brief="$dir/home/data/$id/brief.md"
+  printf '%s\n' "<!-- firstmate-task-branch=fm/$id -->" >> "$brief"
+  {
+    echo '# Dispatch-pinned design skills'
+    echo
+    echo '```json'
+    printf '%s\n' "$binding"
+    echo '```'
+    echo
+    echo '# Authored task brief'
+    cat "$brief"
+  } > "$tasktmp/brief.md"
+  meta="$dir/home/state/$id.meta"
+  awk '
+    $0 == "kind=ship" { print "kind=design"; next }
+    { print }
+  ' "$meta" > "$meta.tmp"
+  {
+    echo "branch=fm/$id"
+    echo "design_skills_plugin=mattpocock-skills@mattpocock"
+    echo "design_skills_version=1.2.0"
+    echo "design_skills_updated=2026-08-01T00:00:00Z"
+  } >> "$meta.tmp"
+  mv "$meta.tmp" "$meta"
+  mkdir -p "$dir/home/state/$id.inbox/handled"
+  printf 'pending steer\n' > "$dir/home/state/$id.inbox/001.msg"
+  printf 'uncommitted design note\n' > "$dir/wt/wip.md"
+  printf '%s\n' "$harness" > "$dir/fake/command"
+  printf '%s\n' "$harness" > "$dir/fake/becomes"
 }
 
 run_control() {  # <case-dir> <args...>
@@ -493,6 +553,114 @@ test_relaunch_appends_the_progress_note_to_the_instructions() {
   assert_grep "reproduced the crash in parser.go" "$dir/home/state/rl2.control-relaunch.note" \
     "the note should also be preserved beside the transaction record"
   pass "fm-control relaunch: the progress note lands in the instructions the replacement reads"
+}
+
+test_design_relaunch_preserves_identity_on_supported_runtimes() {
+  local harness dir out rc id
+  for harness in claude codex pi; do
+    id="d${harness}"
+    dir=$(new_case "design-$harness" "$id")
+    add_design_task "$dir" "$id" "$harness"
+    out=$(run_control "$dir" "$id" relaunch --note "restart with smaller context"); rc=$?
+    expect_code 0 "$rc" "a $harness design relaunch should succeed"$'\n'"$out"
+    assert_contains "$out" "relaunched $id harness=$harness from=$harness" \
+      "the $harness design outcome should name the same-harness replacement"
+    [ "$(meta_field "$dir" "$id" window)" = "fmses:fm-$id" ] \
+      || fail "$harness design relaunch must reuse the endpoint"
+    [ "$(meta_field "$dir" "$id" worktree)" = "$dir/wt" ] \
+      || fail "$harness design relaunch must reuse the worktree"
+    [ "$(meta_field "$dir" "$id" kind)" = design ] \
+      || fail "$harness design relaunch must keep kind=design"
+    [ "$(meta_field "$dir" "$id" branch)" = "fm/$id" ] \
+      || fail "$harness design relaunch must keep the recorded branch"
+    [ "$(meta_field "$dir" "$id" design_skills_plugin)" = "mattpocock-skills@mattpocock" ] \
+      || fail "$harness design relaunch must keep the recorded plugin"
+    [ "$(meta_field "$dir" "$id" design_skills_version)" = "1.2.0" ] \
+      || fail "$harness design relaunch must keep the recorded skill version"
+    [ "$(meta_field "$dir" "$id" design_skills_updated)" = "2026-08-01T00:00:00Z" ] \
+      || fail "$harness design relaunch must keep the recorded update stamp"
+    [ -f "$dir/home/state/$id.inbox/001.msg" ] \
+      || fail "$harness design relaunch must leave the pending inbox in place"
+    assert_grep 'uncommitted design note' "$dir/wt/wip.md" \
+      "$harness design relaunch must leave uncommitted work"
+    [ "$(journal_field "$dir" "$id" kind)" = design ] \
+      || fail "$harness design journal must record kind=design"
+    assert_grep "restart with smaller context" "$dir/home/data/$id/brief.md" \
+      "$harness design replacement must receive the progress note"
+    [ "$(sed -n '/^```json$/{n;p;q;}' "/tmp/fm-$id/brief.md" | jq -r '.version')" = 1.2.0 ] \
+      || fail "$harness design replacement brief must keep the dispatch-pinned version"
+  done
+  pass "fm-control relaunch: design workers on claude, codex, and pi keep identity, pin, inbox, and uncommitted work"
+}
+
+test_relaunch_requires_a_note_for_a_design_task() {
+  local dir out rc before
+  dir=$(new_case design-nonote dn1)
+  add_design_task "$dir" dn1 claude
+  before=$(cat "$dir/home/data/dn1/brief.md")
+  out=$(run_control "$dir" dn1 relaunch); rc=$?
+  expect_code 1 "$rc" "a design relaunch without a note should refuse"
+  assert_contains "$out" "requires --note" "the refusal should name the missing note"
+  [ "$(cat "$dir/home/data/dn1/brief.md")" = "$before" ] \
+    || fail "a refused design relaunch must not touch the instructions"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused design relaunch must send nothing"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "a refused design relaunch must not stop the agent"
+  pass "fm-control relaunch: a design task requires a progress note and refuses before stop"
+}
+
+test_design_relaunch_ignores_the_crew_harness_config() {
+  local dir out
+  dir=$(new_case design-crewcfg dc1)
+  add_design_task "$dir" dc1 claude
+  mkdir -p "$dir/home/config"
+  printf 'codex\n' > "$dir/home/config/crew-harness"
+  out=$(run_control "$dir" dc1 relaunch --note "same worker, same runtime")
+  assert_contains "$out" "harness=claude from=claude" \
+    "a design relaunch must keep its recorded harness rather than re-reading crew config"
+  [ "$(meta_field "$dir" dc1 harness)" = claude ] \
+    || fail "a design relaunch must not silently move onto the configured crew harness"
+  pass "fm-control relaunch: a design task keeps its recorded harness instead of re-reading crew config"
+}
+
+test_unknown_kind_relaunch_is_refused_before_stop() {
+  local dir out rc meta brief
+  dir=$(new_case kind-gap kg1)
+  add_ship_task "$dir" kg1 claude
+  meta="$dir/home/state/kg1.meta"
+  brief="$dir/home/data/kg1/brief.md"
+  awk '
+    $0 == "kind=ship" { print "kind=audit"; next }
+    { print }
+  ' "$meta" > "$meta.tmp"
+  mv "$meta.tmp" "$meta"
+  cp "$meta" "$dir/meta.before"
+  cp "$brief" "$dir/brief.before"
+  out=$(run_control "$dir" kg1 relaunch --note "should never start"); rc=$?
+  expect_code 1 "$rc" "an unknown kind should refuse"
+  assert_contains "$out" "no defined relaunch shape" \
+    "the refusal should name the missing relaunch shape"
+  cmp -s "$meta" "$dir/meta.before" \
+    || fail "an unknown-kind refusal must leave metadata byte-identical"
+  cmp -s "$brief" "$dir/brief.before" \
+    || fail "an unknown-kind refusal must leave instructions byte-identical"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "an unknown-kind refusal must not stop the agent"
+  pass "fm-control relaunch: an undefined kind is still refused before the agent is touched"
+}
+
+test_design_relaunch_refuses_a_missing_skill_pin_before_stop() {
+  local dir out rc
+  dir=$(new_case design-nopin dp1)
+  add_design_task "$dir" dp1 claude
+  rm -f /tmp/fm-dp1/brief.md
+  cp "$dir/home/state/dp1.meta" "$dir/meta.before"
+  out=$(run_control "$dir" dp1 relaunch --note "cannot rebind skills"); rc=$?
+  expect_code 1 "$rc" "a design relaunch without its dispatch pin should refuse"
+  assert_contains "$out" "dispatch-pinned design brief" \
+    "the refusal should name the missing dispatch pin"
+  cmp -s "$dir/home/state/dp1.meta" "$dir/meta.before" \
+    || fail "a missing-pin refusal must leave metadata byte-identical"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "a missing-pin refusal must not stop the agent"
+  pass "fm-control relaunch: a design task with no dispatch pin refuses before stop"
 }
 
 test_relaunch_requires_a_note_for_a_ship_task() {
@@ -1494,6 +1662,9 @@ test_spawn_relaunch_refuses_contradicting_flags() {
   out=$(run_spawn "$dir" rl16 --relaunch --scout); rc=$?
   expect_code 1 "$rc" "--scout should be refused alongside --relaunch"
   assert_contains "$out" "recorded kind" "the refusal should name the recorded kind rule"
+  out=$(run_spawn "$dir" rl16 --relaunch --design); rc=$?
+  expect_code 1 "$rc" "--design should be refused alongside --relaunch"
+  assert_contains "$out" "recorded kind" "the --design refusal should name the recorded kind rule"
   out=$(run_spawn "$dir" rl16 "$dir/proj" --relaunch); rc=$?
   expect_code 1 "$rc" "a project positional should be refused alongside --relaunch"
   assert_contains "$out" "takes the task id only" "the refusal should name the positional rule"
@@ -1557,6 +1728,11 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
 
+test_design_relaunch_preserves_identity_on_supported_runtimes
+test_relaunch_requires_a_note_for_a_design_task
+test_design_relaunch_ignores_the_crew_harness_config
+test_unknown_kind_relaunch_is_refused_before_stop
+test_design_relaunch_refuses_a_missing_skill_pin_before_stop
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata
