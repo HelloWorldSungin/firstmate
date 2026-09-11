@@ -73,8 +73,10 @@ test_check_refuses_missing_capability() {
   expect_code 1 "$rc" "resolver should refuse a plugin missing domain-modeling"
   assert_contains "$out" "lacks required design skill" \
     "resolver did not name the missing capability"
-  assert_contains "$out" "captain must refresh it with /plugin" \
+  assert_contains "$out" "refresh the captain-owned plugin install" \
     "resolver did not preserve captain-owned plugin lifecycle"
+  assert_contains "$out" "Workers must not install or copy it" \
+    "resolver allowed a worker-owned plugin install"
   pass "design skill resolver refuses an incomplete plugin without working around it"
 }
 
@@ -83,8 +85,10 @@ test_missing_registry_is_actionable() {
   out=$(FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/absent.json" "$RESOLVER" resolve 2>&1)
   rc=$?
   expect_code 1 "$rc" "resolver should refuse an absent plugin registry"
-  assert_contains "$out" "captain must install or refresh it with /plugin" \
+  assert_contains "$out" "refresh the captain-owned plugin install" \
     "absent-registry refusal did not name the owner action"
+  assert_contains "$out" "Workers must not install or copy it" \
+    "absent-registry refusal allowed a worker-owned plugin install"
   pass "design skill resolver reports the captain-owned dependency action"
 }
 
@@ -279,10 +283,11 @@ SH
   chmod +x "$fake_root/bin/fm-design-skills.sh"
 }
 
-# The plugin auto-updates, so the release behind one design result need not be
-# the release behind the next. The dispatch is the only moment that can observe
-# the one the interview will actually read: by cleanup the plugin may have moved,
-# and recording the wrong release is worse than recording none.
+# The captain-owned plugin install can change between tasks, so the release
+# behind one design result need not be the release behind the next. The dispatch
+# is the only moment that can observe the one the interview will actually read:
+# by cleanup the plugin may have moved, and recording the wrong release is worse
+# than recording none.
 test_design_dispatch_records_the_release_it_resolved() {
   local rec home proj wt fakebin registry install meta out
 
@@ -357,7 +362,7 @@ EOF
   meta="$home/state/design-binding.meta"
   dispatch_brief="$(meta_field "$meta" tasktmp)/brief.md"
   [ "$(cat "$count_file")" = 1 ] \
-    || fail "design dispatch resolved the auto-updating plugin more than once"
+    || fail "design dispatch resolved the plugin more than once"
   [ "$(meta_field "$meta" design_skills_version)" = 1.2.0 ] \
     || fail "task metadata did not record the single resolver result"
   [ -f "$dispatch_brief" ] \
@@ -373,6 +378,10 @@ EOF
     || fail "worker-facing brief did not carry the domain-modeling path from the recorded resolve"
   assert_not_contains "$(cat "$dispatch_brief")" "then use your read tool" \
     "worker-facing brief retained the legacy instruction to resolve the plugin again"
+  assert_contains "$(cat "$dispatch_brief")" "one planning conversation" \
+    "worker-facing brief did not keep grilling and domain-modeling inside one conversation"
+  assert_contains "$(cat "$dispatch_brief")" "refresh the captain-owned plugin install and relaunch the task" \
+    "worker-facing brief lost captain-owned plugin refresh wording"
   assert_not_contains "$(cat "$dispatch_brief")" "$plugin_two" \
     "worker-facing brief silently moved to a later resolver result"
   pass "one resolver result supplies both recorded provenance and pinned brief paths"
@@ -455,8 +464,10 @@ EOF
     "$TMP_ROOT/spawn-refuse/absent.json" design-refused "$proj")
   status=$?
   expect_code 1 "$status" "a design spawn should refuse an unresolvable plugin"
-  assert_contains "$out" "captain must install or refresh it with /plugin" \
+  assert_contains "$out" "refresh the captain-owned plugin install" \
     "the refusal did not preserve captain-owned plugin lifecycle"
+  assert_contains "$out" "Workers must not install or copy it" \
+    "the refusal allowed a worker-owned plugin install"
   assert_absent "$home/state/design-refused.meta" \
     "a design task was dispatched without recording which plugin informed it"
   pass "a design dispatch refuses rather than launching an untraceable interview"

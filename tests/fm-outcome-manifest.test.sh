@@ -174,8 +174,8 @@ test_design_manifest_is_valid() {
   pass "design is a valid durable outcome manifest kind"
 }
 
-# The mattpocock plugin a design interview reads auto-updates, so the release
-# that informed one design result need not be the one that informs the next.
+# The captain-owned mattpocock install a design task reads can change, so the
+# release that informed one design result need not be the one that informs the next.
 # Spawn resolves it at dispatch and records it in task metadata; the manifest is
 # what carries it past cleanup, which is the only reason it is still readable.
 test_design_manifest_carries_the_plugin_release() {
