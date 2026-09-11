@@ -1208,6 +1208,10 @@ pass "real Herdr lab: session lock contention from a secondmate home falls back 
 # Treehouse leases belong to processes; restored shells return to the source
 # directory, so an old task record must not outlive this completed scenario and
 # collide with a later allocation of its now-unleased slot.
+# Keep the presentation parent with a source-root shell, not a pooled task.
+lab tab create --workspace "$FIRSTMATE_WSID" --cwd "$PROJECT_DIR" \
+  --label fixture-layout-anchor --no-focus > "$EVIDENCE_ROOT/layout-anchor.out" \
+  || fail "could not retain the task-free primary presentation parent"
 for META_HOME_PAIR in \
   "p1:$HOME_DIR" "p2:$HOME_DIR" "pcw:$HOME_DIR" \
   "a1:$SECOND_HOME_A" "a2:$SECOND_HOME_A" "acw:$SECOND_HOME_A" \
