@@ -177,11 +177,12 @@
 #   secondmate receives the primary's read-only shared captain-preference file
 #   (fm-config-inherit-lib.sh). A successful launch clears pending inherited
 #   config reread generations because the new agent reads the converged files.
-#   --design records kind=design in the task's meta (interactive ADR deliverable;
-#   see the design-profile skill) and, from the one bin/fm-design-skills.sh
-#   resolve that gates the dispatch, records design_skills_plugin=,
-#   design_skills_version=, and design_skills_updated= so the auto-updating
-#   plugin release that informed the interview stays readable after cleanup;
+#   --design records kind=design in the task's meta (ADR deliverable from one
+#   planning conversation; see the design-profile skill) and, from the one
+#   bin/fm-design-skills.sh resolve that gates the dispatch, records
+#   design_skills_plugin=, design_skills_version=, and design_skills_updated=
+#   so the plugin release that informed the interview stays readable after
+#   cleanup even if the captain-owned install later changes;
 #   --scout records kind=scout (report deliverable,
 #   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
 #   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
@@ -2012,7 +2013,7 @@ design_skill_path_is_safe() {  # <path>
 }
 if [ "$KIND" = design ]; then
   DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
-    echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
+    echo "error: design spawn requires the captain-owned mattpocock design skills; do not install or copy them from a worker" >&2
     exit 1
   }
   DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
@@ -3138,8 +3139,9 @@ if [ "$KIND" = design ]; then
       '# Dispatch-pinned design skills' \
       'Firstmate resolved this binding once at dispatch and recorded its plugin release in the task metadata.' \
       'Use your read tool to load exactly the `grilling` and `domain_modeling` paths in this JSON record.' \
+      'Use those skills selectively inside this task'\''s one planning conversation; do not run a second Kun or Matt workflow.' \
       'Do not run `fm-design-skills.sh resolve` or substitute another installed release.' \
-      'If either exact pinned path is missing, unreadable, or a symlink, append `blocked: dispatch-pinned mattpocock design skill is unavailable; the captain must refresh the plugin and relaunch the task` and stop.' \
+      'If either exact pinned path is missing, unreadable, or a symlink, append `blocked: dispatch-pinned mattpocock design skill is unavailable; refresh the captain-owned plugin install and relaunch the task` and stop.' \
       '' \
       '```json' \
       "$DESIGN_SKILLS_BINDING" \

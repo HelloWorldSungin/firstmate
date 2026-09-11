@@ -55,7 +55,7 @@ The model names are representative test strings that verify axis transport; they
 
 ### Design dependency provenance
 
-The `mattpocock-skills@mattpocock` plugin a design interview reads auto-updates under the captain's own setting, so the release that informed one design result need not be the release that informs the next.
+The captain-owned `mattpocock-skills@mattpocock` install a design task reads can change between tasks, so the release that informed one design result need not be the release that informs the next.
 The 2026-08-26 addition makes `bin/fm-spawn.sh --design` resolve that plugin once at dispatch, bind the worker-facing brief to that result's concrete skill paths, and record `design_skills_plugin=`, `design_skills_version=`, and `design_skills_updated=` in the task's metadata, from where the completion manifest carries them past cleanup.
 [`docs/fleet-data-contracts.md`](../fleet-data-contracts.md#the-design-tasks-plugin-release) owns the recorded contract.
 

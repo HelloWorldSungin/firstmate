@@ -182,6 +182,8 @@ test_help_includes_entire_header() {
     "fm-brief.sh --help omitted the continue-branch argument"
   assert_contains "$help" "a branch held by another worktree blocks checkout, not push" \
     "fm-brief.sh --help omitted the checkout-versus-push rule"
+  assert_contains "$help" "one planning conversation whose only tracked project" \
+    "fm-brief.sh --help omitted the unified design planning contract"
   pass "fm-brief.sh: --help renders the complete header"
 }
 
@@ -1485,7 +1487,7 @@ test_design_brief_is_harness_independent_and_adr_only() {
   assert_contains "$out" "(design, mode=no-mistakes" \
     "design scaffold did not identify its task shape"
   brief="$home/data/design-task/brief.md"
-  assert_grep 'This is an interactive DESIGN task' "$brief" \
+  assert_grep 'This is one DESIGN planning conversation' "$brief" \
     "design brief did not declare the profile"
   assert_grep 'identical on Claude, Codex, and Pi' "$brief" \
     "design brief did not carry the harness-independent binding contract"
@@ -1495,8 +1497,18 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design brief told the worker to resolve a potentially different plugin release"
   assert_grep 'Never install, update, copy, vendor, pin, or modify that plugin' "$brief" \
     "design brief allowed worker-owned plugin lifecycle"
-  assert_grep 'Use those skills for modeling and interrogation only' "$brief" \
+  assert_grep 'Use those skills selectively for the design tree' "$brief" \
     "design brief did not constrain the dependency capabilities"
+  assert_grep 'Do not require a visual review' "$brief" \
+    "design brief made visual review mandatory"
+  assert_grep 'next unblocked decision on the design tree' "$brief" \
+    "design brief did not keep dependency-aware questioning"
+  assert_grep 'rather than padding a ceremonial ADR' "$brief" \
+    "design brief still required an ADR for routine configuration"
+  assert_grep 'Plugin lifecycle is captain-owned outside this repository' "$brief" \
+    "design brief did not keep plugin lifecycle outside the worker"
+  assert_no_grep '/plugin' "$brief" \
+    "design brief prescribed a competing /plugin updater"
   # shellcheck disable=SC2016 # Backticks are literal generated Markdown.
   assert_grep 'Do not create or update `CONTEXT.md`' "$brief" \
     "design brief allowed the dependency to create a second tracked deliverable"
@@ -1556,6 +1568,14 @@ test_design_brief_is_harness_independent_and_adr_only() {
     "design refusal did not preserve plugin ownership"
   assert_absent "$home/data/missing-design/brief.md" \
     "design scaffold wrote a brief despite a missing dependency"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ship-no-planning-stack sample-ship --mode no-mistakes >/dev/null 2>&1
+  assert_no_grep 'grilling' "$home/data/ship-no-planning-stack/brief.md" \
+    "a well-specified ship brief required a Matt interview"
+  assert_no_grep 'lavish-axi' "$home/data/ship-no-planning-stack/brief.md" \
+    "a well-specified ship brief required a visual planning review"
+  assert_no_grep 'planning conversation' "$home/data/ship-no-planning-stack/brief.md" \
+    "a well-specified ship brief inherited the design planning conversation"
   pass "fm-brief.sh: design profile is ADR-only and resolves identically across supported harnesses"
 }
 
