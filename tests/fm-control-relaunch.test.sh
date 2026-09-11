@@ -573,6 +573,8 @@ test_design_relaunch_preserves_identity_on_supported_runtimes() {
       || fail "$harness design relaunch must keep kind=design"
     [ "$(meta_field "$dir" "$id" branch)" = "fm/$id" ] \
       || fail "$harness design relaunch must keep the recorded branch"
+    [ "$(grep -c '^branch=' "$dir/home/state/$id.meta")" = 1 ] \
+      || fail "$harness design relaunch must record the branch exactly once"
     [ "$(meta_field "$dir" "$id" design_skills_plugin)" = "mattpocock-skills@mattpocock" ] \
       || fail "$harness design relaunch must keep the recorded plugin"
     [ "$(meta_field "$dir" "$id" design_skills_version)" = "1.2.0" ] \
