@@ -292,7 +292,7 @@ test_invalid_explicit_issue_markers_fail_closed() {
 
 test_remote_parent_is_the_local_project_lock_boundary() {
   local rec id out status case_dir ancestor peer own_lock peer_lock
-  id=remote-parent-worker
+  id='remote-parent-worker'
   rec=$(make_settle_case remote-parent "$id" 0)
   read_settle_record "$rec"
   case_dir=${rec%%|*}
