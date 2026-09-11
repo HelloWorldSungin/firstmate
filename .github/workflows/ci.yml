@@ -283,9 +283,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-herdr"
           bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
       - name: Run real-Herdr family (serial, required)
-        # Above the measured ~9 min ownership-aware fixture and the rest of
-        # this serial family, while far below the 75 min
-        # job backstop. A hang must fail this step so cleanup still runs.
+        # The split fixtures use the runner's ordinary per-script bound.
+        # A hang must fail this step below the 75 min job backstop so cleanup
+        # still runs; the complete serial family keeps its 20 min step bound.
         timeout-minutes: 20
         run: |
           set -eu
@@ -293,7 +293,6 @@ jobs:
           # Serial only. Fail if any script reports herdr not found. Live
           # harness credential tests stay outside this family (opt-in env only).
           bin/fm-test-run.sh --family real-herdr-gated \
-            --per-script-timeout-secs 900 \
             --fail-on-gate-skip 'herdr not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions

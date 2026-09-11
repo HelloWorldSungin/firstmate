@@ -796,6 +796,19 @@ Cross-session and contradictory bindings are covered deterministically in `tests
 
 ### Per-home and presentation topology
 
+Current presentation and recovery coverage is split into independent entrypoints, each selected by the ordinary real-Herdr family and complete test selection.
+On 2026-09-11, the default named-script invocations passed on Herdr 0.8.2 in 295.146 seconds for presentation and 232.258 seconds for recovery, with no timeout override and the ordinary 480-second bound.
+Each used its own source/home tree, named lab, evidence directory, and task identities, and completed guarded cleanup with the default-session tripwire intact.
+The runs used umask 022 and real-HOME Herdr discovery, with inherited fleet endpoints cleared and Claude configuration isolated.
+Refresh both guarantees with:
+
+```sh
+bin/fm-test-run.sh tests/fm-backend-herdr-presentation-e2e.test.sh
+bin/fm-test-run.sh tests/fm-backend-herdr-recovery-e2e.test.sh
+```
+
+The earlier monolithic presentation commands below are historical verification records; the current recovery owner is the separate entrypoint above.
+
 Per-home behavior is owned by:
 
 ```sh

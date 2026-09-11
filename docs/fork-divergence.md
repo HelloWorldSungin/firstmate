@@ -266,11 +266,13 @@ Local parent traversal, malformed-binding and cycle refusal, project identity, a
 
 ### Herdr presentation fixture ownership and cleanup
 
-The fork's [`tests/fm-backend-herdr-presentation-e2e.test.sh`](../tests/fm-backend-herdr-presentation-e2e.test.sh) retires completed multi-home task records before whole-session restart scenarios.
+The fork separates presentation, focus, and negative-path coverage in [`tests/fm-backend-herdr-presentation-e2e.test.sh`](../tests/fm-backend-herdr-presentation-e2e.test.sh) from multi-home ownership and restart coverage in [`tests/fm-backend-herdr-recovery-e2e.test.sh`](../tests/fm-backend-herdr-recovery-e2e.test.sh), keeping both within ordinary runner bounds.
+They share common setup and instrumentation functions in [`tests/herdr-presentation-fixture.sh`](../tests/herdr-presentation-fixture.sh), while each entrypoint owns independent source, home, lab, evidence, and task identities.
+The recovery fixture retires completed multi-home task records before whole-session restart scenarios.
 Its secondmate homes carry local parent bindings and registry entries, so concurrent positive cases exercise the shared project lock and ownership checks, with a bounded retry only for the expected lock-contention refusals.
-The required real-Herdr CI lane gives each script an explicit 900-second bound inside its existing 20-minute step bound to cover the longer ownership-aware fixture; the runner's default bound remains unchanged.
+Both entrypoints belong to the existing real-Herdr family and use the ordinary default timeout in local and CI runs; no per-script timeout allowance is required.
 Treehouse leases belong to processes, so leaving those completed records after their processes exit can collide with a later allocation of the same slot.
-The fixture keeps its worktree journal across command-substitution subshells and delegates cleanup to [`tests/herdr-presentation-cleanup.sh`](../tests/herdr-presentation-cleanup.sh).
+Both fixtures keep their worktree journals across command-substitution subshells and delegate cleanup to [`tests/herdr-presentation-cleanup.sh`](../tests/herdr-presentation-cleanup.sh).
 That owner waits for outstanding fixture operations, shuts down the named lab before ordinary slot returns, verifies each copy's source repository, and preserves source Git metadata and separate evidence after any failure.
 Repeated cleanup retains the first verdict without repeating partial mutations.
 [`tests/fm-test-fixture-cleanup.test.sh`](../tests/fm-test-fixture-cleanup.test.sh) covers return failure, lifecycle failure, foreign ownership, outstanding operations, and repeated cleanup without using real Herdr.
