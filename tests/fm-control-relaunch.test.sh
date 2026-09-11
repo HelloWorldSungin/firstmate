@@ -663,6 +663,45 @@ test_design_relaunch_refuses_a_missing_skill_pin_before_stop() {
   pass "fm-control relaunch: a design task with no dispatch pin refuses before stop"
 }
 
+test_design_relaunch_refuses_invalid_skill_pins_before_stop() {
+  local dir out rc defect skill binding filter
+  for defect in schema plugin version updated relative control missing directory symlink; do
+    dir=$(new_case "design-invalid-$defect" dip1)
+    add_design_task "$dir" dip1 claude
+    skill="$dir/plugin/skills/productivity/grilling/SKILL.md"
+    filter=.
+    case "$defect" in
+      schema) filter='.schema = "invalid"' ;;
+      plugin) filter='.plugin = "other-plugin"' ;;
+      version) filter='.version = "2.0.0"' ;;
+      updated) filter='.last_updated = "2026-09-01T00:00:00Z"' ;;
+      relative) filter='.skills.domain_modeling = "relative/SKILL.md"' ;;
+      control) filter='.skills.domain_modeling += "\t"' ;;
+      missing) rm "$skill" ;;
+      directory) rm "$skill"; mkdir "$skill" ;;
+      symlink) mv "$skill" "$skill.target"; ln -s "$skill.target" "$skill" ;;
+    esac
+    binding=$(sed -n '/^```json$/{n;p;q;}' /tmp/fm-dip1/brief.md | jq -c "$filter")
+    printf '```json\n%s\n```\n' "$binding" > /tmp/fm-dip1/brief.md
+    cp "$dir/home/state/dip1.meta" "$dir/meta.before"
+    cp "$dir/home/data/dip1/brief.md" "$dir/brief.before"
+    out=$(run_control "$dir" dip1 relaunch --note "preserve ADR decisions"); rc=$?
+    expect_code 1 "$rc" "$defect pin should refuse before stop"$'\n'"$out"
+    [ "$(cat "$dir/fake/command")" = claude ] || fail "$defect pin stopped the agent"
+    [ ! -s "$dir/fake/literal" ] || fail "$defect pin sent agent instructions"
+    cmp -s "$dir/home/state/dip1.meta" "$dir/meta.before" || fail "$defect pin changed metadata"
+    cmp -s "$dir/home/data/dip1/brief.md" "$dir/brief.before" || fail "$defect pin changed the authored brief"
+    [ -f "$dir/home/state/dip1.inbox/001.msg" ] || fail "$defect pin lost a pending decision"
+    [ ! -e "$dir/home/state/dip1.control-relaunch" ] || fail "$defect pin began the relaunch transaction"
+    printf zsh > "$dir/fake/command"
+    out=$(run_spawn "$dir" dip1 --relaunch); rc=$?
+    expect_code 1 "$rc" "direct spawn should refuse $defect pin"$'\n'"$out"
+    [ ! -s "$dir/fake/literal" ] || fail "direct spawn launched with $defect pin"
+    cmp -s "$dir/home/state/dip1.meta" "$dir/meta.before" || fail "direct spawn changed metadata for $defect pin"
+  done
+  pass "fm-control relaunch: invalid design bindings and unavailable skills refuse before stop"
+}
+
 test_relaunch_requires_a_note_for_a_ship_task() {
   local dir out rc before
   dir=$(new_case nonote rl3)
@@ -1733,6 +1772,7 @@ test_relaunch_requires_a_note_for_a_design_task
 test_design_relaunch_ignores_the_crew_harness_config
 test_unknown_kind_relaunch_is_refused_before_stop
 test_design_relaunch_refuses_a_missing_skill_pin_before_stop
+test_design_relaunch_refuses_invalid_skill_pins_before_stop
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_from_linked_home_preserves_recorded_worktree
 test_relaunch_preserves_durable_task_metadata

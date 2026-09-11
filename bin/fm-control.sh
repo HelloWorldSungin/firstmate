@@ -765,24 +765,7 @@ safe_checkpoint() {
   fi
 }
 
-# require_recorded_design_skill_pin: a design relaunch must keep the dispatch
-# pin already recorded for this task. Presence is proved here, before the
-# agent is stopped, so a missing pin refuses with nothing changed; spawn
-# reuses that same recorded release rather than resolving the plugin again
-# (docs/fleet-data-contracts.md "The design task's plugin release").
-require_recorded_design_skill_pin() {
-  local plugin version updated tasktmp dispatch_brief
-  plugin=$(fm_meta_get "$META" design_skills_plugin)
-  version=$(fm_meta_get "$META" design_skills_version)
-  updated=$(fm_meta_get "$META" design_skills_updated)
-  [ -n "$plugin" ] && [ -n "$version" ] && [ -n "$updated" ] \
-    || die "task $ID has no recorded design-skill release; refusing to relaunch rather than resolving a different plugin pin"
-  tasktmp=$(fm_meta_get "$META" tasktmp)
-  [ -n "$tasktmp" ] || tasktmp="/tmp/fm-$ID"
-  dispatch_brief="$tasktmp/brief.md"
-  [ -f "$dispatch_brief" ] && [ ! -L "$dispatch_brief" ] \
-    || die "task $ID has no dispatch-pinned design brief at $dispatch_brief; refusing to relaunch rather than resolving a different plugin release"
-}
+. "$SCRIPT_DIR/fm-design-skills-lib.sh"
 
 # record_note: put the required progress note somewhere durable, and - for a
 # ship, design, or scout, whose only record of the interrupted reasoning is the
@@ -832,7 +815,7 @@ do_relaunch() {
       [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
         || die "relaunch of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
       if [ "$KIND" = design ]; then
-        require_recorded_design_skill_pin
+        adopt_relaunch_design_skills "$META" "$ID" || exit 1
       fi
       ;;
     secondmate)
