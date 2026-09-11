@@ -264,6 +264,16 @@ The fork's `fm_firstmate_root_home` in [`bin/fm-wake-lib.sh`](../bin/fm-wake-lib
 Local parent traversal, malformed-binding and cycle refusal, project identity, and slot-exclusivity checks remain intact.
 [`tests/fm-spawn-worktree-settle.test.sh`](../tests/fm-spawn-worktree-settle.test.sh) drives worker creation beneath a remote root, verifies that local peers share the same project lock, and rejects malformed or cyclic bindings before allocation.
 
+### Herdr presentation fixture ownership and cleanup
+
+The fork's [`tests/fm-backend-herdr-presentation-e2e.test.sh`](../tests/fm-backend-herdr-presentation-e2e.test.sh) retires completed multi-home task records before whole-session restart scenarios.
+Treehouse leases belong to processes, so leaving those completed records after their processes exit can collide with a later allocation of the same slot.
+The fixture keeps its worktree journal across command-substitution subshells and delegates cleanup to [`tests/herdr-presentation-cleanup.sh`](../tests/herdr-presentation-cleanup.sh).
+That owner waits for outstanding fixture operations, shuts down the named lab before ordinary slot returns, verifies each copy's source repository, and preserves source Git metadata and separate evidence after any failure.
+Repeated cleanup retains the first verdict without repeating partial mutations.
+[`tests/fm-test-fixture-cleanup.test.sh`](../tests/fm-test-fixture-cleanup.test.sh) covers return failure, lifecycle failure, foreign ownership, outstanding operations, and repeated cleanup without using real Herdr.
+Production allocation and slot-exclusivity policy remain unchanged.
+
 ### Fork-local no-mistakes compliance-gate event scope
 
 The fork's `Require no-mistakes` workflow omits the `edited` pull-request event and coalesces on one per-PR concurrency group, adopted on 2026-08-14 with `HelloWorldSungin/firstmate#150` for the defect in `HelloWorldSungin/firstmate#98`.

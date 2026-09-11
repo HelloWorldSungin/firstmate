@@ -261,6 +261,90 @@ test_orphan_sweep_reaps_read_only_package_tree() {
   pass "the orphan sweep reaps read-only package fixtures"
 }
 
+test_presentation_cleanup_preserves_failed_ownership() (
+  # Exercise the real fixture cleanup owner with local Git metadata and command
+  # doubles, so deliberate failures cannot touch Herdr or a shared pool.
+  local harness mode wt before after result repeated_result
+  harness=$(fm_test_tmproot fm-test-presentation-cleanup)
+  for mode in success return-failure lab-failure fixture-failure foreign-copy recorded-claim; do
+    TMP_ROOT="$harness/$mode/source"
+    EVIDENCE_ROOT="$harness/$mode/evidence"
+    PROJECT_DIR="$TMP_ROOT/project"
+    RECORDED_WORKTREES="$EVIDENCE_ROOT/worktrees"
+    mkdir -p "$PROJECT_DIR" "$EVIDENCE_ROOT"
+    git -C "$PROJECT_DIR" init -q
+    git -C "$PROJECT_DIR" -c user.name=Tests -c user.email=tests@example.invalid commit -qm initial --allow-empty
+    wt="$TMP_ROOT/slot"
+    git -C "$PROJECT_DIR" worktree add -q --detach "$wt"
+    printf '%s\n' "$wt" > "$RECORDED_WORKTREES"
+    printf 'inner failure evidence\n' > "$EVIDENCE_ROOT/inner.err"
+    if [ "$mode" = foreign-copy ]; then
+      mkdir "$TMP_ROOT/foreign"
+      git -C "$TMP_ROOT/foreign" init -q
+      printf '%s\n' "$TMP_ROOT/foreign" > "$RECORDED_WORKTREES"
+    fi
+    if [ "$mode" = recorded-claim ]; then
+      mkdir -p "$TMP_ROOT/home/state"
+      printf 'worktree=%s\n' "$wt" > "$TMP_ROOT/home/state/p1.meta"
+    fi
+    HERDR_LAB_HELPER="$harness/lab"
+    REAL_TREEHOUSE="$harness/treehouse"
+    cat > "$HERDR_LAB_HELPER" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = teardown ] && [ "$2" = fm-lab-fixture-test ] || exit 90
+[ "$CLEANUP_TEST_MODE" != success ] || [ -f "$CLEANUP_TEST_LOG.operation-finished" ] || exit 92
+printf 'lab teardown\n' >> "$CLEANUP_TEST_LOG"
+[ "$CLEANUP_TEST_MODE" != lab-failure ]
+SH
+    cat > "$REAL_TREEHOUSE" <<'SH'
+#!/usr/bin/env bash
+[ "$#" -eq 2 ] && [ "$1" = return ] && [ "$2" != --force ] || exit 90
+grep -Fxq 'lab teardown' "$CLEANUP_TEST_LOG" || exit 91
+printf 'slot return\n' >> "$CLEANUP_TEST_LOG"
+[ "$CLEANUP_TEST_MODE" != return-failure ]
+SH
+    chmod +x "$HERDR_LAB_HELPER" "$REAL_TREEHOUSE"
+    export CLEANUP_TEST_LOG="$EVIDENCE_ROOT/calls" CLEANUP_TEST_MODE="$mode"
+    HERDR_ORIGINAL_PATH=$PATH
+    HERDR_LAB_SESSION=fm-lab-fixture-test
+    LAB_READY=1
+    LOCK_CONTENTION_OWNER_PID=
+    FIXTURE_FAILED=0
+    [ "$mode" != fixture-failure ] || FIXTURE_FAILED=1
+    PRESENTATION_CLEANUP_DONE=0
+    PRESENTATION_CLEANUP_STATUS=1
+    # shellcheck source=tests/herdr-presentation-cleanup.sh
+    . "$ROOT/tests/herdr-presentation-cleanup.sh"
+    if [ "$mode" = success ]; then
+      (sleep 0.1; : > "$CLEANUP_TEST_LOG.operation-finished") &
+    fi
+    result=0
+    cleanup_all > "$EVIDENCE_ROOT/result.log" 2>&1 || result=$?
+    before=$(cat "$CLEANUP_TEST_LOG")
+    if [ "$mode" = success ]; then
+      [ "$result" -eq 0 ] || fail "successful presentation cleanup failed"
+      assert_absent "$TMP_ROOT" "successful cleanup retained the fixture source"
+    else
+      [ "$result" -ne 0 ] || fail "$mode was silently accepted"
+      assert_present "$PROJECT_DIR/.git" "$mode deleted the source Git metadata"
+      git -C "$wt" rev-parse --git-common-dir >/dev/null || fail "$mode broke the linked worktree metadata"
+    fi
+    repeated_result=0
+    cleanup_all >> "$EVIDENCE_ROOT/result.log" 2>&1 || repeated_result=$?
+    [ "$repeated_result" -eq "$result" ] || fail "$mode changed verdict on repeated cleanup"
+    after=$(cat "$CLEANUP_TEST_LOG")
+    [ "$before" = "$after" ] || fail "$mode repeated mutation on EXIT cleanup"
+    assert_present "$EVIDENCE_ROOT/inner.err" "$mode erased inner failure evidence"
+    case "$mode" in
+      lab-failure|fixture-failure|foreign-copy|recorded-claim)
+        [ "$after" = 'lab teardown' ] || fail "$mode attempted a slot return"
+        ;;
+    esac
+  done
+  pass "presentation cleanup preserves failures, orders shutdown before guarded returns, and never repeats partial cleanup"
+)
+
+test_presentation_cleanup_preserves_failed_ownership
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
 test_fixture_processes_reaped_after_normal_exit
