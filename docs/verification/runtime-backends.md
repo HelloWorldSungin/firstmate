@@ -57,9 +57,11 @@ The model names are representative test strings that verify axis transport; they
 
 The `mattpocock-skills@mattpocock` plugin a design interview reads auto-updates under the captain's own setting, so the release that informed one design result need not be the release that informs the next.
 The 2026-08-26 addition makes `bin/fm-spawn.sh --design` resolve that plugin once at dispatch, bind the worker-facing brief to that result's concrete skill paths, and record `design_skills_plugin=`, `design_skills_version=`, and `design_skills_updated=` in the task's metadata, from where the completion manifest carries them past cleanup.
+A 2026-09-11 control-plane change makes `bin/fm-control.sh relaunch` keep that recorded release for a live `kind=design` worker instead of resolving again.
 [`docs/fleet-data-contracts.md`](../fleet-data-contracts.md#the-design-tasks-plugin-release) owns the recorded contract.
 
 The regressions are `test_design_dispatch_records_the_release_it_resolved`, `test_design_dispatch_binds_one_resolve_to_metadata_and_brief`, `test_design_dispatch_refuses_a_missing_pinned_path`, `test_ship_dispatch_records_no_release`, and `test_design_dispatch_refuses_an_unresolvable_plugin` in `tests/fm-design-skills.test.sh`, which drive real design and ship spawns against fixture plugin installs, plus `test_design_manifest_carries_the_plugin_release`, `test_manifest_omits_an_unresolved_plugin_release`, and `test_manifest_without_design_skills_stays_valid` in `tests/fm-outcome-manifest.test.sh`.
+Design relaunch identity, pin reuse, and refusal controls are `test_design_relaunch_preserves_identity_on_supported_runtimes`, `test_relaunch_requires_a_note_for_a_design_task`, `test_design_relaunch_ignores_the_crew_harness_config`, `test_unknown_kind_relaunch_is_refused_before_stop`, `test_design_relaunch_refuses_a_missing_skill_pin_before_stop`, and the `--design` case in `test_spawn_relaunch_refuses_contradicting_flags` in `tests/fm-control-relaunch.test.sh`.
 
 The 2026-08-26 focused command was:
 
@@ -72,6 +74,18 @@ Its bounded completion markers were:
 ```text
 all fm-design-skills tests passed
 all fm-outcome-manifest tests passed
+```
+
+The 2026-09-11 focused command was:
+
+```sh
+bin/fm-test-run.sh tests/fm-control-relaunch.test.sh
+```
+
+Its bounded completion marker was:
+
+```text
+all fm-control-relaunch tests passed
 ```
 
 ### Focused delivery and compatibility regression
