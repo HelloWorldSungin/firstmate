@@ -212,14 +212,15 @@ SH
 
 write_design_brief() {  # <home> <id>
   mkdir -p "$1/data/$2"
-  printf 'design brief\n\n# Definition of done\nDelivery contract: mode=no-mistakes\n' \
+  printf "# Task\n## Captain's intent\nExercise a synthetic design fixture.\n## Firstmate spec\nVerify design skill launch bindings.\n\n# Definition of done\nDelivery contract: mode=no-mistakes\n" \
     > "$1/data/$2/brief.md"
 }
 
 run_design_spawn() {  # <home> <worktree> <fakebin> <registry> <spawn-args...>
   local home=$1 wt=$2 fakebin=$3 registry=$4
   shift 4
-  FM_ROOT_OVERRIDE="${FM_SPAWN_ROOT:-}" FM_HOME="$home" \
+  mkdir -p "$home/user-home"
+  FM_ROOT_OVERRIDE="${FM_SPAWN_ROOT:-}" HOME="$home/user-home" CLAUDE_CONFIG_DIR="$home/user-home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_MATTPOCOCK_PLUGIN_REGISTRY="$registry" \
@@ -420,7 +421,8 @@ $rec
 EOF
   write_design_brief "$home" ship-one
 
-  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+  mkdir -p "$home/user-home"
+  out=$(HOME="$home/user-home" CLAUDE_CONFIG_DIR="$home/user-home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_MATTPOCOCK_PLUGIN_REGISTRY="$TMP_ROOT/spawn-ship/absent.json" \
@@ -430,6 +432,9 @@ EOF
     || fail "ship spawn failed with no plugin installed: $out"
   meta="$home/state/ship-one.meta"
   [ -f "$meta" ] || fail "ship spawn wrote no task metadata: $out"
+  jq -e --arg wt "$wt" '.projects[$wt].hasTrustDialogAccepted == true' \
+    "$home/user-home/.claude.json" >/dev/null \
+    || fail "the direct ship spawn did not write trust to its exact scratch store"
   ! grep -q '^design_skills_' "$meta" \
     || fail "a ship task recorded a design plugin release it never read"
   pass "a non-design dispatch neither resolves nor records the design plugin"

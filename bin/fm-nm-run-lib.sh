@@ -10,7 +10,9 @@
 # a run-behind head while that exact run is authoring fixes, and may accept any
 # head at all - unresolved and diverged included - under the active
 # pipeline-owned exemption that fm_nm_run_is_pipeline_owned_active defines at
-# the bottom of this file, because there the pipeline owns those changes.
+# this file, because there the pipeline owns those changes.
+# The runs-ledger reader below additionally recognizes only the terminal exact-HEAD
+# anchor recorded in docs/fork-divergence.md; it does not change teardown.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -89,7 +91,8 @@ fm_nm_head_relation() {  # <worktree> <run_head>
 # head relation. This predicate once accepted an unresolved head from any live
 # branch-scoped answer, which was a proxy for that custody before branch_sync
 # was readable; a live run on a `synced` branch whose head simply never reached
-# this worktree is not attributable, so the proxy is not restored.
+# this worktree is not attributable by this predicate, so the proxy is not restored.
+# The separate ledger-anchored route is owned by fm_nm_runs_row_for_worktree.
 fm_nm_head_attributable() {  # <worktree> <run_head> <authoring:0|1>
   case "$(fm_nm_head_relation "$1" "$2")" in
     equal|run-ahead) return 0 ;;
@@ -133,9 +136,9 @@ fm_nm_run_is_active() {  # <toon-output>
   case "$status" in completed|failed|cancelled) return 1 ;; esac
 }
 
-# The one exemption to the head rule above: while the pipeline OWNS the branch
-# (branch_sync.state=pipeline_owned), the daemon's own branch attribution IS
-# the attribution for an ACTIVE run, and
+# The custody exemption to the head rule above: while the pipeline OWNS the
+# branch (branch_sync.state=pipeline_owned), the daemon's own branch
+# attribution IS the attribution for an ACTIVE run, and
 # head equality must not be required - the pipeline's lane head is routinely
 # not a git object in the task worktree (rebase and fix commits that were
 # never pushed back), so the head rule rejects exactly the run that is most
@@ -157,4 +160,50 @@ fm_nm_run_is_active() {  # <toon-output>
 fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
   fm_nm_run_is_active "$1"
+}
+
+# One owner for runs-ledger attribution, returning the newest matching branch
+# row as <evidence>\t<status>\t<head>. Evidence is attributable, inconclusive,
+# or rejected; an absent branch prints nothing. Older rows never answer as the
+# current run. The only use of an older row is the approved narrow anchor:
+# a newest running unresolved head is attributable when the immediately older
+# same-branch row is completed, failed, or cancelled at exactly local HEAD.
+# Missing, nonterminal, and mismatched anchors remain inconclusive. This is a
+# current-state reader, never a relaxation of the strict teardown predicate.
+# The listing is the caller's captured `no-mistakes runs --limit N` output:
+# newest first, status, branch, short head, then date and optional PR columns.
+fm_nm_runs_row_for_worktree() {  # <worktree> <branch> <runs-list-output>
+  local wt=$1 branch=$2 list=$3 row st rest br sha relation pending_head=''
+  [ -n "$list" ] || return 0
+  while IFS= read -r row; do
+    row=$(fm_nm_trim "$row")
+    [ -n "$row" ] || continue
+    st=${row%% *}
+    rest=$(fm_nm_trim "${row#* }")
+    br=${rest%% *}
+    [ "$br" = "$branch" ] || continue
+    rest=$(fm_nm_trim "${rest#* }")
+    sha=${rest%% *}
+    relation=$(fm_nm_head_relation "$wt" "$sha")
+    if [ -n "$pending_head" ]; then
+      case "$st:$relation" in
+        completed:equal|failed:equal|cancelled:equal)
+          printf 'attributable\trunning\t%s' "$pending_head" ;;
+        *) printf 'inconclusive\trunning\t%s' "$pending_head" ;;
+      esac
+      return 0
+    fi
+    case "$relation" in
+      equal|run-ahead) printf 'attributable\t%s\t%s' "$st" "$sha"; return 0 ;;
+      unresolved)
+        case "$st" in
+          running) pending_head=$sha ;;
+          *) printf 'rejected\t%s\t%s' "$st" "$sha"; return 0 ;;
+        esac
+        ;;
+      *) printf 'rejected\t%s\t%s' "$st" "$sha"; return 0 ;;
+    esac
+  done <<< "$list"
+  [ -z "$pending_head" ] || printf 'inconclusive\trunning\t%s' "$pending_head"
+  return 0
 }

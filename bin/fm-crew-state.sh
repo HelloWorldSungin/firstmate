@@ -122,10 +122,16 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
 
-META="$STATE/$ID.meta"
-LOG="$STATE/$ID.status"
+# Fleet snapshot composition supplies its captured metadata path here so every
+# state read resolves the same task generation selected by that snapshot.
+META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
+LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
+# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
+# (fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh) scans. Generous
+# enough to still find a branch's own run on a busy multi-crew fleet without
+# listing the entire history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 # How long a recorded run-step stays usable as the degraded answer after the run
@@ -660,48 +666,9 @@ nm_ci_checks_state() {
     *) printf 'unknown' ;;
   esac
 }
-# Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
-# reports the active-or-most-recent run for the CURRENT branch when one
-# exists, else falls back to some other branch's run purely as informational
-# display (verified empirically: querying a worktree with its own active run
-# reliably returns that run, even under concurrent load from several other
-# validating crews on the same underlying repo). A crew whose branch genuinely
-# has no run yet therefore sees another branch's answer here.
-#
-# A PURE PARSER over a listing the caller already captured. The call itself is
-# made by the caller so a listing that could not be fetched is classified as a
-# lookup failure there; parsing an empty string here would otherwise report the
-# same "no run for this branch" as a listing that genuinely lacks the branch.
-nm_runs_row_for_branch() {  # <branch> <runs-listing>
-  local branch=$1 out=${2:-} row st rest br sha relation
-  [ -n "$out" ] || return 0
-  while IFS= read -r row; do
-    row=$(trim "$row")
-    [ -n "$row" ] || continue
-    st=${row%% *}
-    rest=${row#* }
-    rest=$(trim "$rest")
-    br=${rest%% *}
-    rest=${rest#* }
-    rest=$(trim "$rest")
-    sha=${rest%% *}
-    if [ "$br" = "$branch" ]; then
-      relation=$(nm_head_relation "$sha")
-      case "$relation" in
-        equal|run-ahead) printf 'attributable\t%s\t%s' "$st" "$sha" ;;
-        unresolved)
-          case "$st" in
-            running) printf 'inconclusive\t%s\t%s' "$st" "$sha" ;;
-            *)       printf 'rejected\t%s\t%s' "$st" "$sha" ;;
-          esac
-          ;;
-        *)              printf 'rejected\t%s\t%s' "$st" "$sha" ;;
-      esac
-      return 0
-    fi
-  done <<< "$out"
-  return 0
-}
+# The caller captures the runs ledger so transport failure stays distinct from
+# a confirmed absence. bin/fm-nm-run-lib.sh owns its three-verdict attribution
+# result and the terminal exact-HEAD anchor for an unfetched running head.
 
 # A detached worktree is normal before a just-spawned ship or design worker creates its recorded
 # branch and throughout a scout's scratch phase. A named worktree branch is only
@@ -764,8 +731,8 @@ nm_head_relation() {  # <sha>
 # branch_sync.state, and not by a head relation - so it is not decided here but
 # by fm_nm_run_is_pipeline_owned_active, which the caller ORs with this
 # predicate. The historical runs listing has no notion of "current" and carries
-# no branch_sync at all, so an unresolvable sha there stays rejected, and a
-# terminal run's unseen head is evidence of nothing on either path.
+# no branch_sync at all; its narrow terminal exact-HEAD anchor is owned by
+# fm_nm_runs_row_for_worktree, and a terminal run's unseen head remains rejected.
 # `missing`, `unresolved`, and `diverged` are therefore all rejected here - an
 # absent sha cannot bind, an unseen sha is the custody question above, and a
 # resolvable sha on neither side of HEAD is a genuinely rewritten branch.
@@ -852,9 +819,11 @@ nm_run_invalidates_record() {
 
 HAVE_RUN=0
 # RUN_SOURCE distinguishes the two ways HAVE_RUN=1 can happen: "full" means
-# $RUN_OUT is real `axi status` TOON with step/gate detail; "coarse" means only
-# a bare status word came back from the runs-list fallback above, so the
-# run-step block below skips the TOON field parsing entirely for this crew.
+# $RUN_OUT is real `axi status` TOON with step/gate detail (including a
+# same-branch run the strict head rule rejected but the ledger proved is this
+# worktree's pipeline-owned continuation); "coarse" means only a bare status
+# word came back from the runs-list fallback, so the run-step block below skips
+# the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
 COARSE_HEAD=""
@@ -873,7 +842,7 @@ lookup_coarse_run() {
     LOOKUP_DEGRADED_REASON="run lookup unavailable"
     return
   fi
-  COARSE_ROW=$(nm_runs_row_for_branch "$LOOKUP_BRANCH" "$runs_out")
+  COARSE_ROW=$(fm_nm_runs_row_for_worktree "$WT" "$LOOKUP_BRANCH" "$runs_out")
   IFS=$'\t' read -r COARSE_EVIDENCE COARSE_STATUS COARSE_HEAD <<< "$COARSE_ROW"
   case "$COARSE_EVIDENCE" in
     attributable)
@@ -881,6 +850,18 @@ lookup_coarse_run() {
       if [ -n "$TASK_BRANCH" ]; then
         HAVE_RUN=1
         RUN_SOURCE=coarse
+        # Keep full detail only when it names the ledger's selected head. The
+        # runs command abbreviates that SHA; a different same-branch axi head
+        # must not lend its gate to this newest row. A terminal AXI result
+        # cannot describe the ledger's running row even when the head matches.
+        if [ "$COARSE_STATUS" = running ] \
+          && [ "$(nm_head_relation "$COARSE_HEAD")" = unresolved ] \
+          && fm_nm_run_is_active "$RUN_OUT" \
+          && [ "$(strip_quotes "$(nm_field branch)")" = "$LOOKUP_BRANCH" ]; then
+          case "$(strip_quotes "$(nm_field head)")" in
+            "$COARSE_HEAD"*) [ -z "$COARSE_HEAD" ] || RUN_SOURCE=full ;;
+          esac
+        fi
       else
         RUN_ATTRIBUTION_FAULT="run on $LOOKUP_BRANCH is unattributable: task branch not recorded"
       fi

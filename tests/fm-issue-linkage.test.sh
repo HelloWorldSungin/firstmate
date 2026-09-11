@@ -537,7 +537,7 @@ make_spawn_case() {  # <name> <registry-line> <brief-extra-line>...
   id="$name-z1"
   mkdir -p "$home/data/$id"
   {
-    printf 'brief for %s\n\n' "$id"
+    printf "# Task\n## Captain's intent\nExercise synthetic issue linkage for %s.\n## Firstmate spec\nVerify explicit work-item metadata.\n\n" "$id"
     [ "$#" -eq 0 ] || printf '%s\n' "$@"
     printf '\nDelivery contract: mode=no-mistakes\n'
   } > "$home/data/$id/brief.md"
@@ -546,7 +546,8 @@ make_spawn_case() {  # <name> <registry-line> <brief-extra-line>...
 
 run_spawn() {  # <home> <wt> <fakebin> <id> <project-dir>
   local home=$1 wt=$2 fakebin=$3 id=$4 proj=$5
-  env FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+  mkdir -p "$home/user-home"
+  env FM_ROOT_OVERRIDE='' HOME="$home/user-home" CLAUDE_CONFIG_DIR="$home/user-home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \

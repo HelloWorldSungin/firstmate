@@ -69,9 +69,9 @@ test_agy_template() {
   pass "agy template: --dangerously-skip-permissions + --prompt-interactive brief"
 }
 
-test_existing_templates_unchanged() {
+test_existing_templates_keep_settings_and_hooks() {
   assert_eq "$(fm_launch_template claude ship)" \
-    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "claude template drifted"
   assert_eq "$(fm_launch_template grok ship)" \
     'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
@@ -81,7 +81,7 @@ test_existing_templates_unchanged() {
     "codex crew template lost its notify turn-end"
   assert_contains "$(fm_launch_template pi ship)" '-e __PIEXT__' \
     "pi crew template lost its turn-end extension"
-  pass "existing harness templates remain byte-stable after extraction"
+  pass "existing harness templates retain prompt/feedback settings and lifecycle hooks"
 }
 
 test_unknown_harness_returns_nonzero() {
@@ -277,7 +277,7 @@ test_raw_restricted_harness_resolution
 test_raw_restricted_harness_shell_wrappers
 test_raw_restricted_harness_variable_indirection
 test_raw_guard_intercepts_every_bypass_spelling
-test_existing_templates_unchanged
+test_existing_templates_keep_settings_and_hooks
 test_unknown_harness_returns_nonzero
 test_cursor_model_passthrough
 test_agy_model_flag

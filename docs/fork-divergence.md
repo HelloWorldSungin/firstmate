@@ -58,14 +58,6 @@ That second half was added on 2026-08-25 when the inbox plane first collided wit
 [`tests/fm-send-strict.test.sh`](../tests/fm-send-strict.test.sh) pins both planes, including the failure directions, so a future round that changes plane selection fails loudly instead of dropping the gate.
 This divergence went unrecorded from its introduction on 2026-08-12 until 2026-08-25.
 
-### Pre-move crash fixture does not perform the move it simulates crashing before
-
-`tests/fm-backlog-handoff.test.sh`'s pre-move crash case arrived from upstream with a `tasks-axi` stub that kills the handoff and then execs the real `mv` anyway, leaving an orphan that lands the move about a second later.
-Every later assertion that the item is still in the source backlog then holds or fails on how fast the runner is, which is why the case passes locally and failed the fork's CI on `kunchenguid/firstmate#2848`'s first round here.
-The fork's stub exits instead of moving, because the scenario it exists to build is a handoff that died BEFORE its move landed.
-Reproduced deliberately on 2026-08-25 by widening the window with a three-second wait after the simulated crash: the upstream stub fails that case and the fork's passes.
-Upstream will most likely fix this itself, at which point this entry retires in favour of whatever it lands.
-
 ### Watcher restart hand-over
 
 The fork guarantees that `bin/fm-watch-arm.sh --restart` never leaves this home without a live watcher, and never forks a second watcher while the first still holds the lock.
@@ -106,6 +98,10 @@ It first collided on 2026-09-02 with `kunchenguid/firstmate#3155` and `kunchengu
 [`tests/fm-watch-triage.test.sh`](../tests/fm-watch-triage.test.sh) and [`tests/fm-daemon.test.sh`](../tests/fm-daemon.test.sh) pin both halves, the live-declaration routing and the streak reconciliation, beside upstream's own handoff cases, so a round that restores upstream's classification fails loudly instead of silently retiring the cadence.
 It collided again on 2026-09-04 with `kunchenguid/firstmate#3268`, which made the away daemon advance a declared wait's recheck marker only when the escalation was actually buffered; that gating was adopted whole and the fork's `pause_streak_bump` moved inside it, so a recheck that was never recorded no longer widens the window it never sent.
 This divergence went unrecorded from its introduction until 2026-09-02.
+
+Upstream `kunchenguid/firstmate#3532` adds a declaration-scoped throttle for a live captain-held pane after its first inspection, so a changing pane hash cannot continually re-alarm the same hold.
+That throttle is adopted while a worker's own `paused:` declaration keeps the fork's immediate absorption, widening cadence, and reset to the replacement wait's base deadline.
+
 
 ### Herdr pre-Enter footer read on a native working baseline
 
@@ -174,6 +170,12 @@ The fork's own arm that accepted an `unresolved` head from any live branch-scope
 Upstream's separate `fm_nm_head_resolvable` was retired as a second owner of the proven-versus-unknown distinction the `unresolved` verdict already makes, and the coarse runs-listing scan keeps the fork's three-verdict result because that path carries no `branch_sync` evidence to reach the exemption with.
 `test_pipeline_owned_unresolvable_head_attributes` and upstream's five new exemption cases pin both halves, so a round that restores the retired proxy or drops the exemption fails loudly.
 
+The captain approved a narrow replacement of the unresolved-head coarse fallback on 2026-09-11 when adopting `kunchenguid/firstmate#3681`.
+`fm_nm_runs_row_for_worktree` in `bin/fm-nm-run-lib.sh` owns the newest-row attribution and its terminal exact-HEAD same-branch anchor; this is not a general exemption for unresolved heads.
+The relation table, recorded task branch, abandoned-worker and degraded reporting, explicit active pipeline custody, and strict teardown predicate remain intact.
+Full AXI detail is reused only for an active reply matching that anchored running row, so a terminal result from an older run at the same head cannot turn the current validation into Done.
+`tests/fm-crew-state.test.sh` covers terminal, running, missing, and mismatched anchors, unrelated full-detail heads, terminal detail at the same head, and the retained worker-liveness behavior.
+
 ### Definition-of-done owner carries this fork's ready-to-validate handoff
 
 Upstream's `kunchenguid/firstmate#3269` made [`bin/fm-dod-lib.sh`](../bin/fm-dod-lib.sh) the one owner of a ship task's mode-specific definition of done so a promoted scout receives the same delivery contract a briefed worker does.
@@ -185,10 +187,13 @@ Taking upstream's text verbatim would have replaced that handoff with `done:`, w
 Upstream's byte-identity check between the promotion and brief paths stays green, so the two renderings still cannot drift.
 The handoff itself went unrecorded here from its introduction until 2026-09-04.
 
+The intent/spec split and current intent overlay from `kunchenguid/firstmate#3597` and `kunchenguid/firstmate#3671` apply to design workers too, while the fork's delivery fragments remain the rendering owner.
+`bin/fm-spawn.sh` reads structural branch and work-item identity from the authored brief, not the derived launch overlay that can repeat intent text.
+
 ### A preserving refusal withdraws the pending backlog close
 
 Upstream's `kunchenguid/firstmate#3322` made cleanup record its intended backlog close in `state/<id>.backlog-close` before any destructive step, so a process killed mid-cleanup leaves the next session start enough to finish it.
-This fork's cleanup carries refusals upstream has no equivalent of that deliberately KEEP a task rather than finish it: an unpublishable completion manifest, a model-routing verdict that gained a turn, and a Herdr close that could not be confirmed gone.
+This fork's cleanup carries refusals upstream has no equivalent of that deliberately KEEP a task rather than finish it: an unpublishable completion manifest, a model-routing verdict that gained a turn, and a Herdr close that could not be confirmed gone, and an outcome that could not reach its parent channel.
 Replaying a pending close after one of those removes the task record the refusal exists to preserve, which is the opposite of what each of them is for, so `withdraw_pending_backlog_close` in [`bin/fm-teardown.sh`](../bin/fm-teardown.sh) removes that record at exactly those refusals and nowhere else.
 The distinction is deliberate and narrow: a crash is not a refusal, so an interrupted cleanup still leaves its replayable close, which is why the withdrawal is called at named refusal sites rather than from the exit trap that a signal would also reach.
 Upstream's `test_interrupted_destructive_cleanup_leaves_a_recoverable_close` and this fork's `test_a_preserving_refusal_withdraws_the_close_it_recorded` in [`tests/fm-backlog-atomicity.test.sh`](../tests/fm-backlog-atomicity.test.sh) pin the two halves against each other, so a round that widens the withdrawal to every failure, or drops it, fails loudly.
@@ -215,6 +220,11 @@ Upstream reintroduced `FM_SNAPSHOT_CREW_STATE_TIMEOUT` a second time on 2026-09-
 Upstream `kunchenguid/firstmate#3481` and `kunchenguid/firstmate#3501` replace on-demand remote summaries with one bounded concurrent remote-ledger collection and remove remote endpoint probes from the snapshot.
 Those changes are taken, including removal of the legacy cross-home timeout, while local rows retain the fork's `FM_SNAPSHOT_TASK_TIMEOUT` and bounded fan-out.
 The shared validator used for live and cached ledgers still requires `abandoned_children`, and one exit cleanup owns both the fork task-reader scratch and the upstream collector scratch.
+
+Upstream `kunchenguid/firstmate#3499` and `kunchenguid/firstmate#3677` add captured-generation observations and file-based JSON transport.
+The fork keeps one concurrent row builder, its existing timeout names and unavailable-row fallback, and its dashboard, model, work-item, and abandoned-child fields.
+Mutable observations are discarded when the captured task generation changes, while every captured task still produces a row or an explicit snapshot failure.
+Bearings projects each active or abandoned child independently of a secondmate home's hold classification, preserving interrupted-work identity without a competing home-level Underway row.
 
 ### Pi away-mode supervision standby
 
@@ -348,6 +358,12 @@ The dashboard forces the snapshot's `FM_SNAPSHOT_CACHE_READ_ONLY=1` mode so it c
 The snapshot header owns that mode, `tests/fm-bearings-snapshot.test.sh` proves its no-create, no-overwrite, fresh-read, and cached-fallback behavior, and `tests/fm-dashboard.test.sh` proves the server forces it even over a write-enabled ambient setting.
 
 ## Retired divergences
+
+### Pre-move crash fixture - retired 2026-09-11
+
+The fork's pre-move crash correction is now supplied by upstream `kunchenguid/firstmate#3644`.
+Its shared crash injector terminates the handoff and the stub exits without executing the move, preserving the fork's guarantee that a simulated pre-move crash cannot leave an orphan that moves the item later.
+`tests/fm-backlog-handoff.test.sh` retains that behavioral case against the shared injector.
 
 ### Separate decision-hold lifecycle - retired 2026-08-24
 

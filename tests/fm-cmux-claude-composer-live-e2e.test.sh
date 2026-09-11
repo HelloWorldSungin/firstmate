@@ -2,6 +2,8 @@
 # Real Claude Code plus cmux submit-confirmation drift guard.
 # Run explicitly with FM_CMUX_CLAUDE_COMPOSER_LIVE=1; it creates and cleans up
 # only one exact fm-test- workspace through the normal scout lifecycle.
+# Uses a disposable Claude config; supply authentication through the environment
+# when opting in. Never copies the developer's credential or trust store.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,7 +42,9 @@ cmux ping >/dev/null 2>&1 || fail "FM_CMUX_CLAUDE_COMPOSER_LIVE=1 but the cmux s
 
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-cmux-claude-composer.XXXXXX") || fail "could not create an isolated cmux Claude lab"
 trap cleanup EXIT
-mkdir -p "$LAB/config" "$LAB/data/$TASK" "$LAB/projects/comms" "$LAB/state"
+mkdir -p "$LAB/config" "$LAB/data/$TASK" "$LAB/projects/comms" "$LAB/state" \
+  "$LAB/user-home" "$LAB/claude-config"
+export HOME="$LAB/user-home" CLAUDE_CONFIG_DIR="$LAB/claude-config"
 printf 'cmux\n' > "$LAB/config/backend"
 
 git -C "$LAB/projects/comms" init -q -b main || fail "could not initialize the isolated probe repository"
@@ -63,7 +67,7 @@ brief.write_text(brief.read_text().replace("{TASK}", f'''Run a cmux communicatio
 Immediately append `working: cmux composer probe ready` to `{status}`.
 Then append exactly `needs-decision [key=probe-decision]: awaiting codeword` to that file and stop to wait for a firstmate message.
 When you receive a firstmate message containing `ALBATROSS`, append `done: received ALBATROSS` to that status file and stop.
-Do not change project files or make a commit.'''))
+Do not change project files or make a commit.''').replace("{FIRSTMATE_SPEC}", "Exercise the synthetic cmux communication and submit-confirmation probe."))
 PY
 
 FM_HOME="$LAB" "$ROOT/bin/fm-spawn.sh" "$TASK" "$LAB/projects/comms" --scout --harness claude --model haiku --backend cmux \
