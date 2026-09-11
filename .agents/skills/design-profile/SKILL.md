@@ -1,6 +1,6 @@
 ---
 name: design-profile
-description: Agent-only supervisor contract for dispatching and supervising an interactive design task whose tracked deliverable is an ADR. Load before scaffolding, dispatching, answering, completing, or cleaning up a kind=design task.
+description: Agent-only supervisor contract for dispatching and supervising a one-conversation design task whose tracked deliverable is a short ADR. Load before scaffolding, dispatching, answering, completing, or cleaning up a kind=design task.
 user-invocable: false
 metadata:
   internal: true
