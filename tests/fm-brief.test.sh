@@ -1569,7 +1569,10 @@ test_design_brief_is_harness_independent_and_adr_only() {
   assert_absent "$home/data/missing-design/brief.md" \
     "design scaffold wrote a brief despite a missing dependency"
 
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ship-no-planning-stack sample-ship --mode no-mistakes >/dev/null 2>&1
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ship-no-planning-stack sample-ship --mode no-mistakes 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a well-specified ship brief should scaffold (got: $out)"
+  [ -s "$home/data/ship-no-planning-stack/brief.md" ] || fail "ship scaffold did not write a nonempty brief"
   assert_no_grep 'grilling' "$home/data/ship-no-planning-stack/brief.md" \
     "a well-specified ship brief required a Matt interview"
   assert_no_grep 'lavish-axi' "$home/data/ship-no-planning-stack/brief.md" \
