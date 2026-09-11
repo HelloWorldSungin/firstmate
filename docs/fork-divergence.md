@@ -235,6 +235,10 @@ The fork keeps one concurrent row builder, its existing timeout names and unavai
 Mutable observations are discarded when the captured task generation changes, while every captured task still produces a row or an explicit snapshot failure.
 Bearings projects each active or abandoned child independently of a secondmate home's hold classification, preserving interrupted-work identity without a competing home-level Underway row.
 
+The structured hold parser from `kunchenguid/firstmate#3508` also retains the fork's legacy combined metadata form, such as `(repo: project, hold: reason)`, alongside canonical standalone hold annotations.
+`backlog_json` in `bin/fm-fleet-snapshot.sh` preserves commas in canonical reasons, accepts the existing combined fields, and does not promote unparenthesized title prose into a hold.
+[`tests/fm-dashboard-backlog.test.sh`](../tests/fm-dashboard-backlog.test.sh) pins those cases through the real Backlog API endpoint, where losing a parsed reason would hide a held item's state.
+
 ### Pi and OMP away-mode supervision standby
 
 The fork's Pi watcher extension hands supervision to the away daemon while `state/.afk` exists: [`.pi/extensions/fm-primary-pi-watch.ts`](../.pi/extensions/fm-primary-pi-watch.ts) arms nothing, retires any arm child it already owns, injects no ordinary wake, and resumes exactly one extension-owned cycle once the flag clears.

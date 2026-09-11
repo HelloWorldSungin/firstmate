@@ -228,6 +228,9 @@ test_backlog_endpoint_serves_the_full_record_set() {
         "$index" "$index" $((index % 3)) $((index % 4))
     done
     printf -- '- [ ] held-1 - The held one (repo: proj-h, hold: waiting on the captain)\n'
+    printf -- '- [ ] held-comma - Canonical hold (repo: proj-h) (hold: waiting, on the captain) (hold-kind: captain)\n'
+    printf -- '- [ ] held-tail - Legacy combined hold (repo: proj-h, hold: waiting on the captain, hold-kind: captain)\n'
+    printf -- '- [ ] plain-note - Note, hold: these words are prose (repo: proj-h)\n'
     printf '\n## Done\n'
     printf -- '- [x] done-1 - The delivered one (repo: proj-d, done 2026-08-10)\n'
   } > "$home/data/backlog.md"
@@ -262,8 +265,8 @@ test_backlog_endpoint_serves_the_full_record_set() {
   [ "$(printf '%s' "$body" | jq -r '.backlog.present')" = true ] \
     || fail "a real backlog file was not reported present"
   count=$(printf '%s' "$body" | jq '[.backlog.records[] | select(.id != null)] | length')
-  [ "$count" -eq 93 ] \
-    || fail "the endpoint truncated the record set: served $count of the 93 written records"
+  [ "$count" -eq 96 ] \
+    || fail "the endpoint truncated the record set: served $count of the 96 written records"
   ids=$(printf '%s' "$body" | jq -r '[.backlog.records[].id | select(. != null)] | join(" ")')
   case "$ids" in
     *queued-090*) : ;;
@@ -271,6 +274,12 @@ test_backlog_endpoint_serves_the_full_record_set() {
   esac
   [ "$(printf '%s' "$body" | jq -r '[.backlog.records[] | select(.id == "held-1")] | .[0].hold_reason')" = "waiting on the captain" ] \
     || fail "the held record lost its hold reason through the endpoint"
+  printf '%s' "$body" | jq -e '.backlog.records[] | select(.id == "held-comma") | .hold_reason == "waiting, on the captain"' >/dev/null \
+    || fail "canonical hold punctuation was truncated"
+  printf '%s' "$body" | jq -e '.backlog.records[] | select(.id == "held-tail") | .hold_reason == "waiting on the captain" and .hold_kind == "captain"' >/dev/null \
+    || fail "legacy combined hold metadata was not retained"
+  printf '%s' "$body" | jq -e '.backlog.records[] | select(.id == "plain-note") | .hold_reason == null' >/dev/null \
+    || fail "title prose was interpreted as a hold annotation"
   [ "$(printf '%s' "$body" | jq -r '[.backlog.records[] | select(.id == "done-1")] | .[0].state')" = "done" ] \
     || fail "the done record lost its section state through the endpoint"
 

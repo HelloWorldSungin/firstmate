@@ -716,7 +716,10 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
     def metadata($rest; $key):
       cap($rest; ".*(?:\\(|,[[:space:]]*)" + $key + ":[[:space:]]*(?<v>[^,)]*)");
     def hold_metadata($rest):
-      cap($rest; ".*\\(hold:[[:space:]]*(?<v>[^)]*)");
+      # Canonical holds have their own parentheses and may contain commas.
+      # Retain legacy combined metadata blocks without reading title prose.
+      cap($rest; ".*\\(hold:[[:space:]]*(?<v>[^)]*)")
+      // cap($rest; ".*\\([^)]*,[[:space:]]*hold:[[:space:]]*(?<v>[^,)]*)");
     def metadata_word($rest; $key):
       cap($rest; ".*(?:\\(|,[[:space:]]*)" + $key + "[[:space:]]+(?<v>[^,)]*)");
     def url_pattern: "https?://[^[:space:])\"<>]+";
