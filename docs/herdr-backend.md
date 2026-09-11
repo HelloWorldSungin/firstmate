@@ -1,6 +1,6 @@
 # Herdr runtime backend
 
-Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
+Herdr is an agent-native terminal backend with native per-pane agent state and push events.
 Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0, while protocol-16 features remain gated by availability.
 Default-on presentation spaces have a higher floor of Herdr 0.8.0 for the reason given under [Presentation spaces](#presentation-spaces).
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
@@ -8,7 +8,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 
 ## Setup
 
-Pick Herdr when you want native busy, idle, and blocked state and accept the experimental limits below.
+Pick Herdr when you want native busy, idle, and blocked state and accept the active limits below.
 
 Prerequisites:
 
@@ -169,7 +169,9 @@ Operational compromises:
 - Regaining a dedicated space after degradation requires stopping the flat task, manually checking the stale projection, and clearing its journal before a genuinely fresh launch.
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
-`tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, exact same-identity restart replacement, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
+`tests/fm-backend-herdr-presentation-e2e.test.sh` covers default and opt-out presentation, focus preservation, move and abort refusals, repeated concurrency waves, and exact-pane cleanup through the guarded lab path.
+`tests/fm-backend-herdr-recovery-e2e.test.sh` covers multi-home ordering, registered ownership and lock contention, legacy coexistence, exact same-identity restart replacement, ambiguous bindings and tokens, and independent guarded cleanup.
+Each entrypoint creates its own source, homes, lab, and evidence; both are selected by the existing real-Herdr family and ordinary complete test selection.
 `tests/fm-herdr-session-cleanup.test.sh` covers every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary.
 `tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab.
 `tests/fm-backend-herdr-focus-flash-e2e.test.sh` reproduces the raw explicit-close focus steal on the installed release and proves the focus-safe emptying-close plan removes a doomed workspace with no wrong-focus interval; [`verification/runtime-backends.md`](verification/runtime-backends.md#workspace-removal-focus-safety) owns the active versioned evidence.
@@ -341,7 +343,6 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 
 ## Active limits
 
-- Herdr remains experimental.
 - Presentation ordering needs protocol 16 and Python and is best-effort only.
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
@@ -365,6 +366,7 @@ tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
+tests/fm-backend-herdr-recovery-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh

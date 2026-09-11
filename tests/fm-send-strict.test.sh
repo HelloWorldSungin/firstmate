@@ -66,7 +66,7 @@ case "${1:-}" in
     printf '╭────╮\n│    │\n╰────╯\n'
     exit 0 ;;
   list-windows)
-    printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
+    printf 'foreign:%s\nfm-mpf-lane-m8\nfm-lane-ok\nfm-lane-wake\nfm-scout-followup\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
     exit 0 ;;
 esac
 exit 0
@@ -107,7 +107,7 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=Firstmate instruction waiting" \
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=: Firstmate instruction waiting" \
     "exact id should ring the doorbell at the meta target"
   assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit the doorbell with Enter"
   grep -qF 'lost dispatch' "$home/state/mpf-lane-m8.inbox/001.msg" \
@@ -200,7 +200,7 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=Firstmate instruction waiting" \
+  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=: Firstmate instruction waiting" \
     "healthy send should ring the doorbell at the meta target"
   assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit the doorbell with Enter"
   grep -qF 'hello captain' "$home/state/lane-ok.inbox/001.msg" \
@@ -227,7 +227,7 @@ test_queued_wake_warning_does_not_block_send() {
     "$SEND" lane-wake "steer once" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "queued-wakes warning must stay advisory; the send must still succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-wake literal=1 arg=Firstmate instruction waiting" \
+  assert_contains "$got" "target=sess:fm-lane-wake literal=1 arg=: Firstmate instruction waiting" \
     "queued-wakes warning stopped the send from ringing the doorbell"
   assert_contains "$got" "target=sess:fm-lane-wake literal=0 arg=Enter" "queued-wakes warning stopped the send from submitting"
   grep -qF 'steer once' "$home/state/lane-wake.inbox/001.msg" \
@@ -238,6 +238,25 @@ test_queued_wake_warning_does_not_block_send() {
   assert_contains "$(cat "$err")" "requested message WILL still be sent" \
     "queued-wakes send warning omitted the caller-supplied continue line; a revert to a bare warning would fail here"
   pass "fm-send strict: queued-wakes warning carries continue line and still delivers"
+}
+
+test_missing_recorded_endpoint_preserves_inbox_without_ringing() {
+  local dir fb fixture_home err log rc
+  dir="$TMP_ROOT/missing-recorded"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); fixture_home=$(setup_home missingrecorded)
+  err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$fixture_home/state/lane-missing.meta" \
+    "window=sess:fm-lane-missing" "kind=ship" "harness=codex"
+  PATH="$fb:$PATH" FM_HOME="$fixture_home" FM_ROOT_OVERRIDE="$fixture_home" \
+    FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" lane-missing "recover this steer" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a missing endpoint must not invalidate the durable inbox record"
+  [ ! -s "$log" ] || fail "the missing recorded endpoint received a doorbell"
+  assert_grep 'recover this steer' "$fixture_home/state/lane-missing.inbox/001.msg" \
+    "the missing endpoint lost its durable steer"
+  assert_contains "$(cat "$err")" "watcher will not re-ring a dead pane" \
+    "the missing endpoint did not report its recovery route"
+  pass "fm-send strict: a missing recorded endpoint preserves the steer without typing a doorbell"
 }
 
 test_scout_text_send_reopens_completion_gate() {
@@ -345,5 +364,6 @@ test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
 test_queued_wake_warning_does_not_block_send
+test_missing_recorded_endpoint_preserves_inbox_without_ringing
 test_scout_text_send_reopens_completion_gate
 printf '\nall fm-send-strict tests passed\n'

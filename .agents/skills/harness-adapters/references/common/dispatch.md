@@ -12,7 +12,7 @@ For a profile array, load `quota-array-dispatch` after establishing harness and 
 Its harness consequence is that a secondmate's workers receive literal `config/crew-harness` and `config/crew-dispatch.json`, while the primary-only `config/secondmate-harness` is never inherited because secondmates do not spawn secondmates.
 A concrete crew value such as `codex` carries that runtime into the secondmate home.
 Unset or `default` carries no concrete value, so its workers use that home's own or detected harness rather than the primary's effective crew harness.
-The crew-only gate is the exception: when that fallback resolves to a crew-only adapter, `agy` or `muse`, configure a different concrete secondmate harness before spawning, because `../../../bin/fm-spawn.sh` refuses either as a secondmate launcher.
+When that fallback resolves to a crew-only adapter, configure a concrete harness verified for secondmates before spawning; the router and selected harness reference declare role support, and `../../../bin/fm-spawn.sh` enforces it.
 The inherited dispatch file applies the same best-fit profiles there.
 
 ## Owners

@@ -33,7 +33,9 @@ fm_launch_shell_quote() {
 }
 
 # fm_launch_render: substitute every launch-template placeholder and print the
-# rendered command. The optional final <allow-unresolved> flag is reserved for
+# rendered command. After the nine positional bindings, an optional
+# <allow-unresolved> flag may be followed by placeholder/value pairs for
+# state-derived adapter paths. Every value is substituted only once. The flag is for
 # the raw-command escape hatch, whose input is not a verified template. Every
 # template caller fails loudly if a future placeholder is added without also
 # being rendered here.
@@ -45,15 +47,16 @@ fm_launch_shell_quote() {
 # contain a `__NAME__` segment, and a multi-pass renderer would either mangle it
 # or refuse the launch outright.
 #
-# __PIBIN__ and __PITUIMODE__ are deliberately passed through untouched. They
-# carry the Pi executable that bin/fm-spawn.sh resolves and probes from PATH, so
-# that caller substitutes them into the rendered command immediately after this
-# function returns, keeping the resolved path out of every earlier pass.
-fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> [<allow-unresolved>]
+# Unbound legacy Pi/Cursor/worktree placeholders retain their compatibility
+# pass-through. Spawn supplies their concrete values as explicit pairs so
+# adapter paths containing placeholder-like text are never rescanned.
+fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> <pi-ext> <pi-turnend> <pi-watch> <op-input> [<allow-unresolved> [<placeholder> <value>...]]
   local launch model_flag effort_flag brief turnend pi_ext pi_turnend pi_watch
-  local op_input allow_unresolved token prefix out rest
-  if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
-    printf 'firstmate: fm_launch_render expected 9 or 10 arguments, got %s\n' "$#" >&2
+  local op_input allow_unresolved token prefix out rest i found
+  local -a extra_names extra_values
+  extra_names=(); extra_values=()
+  if [ "$#" -lt 9 ] || { [ "$#" -gt 10 ] && [ "$(( ($# - 10) % 2 ))" -ne 0 ]; }; then
+    printf 'firstmate: fm_launch_render expected 9 arguments, optional raw flag and placeholder/value pairs, got %s\n' "$#" >&2
     return 1
   fi
   launch=$1
@@ -66,6 +69,21 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
   pi_watch=$8
   op_input=$9
   allow_unresolved=${10:-0}
+  if [ "$#" -ge 10 ]; then shift 10; else shift 9; fi
+  while [ "$#" -gt 0 ]; do
+    if ! [[ $1 =~ ^__[A-Z][A-Z0-9]*(_[A-Z0-9]+)*__$ ]]; then
+      printf 'firstmate: invalid launch binding %s\n' "$1" >&2
+      return 1
+    fi
+    for ((i=0; i < ${#extra_names[@]}; i++)); do
+      if [ "${extra_names[$i]}" = "$1" ]; then
+        printf 'firstmate: duplicate launch binding %s\n' "$1" >&2
+        return 1
+      fi
+    done
+    extra_names+=("$1"); extra_values+=("$2")
+    shift 2
+  done
 
   out=""
   rest=$launch
@@ -77,6 +95,15 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
     prefix=${rest%%"$token"*}
     rest=${rest#"$prefix$token"}
     out=$out$prefix
+    found=0
+    for ((i=0; i < ${#extra_names[@]}; i++)); do
+      if [ "${extra_names[$i]}" = "$token" ]; then
+        out=$out${extra_values[$i]}
+        found=1
+        break
+      fi
+    done
+    [ "$found" = 0 ] || continue
     case "$token" in
       __MODELFLAG__)  out=$out$model_flag ;;
       __EFFORTFLAG__) out=$out$effort_flag ;;
@@ -299,7 +326,7 @@ fm_launch_template() {
     # outrank cursor's own marker in a process that only reads the environment.
     # Cursor exposes no effort flag, so the shared effort axis is deliberately
     # omitted and stays in task metadata only.
-    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI, Gemini): --prompt-interactive takes the initial prompt
     # as its value and keeps the session interactive for supervised steering.
     # --dangerously-skip-permissions auto-approves tool use. Workspace trust is a
@@ -309,6 +336,88 @@ fm_launch_template() {
     # (agy --help). Turn-end notification is the watcher's debounced native-idle detector,
     # so no launch-time hook is installed.
     agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
+    # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
+    # the launch boundary and documented in the header above: foreign markers
+    # cleared (omp has none of its own, so an inherited CLAUDECODE would win),
+    # FM_OMP_HARNESS=omp established for bin/fm-harness.sh, OMP_SKIP_SETUP=1
+    # against the fresh-profile provider wizard, --auto-approve so no approval
+    # prompt can park an unattended worker, the tracked posture overlay so a
+    # captain-level plan, prewalk, or usage dialog cannot either, and --cwd
+    # pinned to the worktree because omp's extension discovery is cwd-only. A
+    # secondmate loads its two primary extensions by that discovery alone:
+    # naming them with -e as well loads each twice (verified), doubling every
+    # session_stop continuation.
+    omp)
+      printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 __OMPBIN__ --config __OMPWORKERCFG__ --auto-approve --cwd __WORKTREE__'
+      if [ "$kind" = secondmate ]; then
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      else
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      fi
+      ;;
+    # gemini (Google Gemini CLI): a positional query starts the supervised
+    # interactive session and auto-submits it, so the brief rides the launch
+    # command exactly as it does for claude and grok (verified: a multi-line
+    # brief submitted itself with no extra Enter, gemini-cli 0.58.0).
+    # -y (--yolo) auto-approves every tool call, which an unattended crewmate
+    # needs; the footer renders ` YOLO Ctrl+Y` while it is on and a WriteFile
+    # was verified to land with no approval gate.
+    # Every task worktree is a fresh path, so gemini refuses to start at all
+    # without a trust control. GEMINI_CLI_TRUST_WORKSPACE=true - NOT
+    # --skip-trust - is the one used, and the difference is load-bearing
+    # rather than cosmetic: the CLI's refusal message offers the two as
+    # equivalents, but a controlled A/B on one worktree (same config home,
+    # same prompt) showed --skip-trust runs the turn while leaving PROJECT
+    # configuration unloaded, so the project's own .agents/skills are never
+    # discovered. A firstmate-repo task needs exactly those, so the workspace
+    # is trusted.
+    # GEMINI_CLI_SYSTEM_SETTINGS_PATH points gemini at the firstmate-owned
+    # per-task settings file written below. It is deliberately NOT the
+    # worktree's .gemini/settings.json: unlike claude's settings.local.json,
+    # that path is the PROJECT's own committed settings file, so writing it
+    # would clobber a project's configuration and removing it at teardown
+    # would delete a tracked file. The system layer also makes the busy
+    # contract independent of the trust decision above (its hooks were
+    # verified firing under --skip-trust in an untrusted folder), and hook
+    # arrays MERGE across settings layers rather than overriding, so a
+    # project's own hooks still run alongside firstmate's.
+    # The foreign primary markers are cleared for the same reason cursor
+    # clears them: gemini does not clear an inherited CLAUDECODE, and
+    # bin/fm-harness.sh must not read a gemini worker as its launcher.
+    # gemini exposes no reasoning-effort flag (checked against 0.58.0
+    # --help), so the shared effort axis is deliberately omitted here and
+    # stays in task metadata only, per the record-and-omit contract.
+    # Its turn-end and busy-state signals do NOT ride the launch command:
+    # they are project hooks written into the worktree below.
+    gemini) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS GEMINI_CLI_TRUST_WORKSPACE=true GEMINI_CLI_SYSTEM_SETTINGS_PATH=__GEMINISETTINGS__ gemini -y __MODELFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # rovo (Atlassian Rovo CLI): a positional brief is dead-on-arrival - rovo
+    # loads, never enters a working state, and drops back to an idle shell within
+    # about 10-15 seconds (confirmed live four times over a raw PTY and once under
+    # real tmux with the exact send-keys shape below). So rovo launches BARE,
+    # exactly like kimi, and receives an absolute brief pointer only after the TUI
+    # readiness gate below. --disable-permission-checks/--yolo makes every file
+    # CRUD operation and bash command run without confirmation; Atlassian-data and
+    # user MCP-server tools still prompt per its own printed caveat, which crew and
+    # scout tasks never touch. --startup-receipt is not used either: it requires
+    # "prompt-free interactive mode", so it cannot gate a launch that will have a
+    # message typed into it. rovo does NOT scrub an inherited
+    # CLAUDECODE/CURSOR_AGENT/etc, so foreign primary markers are cleared here as
+    # defense in depth alongside the marker-ordering fix in bin/fm-harness.sh
+    # (issue #3517); CURSOR_AGENT/CURSOR_INVOKED_AS are cleared by the shared
+    # outer wrap below, like every other non-cursor harness. rovo has no
+    # turn-end hook (its eventHooks fire at tool granularity only, never
+    # turn-end), so no launch placeholder for one exists.
+    # __ROVOCONFIGOVERRIDE__ (not __EFFORTFLAG__) carries rovo's single
+    # --config-override flag: it always grants allowedExternalPaths for this
+    # task's home-side brief dir, steering inbox, and status file - the file
+    # tool confinement that otherwise blocks the standard
+    # instructions/steering/status/report loop (rovo's bash tool has no such
+    # grant and stays confined to the worktree; the worker's own file tools do
+    # respect the grant, confirmed live) - merged with agent.efficiencyLevel
+    # when a supported effort is requested, since a second --config-override
+    # would silently discard the first (confirmed live).
+    rovo) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __ROVOBIN__ run --yolo __MODELFLAG____ROVOCONFIGOVERRIDE__' ;;
     *) return 1 ;;
   esac
 }
@@ -321,7 +430,7 @@ fm_launch_model_flag() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|muse|cursor|agy)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|muse|cursor|agy|gemini|rovo|omp)
       printf -- '--model %s ' "$(fm_launch_shell_quote "$model")"
       ;;
   esac
@@ -356,7 +465,7 @@ fm_launch_effort_flag() {
         low|medium|high) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac
       ;;
-    pi|pi-signed)
+    pi|pi-signed|omp)
       # Pi and pi-signed 0.82.0 both accept the full shared effort vocabulary,
       # including max, through their --thinking flag.
       case "$effort" in
@@ -385,4 +494,21 @@ fm_launch_effort_flag() {
     # kimi likewise has no reasoning-effort flag; the requested axis stays in task
     # metadata but never reaches the launch command.
   esac
+}
+
+# Build Rovo's single JSON launch override from this task's canonical paths.
+# Rovo permits file tools to read these paths; its shell stays worktree-confined.
+# A second --config-override would discard the first, so supported effort and
+# the mandatory external-path grant are composed together here.
+fm_launch_rovo_config_override_flag() {  # <effort> <data-dir> <state-dir> <id>
+  local effort=$1 data_dir=$2 state_dir=$3 id=$4 data_real state_real config_json
+  data_real=$(CDPATH='' cd -- "$data_dir" && pwd -P) || return 1
+  state_real=$(CDPATH='' cd -- "$state_dir" && pwd -P) || return 1
+  config_json=$(jq -cn --arg effort "$effort" --arg data "$data_real" \
+    --arg state "$state_real" --arg id "$id" '
+    (if (["low","medium","high","max"] | index($effort)) != null
+     then {agent:{efficiencyLevel:$effort}} else {} end)
+    + {toolPermissions:{allowedExternalPaths:[$data+"/"+$id,
+        $state+"/"+$id+".inbox",$state+"/"+$id+".status"]}}') || return 1
+  printf -- '--config-override %s ' "$(fm_launch_shell_quote "$config_json")"
 }

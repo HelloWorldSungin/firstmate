@@ -5,7 +5,7 @@
 # createAgentSession surface, the custom bash and fm_branch_report tool
 # definitions must be accepted by the real tool registry, the session file and
 # pointer must persist on disk, and - because the isolated agent dir carries no
-# credentials and no models - the branch's first prompt must reject its offer
+# configured credentials or custom models - the branch's first prompt must reject its offer
 # settlement so the watcher retains ownership and delivers the wake to main
 # against the real SDK. It also resolves the supervision-branch model pin
 # through the branch's REAL ModelRuntime, so a pin the vendor cannot resolve is
@@ -21,6 +21,8 @@
 # cannot run, and an explicit thinking level must beat the level a reopened
 # session recorded.
 #
+# Every Node probe receives a clean environment and disposable HOME so an
+# inherited provider key cannot make the empty-agent-directory case credentialed.
 # No provider call leaves the machine. The first branch probe points
 # PI_CODING_AGENT_DIR at an empty directory, so it reads no credentials and
 # model resolution stays empty by construction. The 429 probe intercepts its
@@ -46,6 +48,8 @@ fi
 PI_VERSION=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-branch-live)
+sdk_home="$TMP_ROOT/user-home"
+mkdir -p "$sdk_home"
 repo="$TMP_ROOT/repo"
 home="$TMP_ROOT/home"
 agentdir="$TMP_ROOT/agent-dir"
@@ -54,6 +58,7 @@ mkdir -p "$repo/.pi/extensions/lib" "$repo/node_modules/@earendil-works" \
 cp "$ROOT/.pi/extensions/fm-branch-supervision.ts" "$repo/.pi/extensions/fm-branch-supervision.ts"
 cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
 cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
+cp "$ROOT/.pi/extensions/lib/fm-async-exec.ts" "$repo/.pi/extensions/lib/fm-async-exec.ts"
 cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$repo/.pi/extensions/lib/fm-branch-model-picker.ts"
 cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
 cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
@@ -86,7 +91,8 @@ ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$repo/node_modules/typebox"
 
 # Stock macOS Bash 3.2 cannot reliably parse JavaScript template literals in a
 # heredoc nested inside command substitution, so capture through a file.
-BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
   WATCH_PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
   FM_HOME="$home" FM_REAL_ROOT="$ROOT" FM_WATCH_ROOT="$repo" \
   FM_LIVE_WATCH_LOG="$TMP_ROOT/live-watch.log" FM_LIVE_WATCH_TRIGGER="$TMP_ROOT/live-watch.trigger" \
@@ -149,9 +155,9 @@ branchMod.default(pi);
 process.env.FM_ROOT_OVERRIDE = process.env.FM_WATCH_ROOT;
 const watchMod = await import(pathToFileURL(process.env.WATCH_PLUGIN).href);
 watchMod.default(pi);
-// The real model surface, built from the same empty agent dir: no
-// credentials are read and no catalog is fetched, so every model lookup is
-// genuinely empty by construction.
+// The real model surface has no configured authentication in this isolated
+// environment. Its authenticated availability is empty even though the SDK's
+// built-in model catalog remains locally readable.
 const { ModelRegistry, ModelRuntime } = await import(
   pathToFileURL(`${process.env.PI_PACKAGE_DIR}/dist/index.js`).href
 );
@@ -283,7 +289,8 @@ cat > "$erroragentdir/models.json" <<'JSON'
   }
 }
 JSON
-BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
   WATCH_PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
   FM_HOME="$errorhome" FM_REAL_ROOT="$ROOT" FM_WATCH_ROOT="$repo" \
   FM_LIVE_WATCH_LOG="$TMP_ROOT/error-watch.log" FM_LIVE_WATCH_TRIGGER="$TMP_ROOT/error-watch.trigger" \
@@ -454,7 +461,8 @@ cat > "$modeldir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$modeldir" FM_LIVE_SESSIONS="$TMP_ROOT/model-sessions" \
   node --input-type=module > "$TMP_ROOT/model-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
@@ -557,7 +565,8 @@ cat > "$effortdir/models.json" <<'JSON'
   }
 }
 JSON
-PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  PI_PACKAGE_DIR="$PI_PACKAGE_DIR" PI_CODING_AGENT_DIR="$effortdir" FM_LIVE_SESSIONS="$TMP_ROOT/effort-sessions" \
   node --input-type=module > "$TMP_ROOT/effort-output" 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
@@ -690,7 +699,8 @@ pass "real Pi SDK $PI_VERSION reports its own supported effort levels and applie
 # ExtensionAPI.appendEntry must synchronously insert the registered custom entry
 # into an active InteractiveMode transcript, persist it across SessionManager
 # reopen, and keep it out of model context. No model is selected or prompted.
-PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" DELIVERY_DIR="$TMP_ROOT/delivery-sessions" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" DELIVERY_DIR="$TMP_ROOT/delivery-sessions" \
   DELIVERY_AGENT_DIR="$TMP_ROOT/delivery-agent-dir" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
   node --input-type=module > "$TMP_ROOT/delivery-output" 2>&1 <<'EOF'
 import { mkdirSync } from "node:fs";
@@ -819,7 +829,8 @@ cat > "$streamdir/models.json" <<'JSON'
   }
 }
 JSON
-WATCH_PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
+env -i PATH="$PATH" HOME="$sdk_home" LANG="${LANG:-C.UTF-8}" NODE_NO_WARNINGS=1 \
+  WATCH_PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
   FM_HOME="$streamhome" FM_ROOT_OVERRIDE="$repo" \
   FM_LIVE_WATCH_LOG="$TMP_ROOT/stream-watch.log" FM_LIVE_WATCH_TRIGGER="$TMP_ROOT/stream-watch.trigger" \
   FM_LIVE_SESSIONS="$TMP_ROOT/stream-sessions" \
@@ -992,3 +1003,6 @@ if [ "$status" -ne 0 ] || [ "$out" != "STREAM_OK" ]; then
   fail "real-SDK streaming-time watcher delivery guard failed against pi-coding-agent $PI_VERSION: $out"
 fi
 pass "real Pi SDK $PI_VERSION queues a streaming-time watcher wake without before_agent_start, keeps the successor chain, and surfaces consumption of both follow-ups"
+fm_test_cleanup || fail "real-SDK Pi fixture cleanup failed"
+trap - EXIT
+printf '\nall fm-pi-branch-live-e2e tests passed\n'

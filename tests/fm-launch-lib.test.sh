@@ -51,7 +51,7 @@ test_render_rejects_unknown_placeholder() {
 
 test_cursor_template() {
   assert_eq "$(fm_launch_template cursor ship)" \
-    'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "cursor ship template must clear foreign markers, resolve its binary, pin the worktree, and carry no effort placeholder"
   assert_eq "$(fm_launch_template cursor scout)" "$(fm_launch_template cursor ship)" \
     "cursor scout template must match ship template"
@@ -266,9 +266,51 @@ ROWS
     || fail "the raw guard must not interfere with a non-cursor/agy command"
 
   rm -rf "$tmp"
-  pass "the exec-time raw guard blocks PATH-resolved cursor/agy spellings, with absolute-path, PATH-reset, and guard-removal circumvention documented as accepted residuals"
+  pass "the exec-time raw guard blocks PATH-resolved agy spellings and preserves ordinary cursor launches, with circumvention limits documented"
 }
 
+test_adapter_bindings_are_single_pass() {
+  local rendered output
+  rendered=$(fm_launch_render '__OMPBIN__ __OMPEXT__ __BRIEF__' \
+    '' '' '__OMPBIN__/brief' '' '' '' '' '' 0 \
+    __OMPBIN__ '/tool/__BRIEF__/omp' __OMPEXT__ '/state/__OMPBIN__/extension') \
+    || fail "explicit adapter bindings did not render"
+  assert_eq "$rendered" '/tool/__BRIEF__/omp /state/__OMPBIN__/extension __OMPBIN__/brief' \
+    "a substituted path was interpreted again as a placeholder"
+  if output=$(fm_launch_render '__OMPBIN__' '' '' '' '' '' '' '' '' 0 \
+    __OMPBIN__ first __OMPBIN__ second 2>&1); then
+    fail "duplicate adapter bindings were accepted"
+  fi
+  assert_contains "$output" 'duplicate launch binding' "duplicate binding refusal lost its cause"
+  if output=$(fm_launch_render '__OMPBIN__' '' '' '' '' '' '' '' '' 0 __OMPBIN__ 2>&1); then
+    fail "an incomplete adapter binding was accepted"
+  fi
+  pass "adapter path bindings render once and reject duplicate or incomplete bindings"
+}
+
+test_rovo_override_keeps_paths_and_effort_together() {
+  local data state flag parsed effort
+  data="$TMP_LAUNCH_ROOT/rovo data'quote"; state="$TMP_LAUNCH_ROOT/rovo state"
+  mkdir -p "$data" "$state"
+  data=$(cd "$data" && pwd -P)
+  state=$(cd "$state" && pwd -P)
+  for effort in high xhigh; do
+    flag=$(fm_launch_rovo_config_override_flag "$effort" "$data" "$state" rovo-task) \
+      || fail "Rovo override failed"
+    # Exercise the quoting as the destination shell does, with synthetic paths.
+    parsed=$(bash -c 'eval "set -- $1"; [ "$#" -eq 2 ] && [ "$1" = --config-override ] || exit 1; printf "%s" "$2"' _ "$flag") \
+      || fail "Rovo override did not survive shell argument parsing"
+    printf '%s' "$parsed" | jq -e --arg data "$data" --arg state "$state" --arg effort "$effort" '
+      .toolPermissions.allowedExternalPaths == [$data+"/rovo-task",$state+"/rovo-task.inbox",$state+"/rovo-task.status"]
+      and (if $effort == "high" then .agent.efficiencyLevel == "high" else has("agent") | not end)' >/dev/null \
+      || fail "Rovo effort displaced its required paths, or unsupported effort was passed"
+  done
+  [ -z "$(fm_launch_effort_flag gemini high)" ] || fail "Gemini received an unsupported effort flag"
+  pass "Rovo's one override retains quoted paths and supported effort; Gemini omits effort"
+}
+
+test_adapter_bindings_are_single_pass
+test_rovo_override_keeps_paths_and_effort_together
 test_render_substitutes_operational_input
 test_render_rejects_unknown_placeholder
 test_cursor_template

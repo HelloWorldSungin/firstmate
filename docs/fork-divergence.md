@@ -24,8 +24,11 @@ The adapter contract lives in the [`harness-adapters` skill's agy reference](../
 Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
 Upstream's durable steering inbox (`kunchenguid/firstmate#2856`, reached 2026-08-25) moved ordinary local text off the typed submit path, so both verdicts now describe the typed plane alone - a harness-native invocation or an explicit backend target - while an ordinary steer's delivery is its durable record.
 The distinction itself is unchanged and still exits 3 either way; a round that touches the send verdicts must re-read which plane it is changing before assuming a verdict is dead code, and `tests/fm-agy-adapter.test.sh` names that plane explicitly so a verdict case cannot go vacuous by silently riding the inbox.
-The inbox plane still owes this adapter its atomic prompt: a steering-inbox doorbell is ordinary text, so `fm_task_inbox_ring` takes the target's harness and passes it to the shared submit dispatch, without which cursor and agy would fall back to the typed composer text this entry exists to avoid.
+The inbox plane still owes this adapter its atomic prompt: a steering-inbox doorbell is ordinary text, so `fm_task_inbox_ring` takes the target's harness and passes it to the shared submit dispatch, without which agy would fall back to the typed composer text this entry exists to avoid.
 Every ring caller - `bin/fm-send.sh`, `bin/fm-watch.sh`, and `bin/fm-remote-secondmate-control.sh` - resolves that harness from the target's own metadata, and the regression pinning it is `test_ordinary_agy_steer_rings_doorbell_through_atomic_prompt`.
+Upstream's Gemini CLI, Rovo, and OMP adapters are additive and do not replace Antigravity or share its authentication and native-state assumptions.
+Their launch templates and flag construction use the fork's existing `bin/fm-launch-lib.sh` owner, whose renderer accepts explicit adapter bindings without rescanning substituted paths.
+The dead-endpoint doorbell protection from `kunchenguid/firstmate#3823` preserves the harness-aware atomic submit path, while its shell-no-op prefix and partial-line race describe typed transport.
 This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
 
 ### Pinned ShellCheck download retry budget
@@ -176,6 +179,12 @@ The relation table, recorded task branch, abandoned-worker and degraded reportin
 Full AXI detail is reused only for an active reply matching that anchored running row, so a terminal result from an older run at the same head cannot turn the current validation into Done.
 `tests/fm-crew-state.test.sh` covers terminal, running, missing, and mismatched anchors, unrelated full-detail heads, terminal detail at the same head, and the retained worker-liveness behavior.
 
+When adopting `kunchenguid/firstmate#3704`, Firstmate preserved that strict teardown boundary: a ledger anchor can support a read-only status observation but cannot authorize aborting a run whose head is absent locally.
+The fork therefore omits upstream's ledger-only parked-run abort path and its teardown scan option.
+Compatible row-format validation lives in the existing relation-table reader; malformed input remains inconclusive so it cannot erase bounded degraded evidence by masquerading as a confirmed absence.
+`tests/fm-teardown.test.sh` requires an unfetched parked run to remain untouched even with a valid terminal exact-HEAD anchor, while fetched equal-or-descendant heads retain their existing abort behavior.
+`tests/fm-crew-state.test.sh` pins valid and invalid calendar dates, malformed rows and anchors, and degraded evidence versus confirmed absence.
+
 ### Definition-of-done owner carries this fork's ready-to-validate handoff
 
 Upstream's `kunchenguid/firstmate#3269` made [`bin/fm-dod-lib.sh`](../bin/fm-dod-lib.sh) the one owner of a ship task's mode-specific definition of done so a promoted scout receives the same delivery contract a briefed worker does.
@@ -226,7 +235,11 @@ The fork keeps one concurrent row builder, its existing timeout names and unavai
 Mutable observations are discarded when the captured task generation changes, while every captured task still produces a row or an explicit snapshot failure.
 Bearings projects each active or abandoned child independently of a secondmate home's hold classification, preserving interrupted-work identity without a competing home-level Underway row.
 
-### Pi away-mode supervision standby
+The structured hold parser from `kunchenguid/firstmate#3508` also retains the fork's legacy combined metadata form, such as `(repo: project, hold: reason)`, alongside canonical standalone hold annotations.
+`backlog_json` in `bin/fm-fleet-snapshot.sh` preserves commas in canonical reasons, accepts the existing combined fields, and does not promote unparenthesized title prose into a hold.
+[`tests/fm-dashboard-backlog.test.sh`](../tests/fm-dashboard-backlog.test.sh) pins those cases through the real Backlog API endpoint, where losing a parsed reason would hide a held item's state.
+
+### Pi and OMP away-mode supervision standby
 
 The fork's Pi watcher extension hands supervision to the away daemon while `state/.afk` exists: [`.pi/extensions/fm-primary-pi-watch.ts`](../.pi/extensions/fm-primary-pi-watch.ts) arms nothing, retires any arm child it already owns, injects no ordinary wake, and resumes exactly one extension-owned cycle once the flag clears.
 Upstream has no away-mode awareness in that extension at all, and [`docs/watcher-continuity.md`](watcher-continuity.md) owns the contract.
@@ -239,6 +252,31 @@ Upstream `kunchenguid/firstmate#3498` adds tokenized pending-actionable delivery
 That pending processor now owns serial restoration in place of the fork's promise tail, while the away checks cover the pending processor, both delivery doors, arm/retry, and resumption after the flag clears.
 Late retiring-generation closes still enter upstream's replacement handoff before delivery is deferred.
 The streaming-follow-up regression also runs a replacement while away, proving that the pending wake and watcher cycle resume only after the away flag clears.
+
+Upstream's OMP watcher port in `kunchenguid/firstmate#3867` receives the same standby protection in [`.omp/extensions/fm-primary-omp-watch.ts`](../.omp/extensions/fm-primary-omp-watch.ts), preserving the shared daemon's ownership instead of starting a competing cycle.
+`tests/fm-omp-harness.test.sh` exercises flag-present launch, child retirement, pending-wake preservation, one-cycle return, and replacement through the extension interface.
+This is the existing `.afk` ownership contract, not the later upstream AFK-posture design, and portable extension tests do not establish live OMP vendor compatibility.
+
+### Local lock scope for remotely parented homes
+
+The Treehouse project lock added by `kunchenguid/firstmate#3837` must coordinate a home's locally registered descendants without requiring a parent on another machine to be locally addressable.
+The fork's `fm_firstmate_root_home` in [`bin/fm-wake-lib.sh`](../bin/fm-wake-lib.sh) stops at a validated remote parent boundary, where upstream refuses the traversal and consequently refuses every fresh Treehouse worker spawn from that home.
+Local parent traversal, malformed-binding and cycle refusal, project identity, and slot-exclusivity checks remain intact.
+[`tests/fm-spawn-worktree-settle.test.sh`](../tests/fm-spawn-worktree-settle.test.sh) drives worker creation beneath a remote root, verifies that local peers share the same project lock, and rejects malformed or cyclic bindings before allocation.
+
+### Herdr presentation fixture ownership and cleanup
+
+The fork separates presentation, focus, and negative-path coverage in [`tests/fm-backend-herdr-presentation-e2e.test.sh`](../tests/fm-backend-herdr-presentation-e2e.test.sh) from multi-home ownership and restart coverage in [`tests/fm-backend-herdr-recovery-e2e.test.sh`](../tests/fm-backend-herdr-recovery-e2e.test.sh), keeping both within ordinary runner bounds.
+They share common setup and instrumentation functions in [`tests/herdr-presentation-fixture.sh`](../tests/herdr-presentation-fixture.sh), while each entrypoint owns independent source, home, lab, evidence, and task identities.
+The recovery fixture retires completed multi-home task records before whole-session restart scenarios.
+Its secondmate homes carry local parent bindings and registry entries, so concurrent positive cases exercise the shared project lock and ownership checks, with a bounded retry only for the expected lock-contention refusals.
+Both entrypoints belong to the existing real-Herdr family and use the ordinary default timeout in local and CI runs; no per-script timeout allowance is required.
+Treehouse leases belong to processes, so leaving those completed records after their processes exit can collide with a later allocation of the same slot.
+Both fixtures keep their worktree journals across command-substitution subshells and delegate cleanup to [`tests/herdr-presentation-cleanup.sh`](../tests/herdr-presentation-cleanup.sh).
+That owner waits for outstanding fixture operations, shuts down the named lab before ordinary slot returns, verifies each copy's source repository, and preserves source Git metadata and separate evidence after any failure.
+Repeated cleanup retains the first verdict without repeating partial mutations.
+[`tests/fm-test-fixture-cleanup.test.sh`](../tests/fm-test-fixture-cleanup.test.sh) covers return failure, lifecycle failure, foreign ownership, outstanding operations, and repeated cleanup without using real Herdr.
+Production allocation and slot-exclusivity policy remain unchanged.
 
 ### Fork-local no-mistakes compliance-gate event scope
 

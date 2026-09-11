@@ -34,6 +34,22 @@
 # restating the rule.
 # Every heredoc here stays outside a command substitution: `VAR=$(cat <<EOF ...)`
 # breaks parsing of the whole file on Bash 3.2 (tests/fm-brief.test.sh).
+# fm_brief_worker_role owns the ship/design/scout role scope. bin/fm-spawn.sh is its one
+# emitter, supplying it to every ship/design/scout launch brief and never to a
+# secondmate charter. Like fm_brief_intent_overlay it is a distinctly titled
+# launch section that states its own precedence for Firstmate tasks, so a brief
+# that authors its own role wording is superseded rather than duplicated.
+
+fm_brief_worker_role() {
+  cat <<'EOF'
+# Current worker role contract
+When this task works on Firstmate itself, this section supersedes every earlier brief instruction about your role and identity.
+When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is the primary/secondmate supervisor's contract: follow this brief instead of that supervisor contract.
+For that Firstmate task, do the assigned work yourself and report to firstmate; do not adopt the supervisor identity, delegate the task, run fleet supervision, or address the captain.
+This exception preserves this brief's safety and authority boundaries and applicable contributor guidance, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
+Other projects retain their own instructions unchanged.
+EOF
+}
 
 # Return 0 when a Task subsection still consists only of its scaffold
 # placeholder. A missing file and legacy briefs carry no such placeholders.
@@ -334,6 +350,12 @@ When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3
 This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
 $DOD_NO_MISTAKES_ACTIVE
 $DOD_NO_MISTAKES_PARK
+
+One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
+So background the drive call and poll \`no-mistakes axi status\` from a separate call instead of sitting in one blocking hold your harness will kill.
+Where a harness's own command limit is not established, assume it bounds commands and use that same background-and-poll shape.
+A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
+Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.

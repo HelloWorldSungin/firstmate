@@ -162,6 +162,39 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   fm_nm_run_is_active "$1"
 }
 
+# Validate the captured ledger fields without granting attribution. The caller
+# reports malformed input as inconclusive, so it cannot erase a degraded read.
+fm_nm_runs_row_fields_valid() {  # <status> <branch> <head> <date> <time> <pr> <extra>
+  local st=$1 br=$2 sha=$3 day=$4 clock=$5 pr=$6 extra=$7
+  local year_num month_num day_num max_day
+  [ -n "$st" ] && [ -n "$br" ] && [ -n "$sha" ] && [ -n "$day" ] && [ -n "$clock" ] || return 1
+  [ -z "$extra" ] || return 1
+  case "$st" in *[!a-z_-]*|'') return 1 ;; esac
+  case "$br" in *[!A-Za-z0-9._/-]*|'') return 1 ;; esac
+  case "$sha" in *[!A-Fa-f0-9]*|'') return 1 ;; esac
+  case "$day" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) return 1 ;; esac
+  case "$clock" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) return 1 ;; esac
+  case "$pr" in ''|https://*) ;; *) return 1 ;; esac
+  [ "${#sha}" -ge 7 ] && [ "${#sha}" -le 40 ] || return 1
+  year_num=$((10#${day%%-*}))
+  month_num=${day#*-}; month_num=${month_num%%-*}; month_num=$((10#$month_num))
+  day_num=$((10#${day##*-}))
+  [ "$year_num" -gt 0 ] && [ "$month_num" -ge 1 ] && [ "$month_num" -le 12 ] || return 1
+  case "$month_num" in
+    1|3|5|7|8|10|12) max_day=31 ;;
+    4|6|9|11) max_day=30 ;;
+    2)
+      if (( year_num % 400 == 0 || (year_num % 4 == 0 && year_num % 100 != 0) )); then
+        max_day=29
+      else
+        max_day=28
+      fi
+      ;;
+  esac
+  [ "$day_num" -ge 1 ] && [ "$day_num" -le "$max_day" ] || return 1
+  return 0
+}
+
 # One owner for runs-ledger attribution, returning the newest matching branch
 # row as <evidence>\t<status>\t<head>. Evidence is attributable, inconclusive,
 # or rejected; an absent branch prints nothing. Older rows never answer as the
@@ -172,18 +205,20 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 # current-state reader, never a relaxation of the strict teardown predicate.
 # The listing is the caller's captured `no-mistakes runs --limit N` output:
 # newest first, status, branch, short head, then date and optional PR columns.
+# Malformed input is inconclusive, never proof that this branch has no run.
 fm_nm_runs_row_for_worktree() {  # <worktree> <branch> <runs-list-output>
-  local wt=$1 branch=$2 list=$3 row st rest br sha relation pending_head=''
+  local wt=$1 branch=$2 list=$3 row st br sha relation pending_head=''
+  local day clock pr extra
   [ -n "$list" ] || return 0
   while IFS= read -r row; do
     row=$(fm_nm_trim "$row")
     [ -n "$row" ] || continue
-    st=${row%% *}
-    rest=$(fm_nm_trim "${row#* }")
-    br=${rest%% *}
+    IFS=$' \t' read -r st br sha day clock pr extra <<< "$row"
+    if ! fm_nm_runs_row_fields_valid "$st" "$br" "$sha" "$day" "$clock" "$pr" "$extra"; then
+      printf 'inconclusive\tmalformed\t-'
+      return 0
+    fi
     [ "$br" = "$branch" ] || continue
-    rest=$(fm_nm_trim "${rest#* }")
-    sha=${rest%% *}
     relation=$(fm_nm_head_relation "$wt" "$sha")
     if [ -n "$pending_head" ]; then
       case "$st:$relation" in

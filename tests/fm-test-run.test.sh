@@ -1904,6 +1904,32 @@ assert len(doc["scripts"])==3
 test_list_all_exact_suite_coverage
 test_family_selection
 test_single_script_selection
+test_new_adapter_consumers_are_selected() {
+  local tmp repo listed name
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-adapter-selection.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  mkdir -p "$repo/.pi/extensions/lib"
+  : > "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  : > "$repo/bin/fm-spawn.sh"
+  for name in fm-omp-harness fm-gemini-harness; do
+    printf '#!/usr/bin/env bash\n' > "$repo/tests/$name.test.sh"
+    chmod +x "$repo/tests/$name.test.sh"
+  done
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm adapters
+  printf '\n' >> "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" 'tests/fm-omp-harness.test.sh' "shared operational input omitted its OMP consumer"
+  : > "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  printf '\n' >> "$repo/bin/fm-spawn.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" 'tests/fm-gemini-harness.test.sh' "spawn selection omitted the Gemini adapter"
+  rm -rf "$tmp"
+  pass "changed-test selection includes OMP operational-input and Gemini spawn consumers"
+}
+
+test_new_adapter_consumers_are_selected
 test_changed_file_selection_is_conservative
 test_changed_runner_surfaces_select_their_family
 test_changed_dependency_selection_and_unmapped_failure
