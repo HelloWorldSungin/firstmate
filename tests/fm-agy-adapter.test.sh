@@ -82,7 +82,7 @@ setup_home() {  # <name> <id> -> prints "home|proj|fakebin"
   proj="$case_dir/project"
   fakebin=$(make_fakebin "$case_dir/fake")
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  printf "# Task\n## Captain's intent\nExercise a synthetic agy adapter fixture.\n## Firstmate spec\nVerify the selected launch guard.\n" > "$home/data/$id/brief.md"
   fm_git_init_commit "$proj"
   touch "$home/state/.last-watcher-beat"
   printf '%s|%s|%s\n' "$home" "$proj" "$fakebin"
@@ -260,7 +260,7 @@ test_raw_spawn_installs_exec_time_guard() {
   fakebin=$(make_logging_fakebin "$case_dir/fake")
   id=rawguard-install-z1
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  printf "# Task\n## Captain's intent\nExercise a synthetic agy adapter fixture.\n## Firstmate spec\nVerify the selected launch guard.\n" > "$home/data/$id/brief.md"
   fm_git_worktree "$proj" "$wt" "fm/$id"
   touch "$home/state/.last-watcher-beat"
 

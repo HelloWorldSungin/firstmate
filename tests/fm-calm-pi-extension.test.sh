@@ -960,10 +960,22 @@ const cases = [
   ["ls", { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
 ];
 const renderUi = { requestRender() {} };
+// A definition-less component renders the generic fallback in current Pi.
+// Compare Calm with the real built-in definitions supplied by Pi instead.
+const stockTools = await import(pathToFileURL(`${packageRoot}/dist/index.js`).href);
+const stockFactories = {
+  read: stockTools.createReadToolDefinition,
+  bash: stockTools.createBashToolDefinition,
+  edit: stockTools.createEditToolDefinition,
+  write: stockTools.createWriteToolDefinition,
+  grep: stockTools.createGrepToolDefinition,
+  find: stockTools.createFindToolDefinition,
+  ls: stockTools.createLsToolDefinition,
+};
 const rows = [];
 for (const [name, args, result] of cases) {
   const wrapped = tools.find((tool) => tool.name === name);
-  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, undefined, renderUi, process.cwd());
+  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, stockFactories[name](process.cwd()), renderUi, process.cwd());
   const actual = new ToolExecutionComponent(name, `wrapped-${name}`, args, { showImages: false }, wrapped, renderUi, process.cwd());
   for (const row of [baseline, actual]) {
     row.markExecutionStarted();
@@ -4047,13 +4059,14 @@ JS
   active_screen_wait=0
   while [ "$active_screen_wait" -lt 200 ]; do
     tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$working_snapshot"
-    if grep -Fq "Working..." "$working_snapshot"; then
+    if grep -Eq 'Working(\.\.\.)?([[:space:]]|─|$)' "$working_snapshot"; then
       break
     fi
     sleep 0.025
     active_screen_wait=$((active_screen_wait + 1))
   done
-  assert_contains "$(cat "$working_snapshot")" "Working..." "Calm off did not keep Pi's stock working row"
+  grep -Eq 'Working(\.\.\.)?([[:space:]]|─|$)' "$working_snapshot" \
+    || fail "Calm off did not keep Pi's stock working indicator"
   assert_not_contains "$(cat "$working_snapshot")" '\__/' "Calm off showed the working ship"
   wait_for_text "$working_response_snapshot" "CALM_WORKING_E2E_RESPONSE" \
     || fail "the deterministic provider did not settle after proving Pi's stock working row"

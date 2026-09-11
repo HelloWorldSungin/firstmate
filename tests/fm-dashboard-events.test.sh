@@ -905,8 +905,9 @@ run_real_spawn() {  # <case-root> <harness> <id> <events-config-or-empty>
   printf '%s\n' "$harness" > "$home/config/crew-harness"
   fm_git_worktree "$proj" "$wt" "wt-$id"
   touch "$home/state/.last-watcher-beat"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
-  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+  printf "# Task\n## Captain's intent\nExercise synthetic event wiring for %s.\n## Firstmate spec\nVerify additive instrumentation.\n" "$id" > "$home/data/$id/brief.md"
+  mkdir -p "$home/user-home"
+  FM_ROOT_OVERRIDE='' HOME="$home/user-home" CLAUDE_CONFIG_DIR="$home/user-home" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_DASHBOARD_EVENTS_CONFIG="${config:-$root/absent/dashboard-events.json}" \

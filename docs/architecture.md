@@ -69,6 +69,7 @@ A declared `paused:` earns that cadence on its own, whether or not its agent is 
 For a durable `captain-held` endpoint, which is not the crew declaring anything, the normal-mode watcher still surfaces one stale wake first and applies the cadence only when the backend confidently reports the agent dead; live or inconclusive liveness remains fail-open at that initial surface, and the secondmate idle-endpoint exemption is unchanged.
 Agent liveness keeps its recovery role everywhere else, and a crew that declared no wait at all is untouched by any of this: it still escalates as a possible wedge on the unchanged threshold.
 This declared-wait classification does not read a secondmate's endpoint liveness, so it admits the mate to the same bounded cadence only to serve a declared wait and prevent a forgotten pause or captain hold from rotting invisibly.
+A live captain-held pane's repeat inspections are scoped to its declaration, so pane-hash changes cannot reset the repeat throttle.
 Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
 When that captain-relevant status includes a still-open keyed decision, the one-shot suppressor is keyed on a digest of the complete open-decision set returned by `bin/fm-classify-lib.sh`'s `status_open_decisions` fold rather than on the pane hash, because an idle harness pane repaints on its own and a hash-keyed suppressor re-surfaced an unchanged already-escalated waiting state on every repaint.
@@ -78,6 +79,7 @@ No-change heartbeats are also benign.
 Separately from heartbeat backoff and wedge handling, the watcher poll runs `bin/fm-inactive-reconcile.sh` on its own bounded cadence, while locked session start sends the same bounded local scan through `bin/fm-startup-network.sh`'s deferred worker so current-state reads never block the digest.
 In each home the scan considers only that home's long-inactive direct ordinary crewmates, excludes captain-held work, and accepts only `done` or `failed` from `bin/fm-crew-state.sh`.
 A secondmate retains a durable receipt for its idempotent report through the established parent route, and main-home captain presentation retains a separate receipt; neither path performs a forge or PR check.
+A secondmate home's terminal child ledger lines, PR registrations, captain holds, and merges are published on that same parent route by the scripts that record them, so no captain-facing outcome depends on the mate model appending it ([secondmate-parent-channel.md](secondmate-parent-channel.md)).
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
 Each `fm-wake-drain.sh` presentation runs the same liveness guard as the supervision scripts, so a lapsed watcher chain surfaces even on a turn that only handles queued wakes.
 Routine watcher polling, supervision no-ops, elapsed waiting time, and absorbed benign wakes stay silent.
@@ -104,7 +106,7 @@ Detect-only and post-migration bootstrap name every remaining live no-mistakes s
 Pre-transition briefs have no branch marker, work items do not bind branches, and task-name, ambient-branch, and run-list matches are inference, so none can backfill the record and all remaining tasks stay refused until cleanup.
 [`bin/fm-run-attribution-legacy-transition.sh`](../bin/fm-run-attribution-legacy-transition.sh) owns the exact proof, the per-candidate and whole-sweep bounds that keep a hung forge off the session-start path, the atomic publication that keeps the record's trailing PR identity block last, and the diagnostic wording.
 [`bin/fm-nm-run-lib.sh`](../bin/fm-nm-run-lib.sh)'s header owns the exact branch, head, and pipeline-custody attribution rules, and the script header owns the current-versus-historical source, lookup-conclusiveness, cache, and source-precedence rules.
-Architecturally, an in-progress pipeline may advance the crew tip without losing attribution, and while the pipeline holds custody of the branch an active run keeps attribution on any head at all, including one this worktree cannot resolve or one that diverged; outside that custody the narrowed exceptions continue to reject stale historical evidence, so an unresolvable head on a synced branch is not attributed.
+Architecturally, an in-progress pipeline may advance the crew tip without losing attribution, and while the pipeline holds custody of the branch an active run keeps attribution on any head at all, including one this worktree cannot resolve or one that diverged; outside that custody the library also owns the narrowly approved ledger-anchored current-state path, while teardown remains strict.
 An inconclusive run lookup remains distinct from a confirmed absence and may replay that crew's recent observed step under source `run-step-degraded` only within a finite window after endpoint-liveness and exact-busy checks, preserving wedge detection when the crew stops, the lookup stays unavailable, or the reported run head remains unresolved in the worktree.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
@@ -157,6 +159,7 @@ A pull-based guard (`bin/fm-guard.sh`) warns through supervision tool output if 
 The drain script calls that guard after presenting the queue; records remain durable, and may keep the queued-wakes warning visible, until the exact generation-bound acknowledgement printed by the drain succeeds after handling.
 It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the watcher-down banner and reminder policy so repeated guarded commands stay noisy without reprinting the full banner in the same episode.
 On every verified primary harness, tracked hook integration gives the primary session a push-based backstop: when work, a process-event source, Relay polling, or a pending wake queue needs supervision and no identity-matched watcher lock with a fresh beacon is live, blocking-capable Stop hooks block and nonblocking turn-end integrations force one bounded follow-up.
+The turn-end guard also accepts the away daemon's ownership proof with a fresh watcher beacon; `bin/fm-wake-lib.sh` owns that proof.
 The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
 
 A presence-gated sub-supervisor (`bin/fm-supervise-daemon.sh`) extends this for walk-away supervision: the `/afk` skill starts it through the tracked foreground helper `bin/fm-afk-start.sh`, after which the watcher reverts to daemon-managed one-shot mode and the daemon self-handles routine wakes in bash.
@@ -326,6 +329,7 @@ The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed e
 A ship or design brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
 `bin/fm-dod-lib.sh` is the one owner of that mode's definition of done and of the fragments it is rendered from, rendered both into a generated ship or design brief and into the ship instructions a promoted scout receives, so a promoted worker cannot be handed a weaker contract than a briefed one.
 `data/projects.md` records each project's standing posture and optional `+yolo` merge flag as the captain's default and as context for that decision, including the conditional `no-mistakes-prod-only` policy; a ship or design spawn that drops below the registered rigor prints a deviation notice and continues.
+`bin/fm-dod-lib.sh` also owns the no-mistakes `--intent` contract.
 `bin/fm-project-mode.sh` remains the one registry parser for the mechanical consumers that have no task in hand: fleet sync's `local-only` skip and home seeding's refusal and no-mistakes initialization.
 When a selected delivery path calls for a diff, `bin/fm-review-diff.sh` refreshes the authoritative base and, when task meta records `pr=`, always fetches and compares against `refs/pull/<n>/head` by default (recorded `pr_head=` is only an offline fallback) before falling back to the local branch with a warning.
 Where a no-mistakes pipeline stores evidence in the repo, it publishes that PR-viewable validation evidence to an orphan evidence branch that shares no history with code branches, so it never enters the crew branch or the default branch.
@@ -436,11 +440,13 @@ The refresh's fetch prunes only stale remote-tracking pointers; deleting a local
 
 ## Self-updates stay safe
 
-`/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from the fork's `origin`, then re-reads updated instructions, nudges updated secondmates, and reports upstream drift without touching project clones or merging upstream.
+`/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from the fork's `origin` without touching project clones.
+It restarts every live second mate whose home the pass left on the target commit through a persist-gated replacement, including a home that needed no advance, because a restart is also the only thing that re-resolves launch-time harness wiring; the re-read nudge is retained only as the fallback for live agents whose runtime cannot prove a restart.
 For a remote route, the configured code root updates from its own origin on that host before the persistent home fast-forwards to the code-root commit.
 The update is fast-forward only: dirty, diverged, offline, and off-default targets are reported and left untouched.
 Local homes share the guarded fast-forward helper, while remote updates delegate the same safety decision to the configured host through the generic transport.
-The update mechanics are owned by the [`/updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) skill, while the fork's TRACK strategy and deliberate differences are owned by the [`fork-divergence` ledger](fork-divergence.md).
+The procedure and outcome vocabulary are owned by the [`/updatefirstmate` skill](../.agents/skills/updatefirstmate/SKILL.md); the relevant script headers own the mechanics.
+Upstream drift is reported without integration; the fork's TRACK strategy and deliberate differences remain owned by the [divergence ledger](fork-divergence.md).
 
 ## Restart-proof
 

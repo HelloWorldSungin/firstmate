@@ -16,6 +16,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$ROOT/tests/fixtures.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-settle)
@@ -77,7 +79,14 @@ make_settle_case() {
   fm_git_worktree "$proj" "$wt" "wt-$name"
   fm_git_init_commit "$stale"
   mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  cat > "$home/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise settled-worktree detection for $id.
+
+## Firstmate spec
+Record only the pane's stable worktree.
+EOF
   touch "$home/state/.last-watcher-beat"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$stale|$fakebin|$countfile|$stale_reads"
 }
@@ -149,7 +158,7 @@ test_explicit_brief_issue_is_recorded_in_task_meta() {
   rec=$(make_settle_case settle-recorded-issue "$id" 0)
   read_settle_record "$rec"
   brief="$HOME_DIR/data/$id/brief.md"
-  printf '%s\n' '<!-- firstmate-task-issue=41 -->' "brief for $id" > "$brief"
+  fm_test_spawn_brief "$HOME_DIR" "$id" '<!-- firstmate-task-issue=41 -->'
 
   out=$(run_settle_spawn "$id")
   status=$?
@@ -166,10 +175,10 @@ test_issue_prose_without_marker_is_not_inferred() {
   rec=$(make_settle_case settle-issue-prose "$id" 0)
   read_settle_record "$rec"
   brief="$HOME_DIR/data/$id/brief.md"
-  # shellcheck disable=SC2016 # Backticks are literal Markdown in the brief fixture.
-  printf '%s\n' \
-    'Investigate GitHub issue #99 and report the findings.' \
-    'Put `Closes #99` in the eventual PR body.' > "$brief"
+  # shellcheck disable=SC2016 # Backticks are literal Markdown fixture text.
+  fm_test_spawn_brief "$HOME_DIR" "$id" \
+    'Investigate GitHub issue #99 and report the findings.
+Put `Closes #99` in the eventual PR body.'
 
   out=$(run_settle_spawn "$id")
   status=$?
@@ -189,14 +198,13 @@ test_invalid_explicit_issue_markers_fail_closed() {
     brief="$HOME_DIR/data/$id/brief.md"
     case "$name" in
       malformed)
-        printf '%s\n' '<!-- firstmate-task-issue=abc -->' "brief for $id" > "$brief"
+        printf '%s\n' '<!-- firstmate-task-issue=abc -->' >> "$brief"
         expected="malformed GitHub issue marker"
         ;;
       duplicate)
         printf '%s\n' \
           '<!-- firstmate-task-issue=41 -->' \
-          '<!-- firstmate-task-issue=42 -->' \
-          "brief for $id" > "$brief"
+          '<!-- firstmate-task-issue=42 -->' >> "$brief"
         expected="multiple GitHub issue markers"
         ;;
     esac

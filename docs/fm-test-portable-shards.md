@@ -66,7 +66,7 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints are the slowest measurement of each of the lane's 139 scripts across the `fm-test-timing-portable-serial-*` artifacts of three green CI runs on 2026-09-01, [33558082172](https://github.com/kunchenguid/firstmate/actions/runs/33558082172), [33523597838](https://github.com/kunchenguid/firstmate/actions/runs/33523597838), and [33463326167](https://github.com/kunchenguid/firstmate/actions/runs/33463326167).
 Shared scripts use those upstream per-script maxima; fork-only scripts retain their existing measured hints from run [32191955185](https://github.com/HelloWorldSungin/firstmate/actions/runs/32191955185).
-The current fork partition has 161 scripts, with five unmeasured scripts using the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default, for 4168699 ms of estimated balance weight.
+The current fork partition has 161 scripts, with seven unmeasured scripts using the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default, for 4257656 ms of estimated balance weight.
 Taking the slowest of several runs rather than a single run keeps the balance honest on a slow runner: individual scripts varied by up to 20% between those three runs.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
@@ -77,19 +77,19 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 Shard count is sized from that total rather than left where an earlier, smaller remainder put it.
 The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the hints then put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
-The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 8.76 minutes.
+The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 8.87 minutes.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 19 | 525457 ms (~8.76 min) |
-| `portable-serial-2of8` | 20 | 518464 ms (~8.64 min) |
-| `portable-serial-3of8` | 19 | 525455 ms (~8.76 min) |
-| `portable-serial-4of8` | 20 | 518453 ms (~8.64 min) |
-| `portable-serial-5of8` | 20 | 518460 ms (~8.64 min) |
-| `portable-serial-6of8` | 21 | 518471 ms (~8.64 min) |
-| `portable-serial-7of8` | 21 | 525472 ms (~8.76 min) |
-| `portable-serial-8of8` | 21 | 518467 ms (~8.64 min) |
-| imbalance | | 7019 ms |
+| `portable-serial-1of8` | 19 | 532198 ms (~8.87 min) |
+| `portable-serial-2of8` | 19 | 532184 ms (~8.87 min) |
+| `portable-serial-3of8` | 19 | 532203 ms (~8.87 min) |
+| `portable-serial-4of8` | 21 | 532231 ms (~8.87 min) |
+| `portable-serial-5of8` | 21 | 532207 ms (~8.87 min) |
+| `portable-serial-6of8` | 20 | 532175 ms (~8.87 min) |
+| `portable-serial-7of8` | 21 | 532233 ms (~8.87 min) |
+| `portable-serial-8of8` | 21 | 532225 ms (~8.87 min) |
+| imbalance | | 58 ms |
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 262626 ms, is the floor for any shard count.
 
@@ -130,8 +130,8 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 2.2 minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 8.76 minutes, leaving roughly 2.3x margin for setup and runner-speed spread. |
-| Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
+| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 8.87 minutes, leaving roughly 2.3x margin for setup and runner-speed spread. |
+| Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | The required lane is bounded independently of the per-script deadline; refresh timings from its uploaded artifacts. Previous healthy runs finished around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
 `.github/workflows/ci.yml` owns the exact numbers.
