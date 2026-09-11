@@ -684,7 +684,7 @@ test_design_relaunch_refuses_invalid_skill_pins_before_stop() {
       symlink) mv "$skill" "$skill.target"; ln -s "$skill.target" "$skill" ;;
     esac
     binding=$(sed -n '/^```json$/{n;p;q;}' /tmp/fm-dip1/brief.md | jq -c "$filter")
-    printf '```json\n%s\n```\n' "$binding" > /tmp/fm-dip1/brief.md
+    printf '%s\n' '```json' "$binding" '```' > /tmp/fm-dip1/brief.md
     cp "$dir/home/state/dip1.meta" "$dir/meta.before"
     cp "$dir/home/data/dip1/brief.md" "$dir/brief.before"
     out=$(run_control "$dir" dip1 relaunch --note "preserve ADR decisions"); rc=$?
