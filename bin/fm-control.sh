@@ -765,6 +765,7 @@ safe_checkpoint() {
   fi
 }
 
+# shellcheck source=bin/fm-design-skills-lib.sh
 . "$SCRIPT_DIR/fm-design-skills-lib.sh"
 
 # record_note: put the required progress note somewhere durable, and - for a

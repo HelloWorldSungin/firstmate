@@ -125,6 +125,14 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
+  # A pi spawn resolves the `pi` executable on PATH and probes its --help for
+  # --tui-mode, so a pi case needs a binary to resolve. CI runners have no Pi
+  # install; this stub answers the probe without one.
+  cat > "$fb/pi" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fb/pi"
 }
 
 # new_case <name> [id] -> echoes a case dir with a live claude ship task.

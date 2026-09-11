@@ -1992,6 +1992,7 @@ DESIGN_SKILLS_UPDATED=
 DESIGN_SKILLS_GRILLING=
 DESIGN_SKILLS_DOMAIN_MODELING=
 DESIGN_SKILLS_BINDING=
+# shellcheck source=bin/fm-design-skills-lib.sh
 . "$SCRIPT_DIR/fm-design-skills-lib.sh"
 if [ "$KIND" = design ]; then
   if [ "$RELAUNCH" -eq 1 ]; then
