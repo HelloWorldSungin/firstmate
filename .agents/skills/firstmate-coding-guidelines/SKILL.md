@@ -116,6 +116,11 @@ After all documentation, review-fix, and lint-fix commits, review the complete b
 Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup routing, local link targets, and owner pointers without keyword-linting legitimate evidence prose.
 Run `bin/fm-pointer-check.sh` as well, because a pointer that leaves this repository is its class rather than the audience check's.
 
+## No-mistakes test configuration
+
+Never configure a deterministic suite-walk `commands.test` in any repository's no-mistakes config, whether it selects the full suite, changed tests, a family, or a fixed script list.
+Targeted validation belongs to the no-mistakes evidence path, while CI owns broad deterministic regression coverage.
+
 ## Repo style rules
 
 - Put one full sentence per line in tracked Markdown.

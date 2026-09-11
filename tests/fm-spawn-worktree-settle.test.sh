@@ -12,12 +12,17 @@
 # transient-then-settled pane_current_path sequence with a fake tmux and
 # asserts the recorded worktree resolves to the real, settled worktree, never
 # the stale first read.
+#
+# The same loop has a second transient to survive: `treehouse get` reports the
+# REPOSITORY's primary checkout as its own cwd while it is still preparing a
+# slot. From a linked spawning home that path is not the project, so a poll
+# comparing only against the project adopted it and the isolation guard then
+# refused the launch. The cases below cover both the transient and the pane
+# that never leaves the primary at all.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/fixtures.sh
-. "$ROOT/tests/fixtures.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-settle)
@@ -131,25 +136,91 @@ test_single_stale_first_read_is_not_accepted() {
   pass "a single transient stale pane_current_path read is not accepted as the worktree"
 }
 
-# A pane that reports the real worktree from the very first read still only
-# costs the loop's existing one-second inter-poll sleep to confirm - not an
-# extra full cycle on top of that.
-test_already_settled_pane_costs_one_confirm_sleep() {
-  local rec id out status start end elapsed
+# A pane that reports the real worktree from the very first read costs exactly
+# one confirming read - not a whole extra polling cycle on top of it. Counting
+# the pane reads measures the loop itself; wall-clock time would fold in every
+# other cost of a spawn (fetch, trust registration) and drift with the machine.
+test_already_settled_pane_costs_one_confirm_read() {
+  local rec id out status reads
   id=settle-already-settled-z2
   rec=$(make_settle_case settle-already-settled "$id" 0)
   read_settle_record "$rec"
 
-  start=$(date +%s)
   out=$(run_settle_spawn "$id")
   status=$?
-  end=$(date +%s)
-  elapsed=$((end - start))
-  expect_code 0 "$status" "spawn should succeed when the pane is already settled"
+  expect_code 0 "$status" "spawn should succeed when the pane is already settled"$'\n'"$out"
   assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
     "meta did not record the already-settled worktree"
-  [ "$elapsed" -le 5 ] || fail "already-settled pane took ${elapsed}s to confirm - expected close to the single inter-poll sleep"
-  pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
+  reads=$(cat "$COUNTFILE")
+  [ "$reads" -eq 2 ] || fail "already-settled pane took $reads reads to confirm - expected the first read plus one confirmation"
+  pass "an already-settled pane confirms on the next read, not a whole extra cycle"
+}
+
+# make_primary_case <name> <id> <stale_reads> builds the linked-home shape: the
+# spawning project is itself a LINKED worktree of the repository, and the path
+# the pane transiently reports is that repository's PRIMARY checkout. `treehouse
+# get` reports the repository it is preparing a slot from as its own cwd while
+# it is still fetching and checking out, so the pane reads the primary for the
+# first seconds. The primary is not the spawning project, so a poll that only
+# compares against the project accepts it as the worktree, and the isolation
+# guard then refuses the launch even though treehouse went on to enter a real
+# slot. The settled path is a second linked worktree of the same repository.
+make_primary_case() {
+  local name=$1 id=$2 stale_reads=$3 case_dir home primary proj wt fakebin countfile
+  case_dir="$TMP_ROOT/$name"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  proj="$case_dir/mate"
+  wt="$case_dir/slot"
+  countfile="$case_dir/pane-call-count"
+  fakebin=$(make_settle_fakebin "$case_dir/fake")
+  fm_test_spawn_home "$home" codex
+  fm_git_worktree "$primary" "$proj" "mate-$name"
+  git -C "$primary" worktree add --quiet -b "slot-$name" "$wt"
+  fm_test_spawn_brief "$home" "$id" "Exercise primary-checkout transient detection for $id."
+  printf '%s\n' "$case_dir|$home|$proj|$wt|$primary|$fakebin|$countfile|$stale_reads"
+}
+
+# The exact incident: the pane reports the repository primary for the first
+# reads, then settles into the slot treehouse actually created. The primary must
+# never be adopted as the worktree, so the spawn lands on the settled slot.
+test_transient_primary_checkout_is_not_accepted() {
+  local rec id out status
+  id=settle-primary-transient-z3
+  rec=$(make_primary_case settle-primary-transient "$id" 3)
+  read_settle_record "$rec"
+  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed once the pane leaves the primary checkout"$'\n'"$out"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the settled worktree"
+  assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
+    "meta wrongly recorded the repository primary checkout as the worktree"
+  pass "a transient primary-checkout pane read is not accepted as the worktree"
+}
+
+# A pane that never leaves the primary checkout must still fail at the deadline
+# rather than waiting forever or recording the primary.
+test_primary_checkout_that_never_settles_fails_at_the_deadline() {
+  local rec id out status
+  id=settle-primary-stuck-z4
+  rec=$(make_primary_case settle-primary-stuck "$id" 100000)
+  read_settle_record "$rec"
+  fm_test_fake_sleep_noop "$FAKEBIN_DIR"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted a pane that never left the primary checkout"$'\n'"$out"
+  assert_contains "$out" "did not enter an isolated worktree" \
+    "spawn did not explain that the pane never reached an isolated worktree"
+  assert_contains "$out" "$STALE_DIR" \
+    "the refusal did not name the path the pane kept reporting"
+  assert_contains "$out" "repository's primary checkout" \
+    "the refusal did not say why that path was rejected"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  pass "a pane stuck on the primary checkout fails loudly at the deadline"
 }
 
 test_explicit_brief_issue_is_recorded_in_task_meta() {
@@ -219,10 +290,66 @@ test_invalid_explicit_issue_markers_fail_closed() {
   pass "spawn rejects malformed or duplicate explicit issue markers before writing metadata"
 }
 
+test_remote_parent_is_the_local_project_lock_boundary() {
+  local rec id out status case_dir ancestor peer own_lock peer_lock
+  id=remote-parent-worker
+  rec=$(make_settle_case remote-parent "$id" 0)
+  read_settle_record "$rec"
+  case_dir=${rec%%|*}
+  ancestor="$case_dir/remote-root"
+  peer="$case_dir/peer-home"
+  mkdir -p "$ancestor/state" "$peer/state"
+  printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=remote-parent\n' \
+    > "$ancestor/.fm-secondmate-parent"
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$ancestor" \
+    > "$HOME_DIR/.fm-secondmate-parent"
+  cp "$HOME_DIR/.fm-secondmate-parent" "$peer/.fm-secondmate-parent"
+  own_lock=$(FM_HOME="$HOME_DIR" bash -c \
+    '. "$1"; fm_treehouse_project_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$PROJ_DIR") \
+    || fail "remote-root descendant could not resolve its local lock"
+  peer_lock=$(FM_HOME="$peer" bash -c \
+    '. "$1"; fm_treehouse_project_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$PROJ_DIR") \
+    || fail "peer under the remote root could not resolve its local lock"
+  [ "$own_lock" = "$peer_lock" ] || fail "local peers of a remote root did not share their project lock"
+  case "$own_lock" in "$ancestor/state/"*) ;; *) fail "lock escaped the local remote-root boundary" ;; esac
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "a remotely parented home must retain worker spawning: $out"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" "remote-root worker lost its isolated copy"
+  assert_absent "$own_lock" "successful spawn retained the shared project lock"
+  pass "remote parent is a local lock boundary; local descendants share it and can spawn"
+}
+
+test_invalid_parent_bindings_refuse_before_slot_allocation() {
+  local kind rec id out status
+  for kind in malformed cycle; do
+    id="parent-$kind"
+    rec=$(make_settle_case "$id" "$id" 0)
+    read_settle_record "$rec"
+    if [ "$kind" = malformed ]; then
+      printf 'schema=unexpected\nroute=remote\n' > "$HOME_DIR/.fm-secondmate-parent"
+    else
+      printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$HOME_DIR" \
+        > "$HOME_DIR/.fm-secondmate-parent"
+    fi
+    out=$(run_settle_spawn "$id")
+    status=$?
+    expect_code 1 "$status" "$kind parent binding must refuse"
+    assert_contains "$out" "could not resolve the shared Treehouse project lock" "parent refusal lost its cause"
+    assert_absent "$HOME_DIR/state/$id.meta" "$kind parent binding published a worker"
+    assert_absent "$COUNTFILE" "$kind parent binding reached slot discovery"
+  done
+  pass "malformed and cyclic parent bindings still refuse before allocation"
+}
+
+test_remote_parent_is_the_local_project_lock_boundary
+test_invalid_parent_bindings_refuse_before_slot_allocation
 test_single_stale_first_read_is_not_accepted
-test_already_settled_pane_costs_one_confirm_sleep
+test_already_settled_pane_costs_one_confirm_read
+test_transient_primary_checkout_is_not_accepted
+test_primary_checkout_that_never_settles_fails_at_the_deadline
 test_explicit_brief_issue_is_recorded_in_task_meta
 test_issue_prose_without_marker_is_not_inferred
 test_invalid_explicit_issue_markers_fail_closed
 
-echo "# all fm-spawn-worktree-settle tests passed"
+printf '\nall fm-spawn-worktree-settle tests passed\n'

@@ -781,8 +781,8 @@ test_ship_project_memory_wording() {
     "project-memory contract lost the durable-knowledge bar"
   assert_grep "prefer a pointer to the authoritative file, command, or doc over copying the detail" "$brief" \
     "project-memory contract lost pointer-over-copy guidance"
-  assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
-    "project-memory contract lost the self-governance add-in-same-pass rule"
+  assert_grep "follow \`$ROOT/bin/fm-ensure-agents-md.sh\`'s self-governance contract" "$brief" \
+    "project-memory contract no longer defers to the ensure helper"
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
@@ -1406,6 +1406,12 @@ This replaces the no-mistakes skill's advice to enrich `--intent` with decisions
 Do not hand-edit, commit, or apply findings yourself while a run is active - the pipeline applies every fix.
 While you sit parked on a backgrounded `axi run` or `axi respond` call, rule 4's park-and-resume pairing applies: append `paused:` before you go idle and `working:` when the call returns.
 
+One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
+So background the drive call and poll `no-mistakes axi status` from a separate call instead of sitting in one blocking hold your harness will kill.
+Where a harness's own command limit is not established, assume it bounds commands and use that same background-and-poll shape.
+A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
+Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
+
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.
   Firstmate applies `ask-user-authority` and obtains any required captain decision.
@@ -1896,6 +1902,29 @@ test_continue_branch_flag_validation() {
   pass "fm-brief.sh: --continue-branch rejects invalid and protected names"
 }
 
+test_worker_role_scope() {
+  local kind home brief
+  home="$TMP_ROOT/worker-role"
+  for kind in no-mistakes direct-PR local-only scout; do
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$kind" arbitrary-project-name --scout >/dev/null || fail "scout scaffold failed"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$kind" arbitrary-project-name --mode "$kind" >/dev/null || fail "$kind scaffold failed"
+    fi
+    brief="$home/data/$kind/brief.md"
+    assert_no_grep '# Current worker role contract' "$brief" "$kind scaffolded a second owner of the role scope fm-spawn.sh delivers"
+  done
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
+    "$ROOT/bin/fm-brief.sh" supervisor --secondmate --no-projects >/dev/null || fail "secondmate scaffold failed"
+  brief="$home/data/supervisor/brief.md"
+  assert_no_grep '# Current worker role contract' "$brief" "secondmate received the worker exception"
+  assert_no_grep 'do not adopt the supervisor identity' "$brief" "secondmate received the worker exception"
+  assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
+  assert_grep 'That file is your parent channel' "$brief" "secondmate lost its parent channel"
+  pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
+}
+
+test_worker_role_scope
 test_script_parses
 test_no_heredoc_in_command_substitution
 # --- the scaffold-time brain read (docs/adr/0001-brain-read-mount.md D1, D4) ---

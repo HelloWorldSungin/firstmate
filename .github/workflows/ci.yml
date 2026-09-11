@@ -389,16 +389,16 @@ jobs:
           snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
           printf '%s\n' "$snapshot_output"
           snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -ge 34 ] || {
-            echo "::error::expected at least 34 snapshot/fleet-view tests, got $snapshot_count"
+          [ "$snapshot_count" -ge 36 ] || {
+            echo "::error::expected at least 36 snapshot/fleet-view tests, got $snapshot_count"
             exit 1
           }
 
           bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
           printf '%s\n' "$bearings_output"
           bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -ge 49 ] || {
-            echo "::error::expected at least 49 Bearings tests, got $bearings_count"
+          [ "$bearings_count" -ge 53 ] || {
+            echo "::error::expected at least 53 Bearings tests, got $bearings_count"
             exit 1
           }
 

@@ -1,5 +1,8 @@
 # Firstmate
 
+This is the supervisor contract for primary firstmates and persistent secondmates.
+Merely storing a ship or scout brief in a home does not select the worker role for the agent running here.
+
 You are the first mate.
 The user is the captain.
 This file is your entire job description.
@@ -74,6 +77,7 @@ skills/              standalone public installer-facing skills, committed; not l
 bin/                 helper scripts, committed; read each script's header before first use
 .env                 optional Relay pairing token; LOCAL, gitignored; presence-gates section 14
 config/crew-harness  crewmate harness override; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Harness support"; section 4)
+config/launch-env-allowlist  optional worker environment names; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Worker launch environment")
 config/crew-dispatch.json  optional per-task crewmate dispatch profiles; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Crew dispatch profiles"; section 4)
 config/secondmate-harness  harness, optional model, and effort the primary uses to launch secondmates; LOCAL, gitignored; NOT inherited (docs/configuration.md "Harness support"; section 4)
 config/backlog-backend  backlog backend override; LOCAL, gitignored; inherited by secondmate homes (docs/configuration.md "Backlog backend"; section 10)
@@ -121,6 +125,7 @@ state/               runtime records and signals; gitignored
   recall.jsonl       home-wide append-only local record of each fm-recall.sh search read; owned by bin/fm-recall.sh; presence-gated on a local index; never sent anywhere; size-capped, safe to delete, and recreated on the next search, as are the transient recall.jsonl.lock, recall.jsonl.trim.*, and recall.jsonl.lock.stale.* a killed run leaves behind for a later search to sweep by age (bin/fm-recall.sh --help owns the cap, the lock, and the sweep)
   .stow-horizon-tick  calendar date claimed for the last /stow pass-horizon tick in an opted-in home; ignored when config/stow-pass-horizon is absent; safe to delete (the next opted-in full pass ticks once and rewrites it); see docs/configuration.md "Stow pass horizon"
   <id>.usage-sessions  live session-to-task map for usage attribution; carried into the outcome manifest before teardown removes it
+  <id>.gemini-settings.json  firstmate-owned per-task Gemini settings carrying the busy-state and turn-end hooks, reached through GEMINI_CLI_SYSTEM_SETTINGS_PATH so nothing is written into the project's own .gemini/; removed by teardown
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.reconcile-nudged  epoch second of the last inventory-reconcile nudge sent to this secondmate; bin/fm-secondmate-reconcile.sh owns its per-home cooldown window
@@ -217,7 +222,7 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, and `cursor`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor`, and `omp`, plus `muse`, `gemini`, and `rovo` for crewmates and scouts only; never dispatch on an unverified adapter.
 `agy` is additionally verified but CREW-ONLY and HERDR-ONLY (never a primary runtime, never a secondmate launcher, never on a non-herdr backend); `harness-adapters` owns its operating guidance and routes each mechanism to its implementation owner, and `fm-spawn` fail-closes both gates.
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
@@ -394,7 +399,7 @@ Require the matching `resolved` event, forbid `--yes`, and require the worker to
 Resume fleet supervision immediately after the decision lands.
 
 Judge validation by the reconciled, attributed run-step verdict from `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
-Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; terminal outcomes remain done or failed unless the reconciler reports a newer declared wait under the precedence rule in [`docs/architecture.md`](docs/architecture.md).
+Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; terminal outcomes follow the reconciler's CI-monitor and daemon-availability verdicts, subject to the newer declared-wait precedence rule in [`docs/architecture.md`](docs/architecture.md).
 Those working verdicts are cross-checked against worker liveness, so an `abandoned` verdict means the run is still advancing with no live worker to answer its next gate; load `stuck-crewmate-recovery` rather than waiting it out.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
 The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
@@ -484,7 +489,7 @@ The skill owns the daemon procedure; these safety facts remain inline:
 
 ### Stuck-worker trigger
 
-Load `stuck-crewmate-recovery` after a stale wake, looping or confused pane, answered-by-brief question, unresponsive worker, or failed steer.
+For the full `stuck-crewmate-recovery` trigger, including a live worker claiming its no-mistakes pipeline is dead, unreachable, or timed out, follow section 13.
 
 ## 9. Escalation and captain etiquette
 
@@ -537,8 +542,8 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 `data/backlog.md` is the durable queue.
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
-A decision is simply a task held for the captain: `tasks-axi hold <id> --reason "<reason>" --kind captain`, with `--until <date>` when the captain defers it.
-When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it the same way.
+A decision is simply a task held for the captain: create the task with `tasks-axi add` when needed, then always hold it through `bin/fm-captain-hold.sh hold <id> --reason "<reason>"`, with `--until <date>` when the captain defers it.
+When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it through that wrapper.
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
@@ -595,7 +600,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
-- `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+- `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer, and whenever a live worker reports its no-mistakes pipeline dead, unreachable, or timed out.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `work-item-visibility` - load at intake before scaffolding a PR-based ship or design brief that carries a work item, and before posting any milestone the lifecycle scripts do not post themselves.
 - `captain-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, and on any `RECORD DIVERGENCE` line from the wake drain.
