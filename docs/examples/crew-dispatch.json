@@ -1,7 +1,7 @@
 {
   "rules": [
     {
-      "when": "The task is an interactive design interview whose tracked deliverable is an architectural decision record.",
+      "when": "The task is a design planning conversation whose tracked deliverable is an architectural decision record.",
       "use": [
         { "harness": "codex", "effort": "xhigh" },
         { "harness": "pi", "effort": "xhigh" },
