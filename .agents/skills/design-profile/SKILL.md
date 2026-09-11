@@ -1,6 +1,6 @@
 ---
 name: design-profile
-description: Agent-only supervisor contract for dispatching and supervising an interactive design task whose tracked deliverable is an ADR. Load before scaffolding, dispatching, answering, completing, or cleaning up a kind=design task.
+description: Agent-only supervisor contract for dispatching and supervising a one-conversation design task whose tracked deliverable is a short ADR. Load before scaffolding, dispatching, answering, completing, or cleaning up a kind=design task.
 user-invocable: false
 metadata:
   internal: true
@@ -8,27 +8,48 @@ metadata:
 
 # Design Profile
 
-Use this profile when the requested product is an interactive decision process ending in an architectural decision record.
+Use this profile when the requested product is one planning conversation ending in a short architectural decision record.
 Use a ship when implementation is already authorized and remaining design uncertainty cannot materially change what to build.
 Use a scout when the result is knowledge or a recommendation rather than a tracked ADR.
+Do not stack a Kun research pass, a Matt interview, and an ADR task as three workflows.
+Do not add a design interview or visual review in front of well-specified authorized implementation.
+Do not rewrite a live task's already generated brief; this contract applies at the next scaffold and dispatch.
 
-`bin/fm-brief.sh --design` owns the worker-facing interview and ADR contract.
+`bin/fm-brief.sh --design` owns the worker-facing planning and ADR contract.
 `bin/fm-spawn.sh --design` owns task-kind metadata, delivery posture, branch identity, and verified harness launch.
 This skill owns the supervisor decisions around those mechanics.
 
+## One planning conversation
+
+Keep research, optional visual proposals, selective questioning, and the ADR in the same design task.
+Research facts from the repository and established evidence before asking anyone a decision.
+When an ambiguous choice is clearer as a diagram or interactive proposal, the worker may use `lavish-axi` in this conversation.
+Visual review is optional and never a completion gate for a well-specified ADR ask.
+Do not open a separate visual-review scout unless the captain asked for that knowledge deliverable.
+
+Use the dispatch-pinned Matt `grilling` skill only for its design-tree and frontier: ask the next unblocked decision.
+Firstmate's one-keyed-question protocol takes precedence over grilling's "ask the whole frontier in one round".
+Use the dispatch-pinned `domain-modeling` skill to sharpen terms and to judge whether an ADR is warranted.
+Do not import that plugin's `grill-with-docs`, `to-spec`, `to-tickets`, `wayfinder`, `implement`, or `CONTEXT.md` lifecycle.
+Its `to-tickets` is firstmate's backlog plus `bin/fm-brief.sh`.
+Its `implement` is firstmate's ship task and its selected delivery mode.
+Its `code-review` is firstmate's own validation pipeline.
+Importing those would give one contract two owners.
+
 ## Dependency boundary
 
-The profile uses the installed `mattpocock-skills@mattpocock` plugin.
+The profile uses the installed `mattpocock-skills@mattpocock` plugin as thinking tools, not as a second planner.
 `bin/fm-design-skills.sh` is the single owner of resolving named skills from that plugin.
 It only reads the registry and skill files.
 It never installs, updates, copies, vendors, pins, or modifies the plugin.
-Only the captain upgrades that dependency through their own `/plugin` action.
+Workers never own plugin lifecycle.
+Plugin install and refresh are captain-owned outside this repository; do not add a competing updater here.
 
 Run `bin/fm-design-skills.sh check` before scaffolding.
-If it refuses because the install or a required skill is absent, stop and ask the captain to refresh the plugin.
+If it refuses because the install or a required skill is absent, stop and report that the captain-owned plugin install needs a refresh.
 Never substitute copied skill text or run an installer from a worker.
 
-That plugin auto-updates, so `fm-spawn.sh --design` resolves it once at dispatch, binds the worker-facing brief to that result's exact skill paths, and records the release in task metadata so the durable completion manifest carries it past cleanup ([`docs/fleet-data-contracts.md`](../../../docs/fleet-data-contracts.md#the-design-tasks-plugin-release)).
+The installed plugin can change between tasks, so `fm-spawn.sh --design` resolves it once at dispatch, binds the worker-facing brief to that result's exact skill paths, and records the release in task metadata so the durable completion manifest carries it past cleanup ([`docs/fleet-data-contracts.md`](../../../docs/fleet-data-contracts.md#the-design-tasks-plugin-release)).
 A design result that surprises you is therefore traceable to the exact instructions that informed it.
 Do not repeat that release in the ADR: the manifest owns the fact, and the ADR is a project deliverable rather than a record of firstmate's tooling.
 
@@ -36,17 +57,9 @@ When the captain names that plugin's skills for a task, read the resolved `ask-m
 Account for the choice in the same reply that reports what is being dispatched: which skills were selected and why.
 The router recommends skills that are not invokable as skills.
 Reaching one means resolving its path and reading the file, exactly as the design brief already does for grilling and domain-modeling.
+Select only thinking tools that serve this one conversation; do not dispatch a second Matt workflow.
 
-Do not import that plugin's lifecycle, file layout, or scratch-tracker conventions.
-Its `to-tickets` is firstmate's backlog plus `bin/fm-brief.sh`.
-Its `implement` is firstmate's ship task and its selected delivery mode.
-Its `code-review` is firstmate's own validation pipeline.
-Its `CONTEXT.md` is refused outright by this profile's ADR-only rule.
-Importing those would give one contract two owners.
-The router is for choosing that plugin's thinking tools.
-Firstmate's lifecycle stays firstmate's.
-
-The worker brief tells every harness to read the resolved skill files directly.
+The worker brief tells every harness to read the dispatch-pinned skill files directly.
 This avoids depending on harness-specific command spelling while preserving one exact installed dependency for Claude, Codex, and Pi.
 Those dependencies supply thinking tools only.
 The profile's ADR-only contract takes precedence over any dependency direction to create or update `CONTEXT.md`.
@@ -68,6 +81,7 @@ Spawn with `bin/fm-spawn.sh <id> <repo-path> --design --mode <mode> --yolo <on|o
 The design worker investigates factual questions from repository evidence and asks one decision question at a time.
 Every question carries a stable key, evidence, and a recommended answer.
 The worker stops until firstmate returns an answer with the same key.
+Preserve that keyed inventory for in-flight design tasks as well as new ones.
 
 Load `ask-user-authority` before answering any design question.
 An answer that follows directly from accepted intent, repository evidence, an established rule, or a decision already returned in the same session is a correction within accepted intent.
@@ -78,6 +92,11 @@ Require a matching `resolved` event before treating a later question as current.
 When the interview has converged, require the worker to state the resulting decision back before drafting the ADR.
 
 ## ADR completion
+
+Commit a short ADR only when the dispatched domain-modeling skill's ADR bar is met: hard to reverse, surprising without context, and a real trade-off.
+Routine configuration changes are ships, not ADRs.
+If a design interview shows the change does not meet that bar, stop for a keyed decision rather than padding a ceremonial ADR.
+Existing in-flight ADR work keeps its already generated brief and continues to delivery.
 
 Use an existing project ADR convention when one exists.
 Otherwise the worker uses `docs/adr/NNNN-<slug>.md`, incrementing the highest existing number.

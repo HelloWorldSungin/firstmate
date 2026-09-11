@@ -42,8 +42,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record answers, gate completion, and report status/backlog divergence |
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping retired decision commands onto `fm-captain-hold.sh` |
-| `fm-design-skills.sh`    | Resolve named skills from the captain-installed mattpocock plugin without changing it |
-| `fm-brief.sh`            | Scaffold ship or interactive ADR design briefs with explicit `--mode`, plus scout, secondmate-charter, and Herdr-lab briefs, with intent/spec subsections and opt-in work-item traceability |
+| `fm-design-skills.sh`    | Resolve named skills from the captain-owned mattpocock plugin install without changing it |
+| `fm-brief.sh`            | Scaffold ship or one-conversation ADR design briefs with explicit `--mode`, plus scout, secondmate-charter, and Herdr-lab briefs, with intent/spec subsections and opt-in work-item traceability |
 | [`fm-dod-lib.sh`](../bin/fm-dod-lib.sh) | Own ship/design/scout worker role scope, task definitions of done, and the no-mistakes `--intent` contract |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |

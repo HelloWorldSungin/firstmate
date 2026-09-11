@@ -315,9 +315,12 @@ A brain result is a nearest indexed page, not an answer: a miss is absence of a 
 Classify the deliverable:
 
 - **Ship** is the default and produces an authorized project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
-- **Design** runs an interactive decision interview whose only tracked project change is an ADR; load `design-profile` before scaffolding, dispatching, answering, completing, or cleaning up one.
+- **Design** is an explicit ADR task for a consequential architectural tradeoff whose only tracked project change is that ADR; load `design-profile` before scaffolding, dispatching, answering, completing, or cleaning up one.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge deliverable or unresolved uncertainty could materially change whether or what to build.
 
+Keep planning in one conversation: research and optional visual proposals where they change the decision, and selective dependency-aware questioning, rather than stacking separate Kun, Matt, and ADR workflows.
+Do not add a design interview or visual review in front of already authorized, well-specified implementation.
+Routine configuration changes are ships, not ADRs.
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
@@ -424,7 +427,7 @@ Retire one only on an explicit captain or main-firstmate decision, after loading
 ### Design outcome
 
 A completed design task leaves a tracked ADR and no implementation.
-Load `design-profile` before treating the ADR as complete; it owns the interview, dependency boundary, harness-independent skill resolution, decision inventory, delivery, and cleanup contract.
+Load `design-profile` before treating the ADR as complete; it owns the one-conversation planning contract, dependency boundary, harness-independent skill resolution, decision inventory, delivery, and cleanup.
 
 ### Scout outcome and promotion
 
@@ -593,7 +596,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `VAULT_DRIFT:`, `UPSTREAM:`, `GBRAIN_SERVING_CREDENTIAL:`, `GBRAIN_PIN:`, `GBRAIN_CAPTURE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH:` (invalid or backend mismatch), `FLEET_SYNC:`, `BOARD_SWEEP:`, `NETWORK_CHECKS:`, `HOME_SUMMARY:`, `BACKLOG_RECONCILE:`, `ENDPOINT_BINDING_MIGRATION:`, `RUN_ATTRIBUTION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `USAGE_STORE:`, or `FMX:`), or when `BOOTSTRAP_INFO:` says an interrupted backlog cleanup may have left an endpoint or local copy; silence and other `BOOTSTRAP_INFO:` facts need no load.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
-- `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up an interactive design task whose tracked deliverable is an ADR.
+- `design-profile` - load before scaffolding, dispatching, answering, completing, or cleaning up a one-conversation design task whose tracked deliverable is a short ADR.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi default TOON.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.

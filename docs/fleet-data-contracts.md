@@ -74,7 +74,7 @@ A home with no brain has nothing to capture, so it never republishes and its sin
 
 ### The design task's plugin release
 
-A design interview reads two skill files from the captain's installed `mattpocock-skills@mattpocock` plugin live, and that plugin auto-updates, so the instructions behind one design result need not be the instructions behind the next.
+A design task reads two skill files from the captain-owned `mattpocock-skills@mattpocock` install, and that install can change between tasks, so the instructions behind one design result need not be the instructions behind the next.
 `design_skills` records the `plugin`, `version`, and `last_updated` that [`bin/fm-design-skills.sh`](../bin/fm-design-skills.sh) reported to the one resolve call that gates the dispatch, and the worker-facing brief carries the concrete skill paths from that same result rather than resolving again.
 The recorded release is therefore definitionally the one whose files informed the interview; if either pinned file moves before it can be read, the task stops loudly instead of falling forward to another release.
 A relaunch resolves again, so the value names the release resolved at the task's most recent dispatch.
