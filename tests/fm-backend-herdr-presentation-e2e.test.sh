@@ -395,12 +395,15 @@ spawn_task() {  # <id> <home> <project>
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'while :; do sleep 60; done'" --mode no-mistakes --yolo off --backend herdr
 }
 
-finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>
-  local id=$1 status=$2 out=$3 err=$4
+finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr> [home]
+  local id=$1 status=$2 out=$3 err=$4 home=${5:-$HOME_DIR}
   [ "$status" -ne 0 ] || return 0
-  grep -F "task set is locked" "$err" >/dev/null 2>&1 \
-    || fail "concurrent projected spawn $id failed unexpectedly: $(cat "$err")"
-  spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$out" 2> "$err" \
+  if ! grep -F "task set is locked" "$err" >/dev/null 2>&1 \
+     && ! grep -F "another Treehouse slot allocation or return is in progress" "$err" >/dev/null 2>&1; then
+    fail "concurrent projected spawn $id failed unexpectedly: $(cat "$err")"
+  fi
+  cp "$err" "$err.contention"
+  spawn_task "$id" "$home" "$PROJECT_DIR" > "$out" 2> "$err" \
     || fail "projected spawn $id retry failed after task-set publication completed: $(cat "$err")"
 }
 
@@ -978,8 +981,25 @@ SECOND_HOME_A="$TMP_ROOT/home-2ndmate-alpha"
 SECOND_HOME_B="$TMP_ROOT/home-2ndmate-bravo"
 mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
   "$SECOND_HOME_B/state" "$SECOND_HOME_B/config" "$SECOND_HOME_B/data"
+for SECOND_HOME in "$SECOND_HOME_A" "$SECOND_HOME_B"; do
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$HOME_DIR" \
+    > "$SECOND_HOME/.fm-secondmate-parent"
+done
 printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
 printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
+printf -- '- alpha - fixture scope (home: %s; scope: fixture; projects: project; added 2026-09-11)\n- bravo - fixture scope (home: %s; scope: fixture; projects: project; added 2026-09-11)\n' \
+  "$SECOND_HOME_A" "$SECOND_HOME_B" > "$HOME_DIR/data/secondmates.md"
+# The presentation homes must also be one real local ownership tree, otherwise
+# their project locks and exclusive-slot checks silently cover different homes.
+PRIMARY_PROJECT_LOCK=
+for OWNER_HOME in "$HOME_DIR" "$SECOND_HOME_A" "$SECOND_HOME_B"; do
+  OWNER_PROJECT_LOCK=$(FM_HOME="$OWNER_HOME" ROOT="$ROOT" PROJECT_DIR="$PROJECT_DIR" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_treehouse_project_lock_path "$PROJECT_DIR"
+  ') || fail "could not resolve the registered home's project lock"
+  [ -n "$PRIMARY_PROJECT_LOCK" ] || PRIMARY_PROJECT_LOCK=$OWNER_PROJECT_LOCK
+  [ "$OWNER_PROJECT_LOCK" = "$PRIMARY_PROJECT_LOCK" ] || fail "registered homes disagree on project ownership lock"
+done
 touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
 # Ensure the secondmate homes look like gitignored firstmate homes so inheritance
 # may write config/herdr-presentation-spaces.
@@ -1115,9 +1135,12 @@ spawn_task acw "$SECOND_HOME_A" "$PROJECT_DIR" > "$EVIDENCE_ROOT/acw.out" 2> "$E
 ACW_PID=$!
 spawn_task bcw "$SECOND_HOME_B" "$PROJECT_DIR" > "$EVIDENCE_ROOT/bcw.out" 2> "$EVIDENCE_ROOT/bcw.err" &
 BCW_PID=$!
-wait "$PCW_PID" || fail "cross-home concurrent primary failed: $(cat "$EVIDENCE_ROOT/pcw.err")"
-wait "$ACW_PID" || fail "cross-home concurrent A failed: $(cat "$EVIDENCE_ROOT/acw.err")"
-wait "$BCW_PID" || fail "cross-home concurrent B failed: $(cat "$EVIDENCE_ROOT/bcw.err")"
+PCW_STATUS=0; wait "$PCW_PID" || PCW_STATUS=$?
+ACW_STATUS=0; wait "$ACW_PID" || ACW_STATUS=$?
+BCW_STATUS=0; wait "$BCW_PID" || BCW_STATUS=$?
+finish_concurrent_spawn pcw "$PCW_STATUS" "$EVIDENCE_ROOT/pcw.out" "$EVIDENCE_ROOT/pcw.err" "$HOME_DIR"
+finish_concurrent_spawn acw "$ACW_STATUS" "$EVIDENCE_ROOT/acw.out" "$EVIDENCE_ROOT/acw.err" "$SECOND_HOME_A"
+finish_concurrent_spawn bcw "$BCW_STATUS" "$EVIDENCE_ROOT/bcw.out" "$EVIDENCE_ROOT/bcw.err" "$SECOND_HOME_B"
 remember_meta_worktree "$HOME_DIR/state/pcw.meta" >/dev/null
 remember_meta_worktree "$SECOND_HOME_A/state/acw.meta" >/dev/null
 remember_meta_worktree "$SECOND_HOME_B/state/bcw.meta" >/dev/null
@@ -1334,8 +1357,10 @@ spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$EVIDENCE_ROOT/prima
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$PROJECT_DIR" > "$EVIDENCE_ROOT/bravo-wave-resume.out" 2> "$EVIDENCE_ROOT/bravo-wave-resume.err" &
 BRAVO_WAVE_PID=$!
-wait "$PRIMARY_WAVE_PID" || fail "concurrent primary recovery failed: $(cat "$EVIDENCE_ROOT/primary-wave-resume.err")"
-wait "$BRAVO_WAVE_PID" || fail "concurrent secondmate recovery failed: $(cat "$EVIDENCE_ROOT/bravo-wave-resume.err")"
+PRIMARY_WAVE_STATUS=0; wait "$PRIMARY_WAVE_PID" || PRIMARY_WAVE_STATUS=$?
+BRAVO_WAVE_STATUS=0; wait "$BRAVO_WAVE_PID" || BRAVO_WAVE_STATUS=$?
+finish_concurrent_spawn "$PRIMARY_WAVE_ID" "$PRIMARY_WAVE_STATUS" "$EVIDENCE_ROOT/primary-wave-resume.out" "$EVIDENCE_ROOT/primary-wave-resume.err" "$HOME_DIR"
+finish_concurrent_spawn "$BRAVO_WAVE_ID" "$BRAVO_WAVE_STATUS" "$EVIDENCE_ROOT/bravo-wave-resume.out" "$EVIDENCE_ROOT/bravo-wave-resume.err" "$SECOND_HOME_B"
 remember_meta_worktree "$PRIMARY_WAVE_META" >/dev/null
 remember_meta_worktree "$BRAVO_WAVE_META" >/dev/null
 PRIMARY_WAVE_NEW_PANE=$(grep '^herdr_pane_id=' "$PRIMARY_WAVE_META" | cut -d= -f2-)
