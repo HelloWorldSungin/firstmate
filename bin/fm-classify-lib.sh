@@ -578,14 +578,35 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
 # before any read - a cheap builtin, unlike fm_wake_latest_event's O_NOFOLLOW
 # subprocess read, which exists for that function's much narrower payload-driven
 # path resolution rather than this directory-local glob.
-status_open_decisions() {  # <status-file>
-  local f=$1 line resolve held open=''
+status_open_decisions() {  # <status-file> [--explicit-only]
+  local f=$1 mode=${2:-all} line resolve held open='' default_explicit=0 key verb
+  case "$mode" in all|--explicit-only) ;; *) return 2 ;; esac
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
+    # Non-default keys are always explicit. The default bucket also accepts a
+    # literal [key=default], so retain the last opening's token provenance
+    # without changing the shared fold's resolution or durable retention rules.
+    if [ "$mode" = --explicit-only ]; then
+      key=$(_fm_decision_key "$line") || continue
+      [ "$key" = default ] || continue
+      _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" || continue
+      verb=$(status_line_verb "$line")
+      case "$verb" in
+        needs-decision|blocked)
+          default_explicit=0
+          if _fm_key_before_colon "$line" || _fm_key_at_note_head "$line" >/dev/null; then
+            default_explicit=1
+          fi
+          ;;
+      esac
+    fi
   done < "$f"
+  if [ "$mode" = --explicit-only ] && [ "$default_explicit" -eq 0 ]; then
+    open=$(_fm_decision_drop "$open" default)
+  fi
   printf '%s' "$open"
 }
 
@@ -762,9 +783,9 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
     return
   fi
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return 1
-    epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
-    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+    ident=$(LC_ALL=C /usr/bin/stat -f '%d:%i' "$f" 2>/dev/null) || return 1
+    epoch=$(LC_ALL=C /usr/bin/stat -f '%B' "$f" 2>/dev/null) || epoch=0
+    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C /usr/bin/stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   else
     ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return 1
     epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
@@ -781,7 +802,7 @@ _fm_status_file_size() {  # <status-file>
     return
   fi
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%z' "$f" 2>/dev/null
+    LC_ALL=C /usr/bin/stat -f '%z' "$f" 2>/dev/null
   else
     LC_ALL=C stat -c '%s' "$f" 2>/dev/null
   fi
@@ -790,7 +811,7 @@ _fm_status_file_size() {  # <status-file>
 _fm_status_file_mtime() {  # <status-file>
   local f=$1
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%m' "$f" 2>/dev/null
+    LC_ALL=C /usr/bin/stat -f '%m' "$f" 2>/dev/null
   else
     LC_ALL=C stat -c '%Y' "$f" 2>/dev/null
   fi
@@ -1181,7 +1202,7 @@ status_presentation_marker_parse() {
 
 _status_observed_path_state() {
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%HT:%p' "$1" 2>/dev/null
+    LC_ALL=C /usr/bin/stat -f '%HT:%p' "$1" 2>/dev/null
   else
     LC_ALL=C stat -c '%F:%f' "$1" 2>/dev/null
   fi
