@@ -32,7 +32,6 @@
 // replacement handoff.
 //
 // Restore versus delivery (stated once here):
-// restoring is true only while a successor arm is started and verified.
 // delivering is true while the serialized pending-wake pump is in flight.
 // A later actionable close restores a successor even when the previous wake's
 // branch settlement has not resolved. Failure closes during delivering still
@@ -98,6 +97,11 @@ type UnconsumedWake = {
   pending: PendingActionableClose;
 };
 
+type ContinuityRestoration = {
+  failure: string;
+  recovery?: { generation: string; watcherPid: string };
+};
+
 type SessionGeneration = {
   id: number;
   stopping: boolean;
@@ -106,7 +110,7 @@ type SessionGeneration = {
   retryTimer: ReturnType<typeof setTimeout> | null;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
   retryFailures: number;
-  restoring: boolean;
+  restoring: Promise<ContinuityRestoration> | null;
   delivering: boolean;
   seq: number;
   awayStandby: boolean;
@@ -442,7 +446,7 @@ function createGeneration(): SessionGeneration {
     retryTimer: null,
     cleanupTimer: null,
     retryFailures: 0,
-    restoring: false,
+    restoring: null,
     delivering: false,
     seq: 0,
     awayStandby: false,
@@ -790,17 +794,13 @@ export default function (pi: ExtensionAPI) {
     owner.cleanupTimer = timer;
   }
 
-  async function restoreContinuity(owner: SessionGeneration, predecessorArmPid: string): Promise<{
-    failure: string;
-    recovery?: { generation: string; watcherPid: string };
-  }> {
-    if (owner.restoring) return { failure: "" };
-    owner.restoring = true;
-    try {
-      return await restoreAfterActionableClose(owner, predecessorArmPid);
-    } finally {
-      owner.restoring = false;
+  async function restoreContinuity(owner: SessionGeneration, predecessorArmPid: string): Promise<ContinuityRestoration> {
+    if (!owner.restoring) {
+      owner.restoring = restoreAfterActionableClose(owner, predecessorArmPid).finally(() => {
+        owner.restoring = null;
+      });
     }
+    return await owner.restoring;
   }
 
   async function processPendingActionables(owner: SessionGeneration): Promise<void> {
@@ -812,7 +812,8 @@ export default function (pi: ExtensionAPI) {
     if (owner.delivering) {
       const newest = owner.pendingActionables[owner.pendingActionables.length - 1];
       if (newest && !newest.delivered && !owner.unconsumedWakes.has(newest.token)) {
-        void restoreContinuity(owner, newest.predecessorArmPid);
+        const restoration = await restoreContinuity(owner, newest.predecessorArmPid);
+        if (restoration.failure) surfaceFailure(owner, restoration.failure);
       }
       return;
     }
@@ -1007,10 +1008,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<{
-    failure: string;
-    recovery?: { generation: string; watcherPid: string };
-  }> {
+  async function restoreAfterActionableClose(owner: SessionGeneration, predecessorArmPid: string): Promise<ContinuityRestoration> {
     let failure = "";
     for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
       if (!generationIsLive(owner)) return { failure: "" };

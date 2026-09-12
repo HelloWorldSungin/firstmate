@@ -2968,12 +2968,13 @@ EOF
 
 test_pi_hung_settlement_later_cycles_restore_successor() {
   local repo home plugin log marker_root trigger stop out status
-  repo="$TMP_ROOT/pi-hung-settlement-second-cycle-root"
-  home="$TMP_ROOT/pi-hung-settlement-second-cycle-home"
-  log="$TMP_ROOT/pi-hung-settlement-second-cycle.log"
-  marker_root="$TMP_ROOT/pi-hung-settlement-second-cycle-markers"
-  trigger="$TMP_ROOT/pi-hung-settlement-second-cycle.trigger"
-  stop="$TMP_ROOT/pi-hung-settlement-second-cycle.stop"
+  local mode=${1:-consecutive}
+  repo="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode-root"
+  home="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode-home"
+  log="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode.log"
+  marker_root="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode-markers"
+  trigger="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode.trigger"
+  stop="$TMP_ROOT/pi-hung-settlement-second-cycle-$mode.stop"
   mkdir -p "$repo/bin" "$home/state" "$home/config" "$marker_root"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
@@ -2988,6 +2989,15 @@ cleanup() { rm -f "$marker"; }
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 printf 'arm pid=%s marker=%s\n' "$$" "$marker" >> "${FM_ARM_LOG:?}"
+count=$(find "$FM_MARKER_ROOT" -name 'attempt.*' | wc -l)
+: > "$FM_MARKER_ROOT/attempt.$$"
+if [ "$count" -ge 2 ] && [ "$FM_RESTORE_MODE" != consecutive ]; then
+  while [ ! -e "$FM_MARKER_ROOT/release" ]; do sleep 0.02; done
+  if [ "$FM_RESTORE_MODE" != slow-success ]; then
+    printf 'watcher: FAILED - fixture successor failed\n'
+    exit 1
+  fi
+fi
 printf 'watcher: started pid=%s (beacon fresh) recovery-generation=hung-settlement-fixture\n' "$$"
 while :; do
   if [ -e "$FM_TRIGGER_FILE" ]; then
@@ -3003,11 +3013,13 @@ while :; do
 done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+  out=$(FM_RESTORE_MODE="$mode" FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=10 FM_PI_ARM_READY_TIMEOUT_MS=5000 PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let deliveryStarted = false;
+let finishFirst;
+let offers = 0;
 
 function makePi() {
   const eventHandlers = new Map();
@@ -3029,7 +3041,8 @@ function makePi() {
       emit(event, data) {
         if (event === "fm-branch-supervision:dispatch") {
           deliveryStarted = true;
-          data.accept(new Promise(() => {}));
+          offers += 1;
+          data.accept(offers === 1 ? new Promise((resolve) => { finishFirst = resolve; }) : Promise.resolve());
         }
         for (const handler of eventHandlers.get(event) ?? []) handler(data);
       },
@@ -3092,6 +3105,35 @@ if (session.prompts.length !== 0) {
 
 writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle second outcome\n");
 await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "second successor during hung settlement");
+
+if (process.env.FM_RESTORE_MODE !== "consecutive") {
+  const mode = process.env.FM_RESTORE_MODE;
+  if (mode.startsWith("slow-")) {
+    finishFirst();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (offers !== 1 || session.prompts.length !== 0) {
+      throw new Error("later wake delivered before the in-flight restore settled");
+    }
+  }
+  writeFileSync(`${process.env.FM_MARKER_ROOT}/release`, "");
+  if (mode === "slow-success") {
+    await waitFor(() => offers === 2, "second wake delivered after readiness");
+    const successor = armRows()[2];
+    const confirmations = readFileSync(process.env.FM_ARM_LOG, "utf8").split("\n")
+      .filter((row) => row.startsWith("confirmed ") && row.includes(`watcher=${successor.pid}`));
+    if (confirmations.length !== 1) throw new Error("shared restore lost its recovery confirmation");
+  } else {
+    await waitFor(() => session.prompts.some((message) => message.includes("after 1 retries")), "typed side restore failure");
+    if (mode === "slow-failure") {
+      await waitFor(() => session.prompts.some((message) => message.includes("second outcome") && message.includes("after 1 retries")), "later wake annotated with shared restore failure");
+    } else if (offers !== 1 || session.prompts.some((message) => message.includes("second outcome"))) {
+      throw new Error("failure reporting delivered a later wake during hung settlement");
+    }
+    if (armRows().length !== 4) throw new Error(`restore did not honor retry bound: ${armRows().length}`);
+  }
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  process.exit(0);
+}
 
 writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle third outcome\n");
 await waitFor(() => liveArms().length === 1 && armRows().length >= 4, "third successor during hung settlement");
@@ -5097,6 +5139,9 @@ test_pi_streaming_followup_is_replayed_after_replacement away
 test_pi_streaming_time_delivery_keeps_the_successor_chain
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_hung_settlement_later_cycles_restore_successor
+test_pi_hung_settlement_later_cycles_restore_successor held-failure
+test_pi_hung_settlement_later_cycles_restore_successor slow-success
+test_pi_hung_settlement_later_cycles_restore_successor slow-failure
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique
 test_pi_replacement_persistence_failure_stops_arm_child
