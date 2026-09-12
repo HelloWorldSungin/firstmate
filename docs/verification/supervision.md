@@ -469,6 +469,30 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
 
+Pi later-cycle restore while an earlier branch settlement is still hung is covered by the portable watcher suite plus this isolated-lab live guard:
+
+```sh
+tests/fm-pi-watch-extension.test.sh
+FM_PI_HUNG_DELIVERY_HERDR_E2E=1 tests/fm-pi-hung-delivery-herdr-e2e.test.sh
+```
+
+The live guard launches a real Pi in a named non-default Herdr lab, hangs branch settlement, requires two further worker completions to keep a live successor, and checks the watcher beacon across an unattended interval.
+It does not claim turn-end marker identity, branch-session rotation, or ready-to-validate classification.
+
+On 2026-09-11 that live guard was run against Pi 0.85.1 in a named non-default Herdr 0.8.2 lab:
+
+```sh
+FM_PI_HUNG_DELIVERY_HERDR_E2E=1 tests/fm-pi-hung-delivery-herdr-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - isolated Pi hung-settlement Herdr lab restored later-cycle successors and kept a fresh beacon
+
+all fm-pi-hung-delivery-herdr-e2e tests passed
+```
+
 Pi same-process session-transition ownership was verified on 2026-07-27 against the tracked extension with a faithful in-process factory rebind (module cache retained, real arm children):
 
 ```sh
