@@ -3180,7 +3180,7 @@ EOF
   status=$?
   expect_code 0 "$status" "Pi hung settlement must still restore later-cycle successors ($mode): $out"
   [ -z "$out" ] || fail "Pi hung-settlement later-cycle test printed output: $out"
-  pass "Pi restores later-cycle successors while an earlier branch settlement is still hung"
+  pass "Pi restores later-cycle successors while an earlier branch settlement is still hung ($mode)"
 }
 
 test_pi_late_retiring_actionable_reaches_replacement() {

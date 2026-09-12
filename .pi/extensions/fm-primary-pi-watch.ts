@@ -36,6 +36,15 @@
 // A later actionable close restores a successor even when the previous wake's
 // branch settlement has not resolved. Failure closes during delivering still
 // defer their bounded retry until that delivery settles.
+// restoring holds the one in-flight restore promise for the generation, so a
+// concurrent caller awaits that restore's real result instead of reading a
+// synthetic success: the pump needs the recovery marker to confirm handling
+// and the failure text to annotate the wake it delivers.
+// Because that side-path restore runs outside the pump's own try/catch, it
+// surfaces its typed failure - and any thrown persistence error - on its own
+// rather than waiting for the hung delivery to settle. A shared failing
+// restore therefore reaches main twice, standalone and appended to the later
+// wake; re-arming is idempotent, and silent stopped monitoring is not.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
