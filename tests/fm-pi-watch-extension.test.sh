@@ -2571,7 +2571,7 @@ if (previous.prompts.length !== 0) {
 }
 await waitFor(() => liveArms().length === 1 && armRows().length >= 2, "old-session successor");
 writeFileSync(process.env.FM_TRIGGER_FILE, "replacement-successor actionable outcome\n");
-await waitFor(() => liveArms().length === 0, "mid-delivery successor actionable close");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "mid-delivery successor restored after second actionable close");
 
 await previous.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
 await waitFor(() => liveArms().length === 0, "retired old-session successor");
@@ -2585,7 +2585,7 @@ const replacementStart = replacement.handlers.get("session_start")?.({
   previousSessionFile: "/tmp/previous.jsonl",
 }, {});
 await new Promise((resolve) => setTimeout(resolve, 50));
-await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement arm before old delivery settlement");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 4, "replacement arm before old delivery settlement");
 if (replacement.prompts.some((message) => message.includes("signal: replacement-race actionable outcome"))) {
   throw new Error(`replacement raced the accepted old-session delivery: ${replacement.prompts.join(" | ")}`);
 }
@@ -2612,7 +2612,7 @@ await new Promise((resolve) => setTimeout(resolve, 700));
 if (replacement.prompts.filter((message) => message.includes("could not clear a delivered replacement-session actionable wake")).length !== 1) {
   throw new Error(`persistent handoff cleanup failure repeated alerts: ${replacement.prompts.join(" | ")}`);
 }
-await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "replacement live arm");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 4, "replacement live arm");
 const redundant = await replacement.getTool().execute("replacement-redundant", {}, undefined, undefined, {});
 if (!redundant.details?.ok || !String(redundant.details.message).includes("unchanged")) {
   throw new Error(`replacement did not retain automatic arm ownership: ${JSON.stringify(redundant.details)}`);
@@ -2964,6 +2964,156 @@ EOF
   expect_code 0 "$status" "Pi must retry a verified successor that failed during wake delivery"
   [ -z "$out" ] || fail "Pi successor-dies-mid-delivery test printed output: $out"
   pass "Pi retries a verified successor that failed during wake delivery once that delivery settles"
+}
+
+test_pi_hung_settlement_later_cycles_restore_successor() {
+  local repo home plugin log marker_root trigger stop out status
+  repo="$TMP_ROOT/pi-hung-settlement-second-cycle-root"
+  home="$TMP_ROOT/pi-hung-settlement-second-cycle-home"
+  log="$TMP_ROOT/pi-hung-settlement-second-cycle.log"
+  marker_root="$TMP_ROOT/pi-hung-settlement-second-cycle-markers"
+  trigger="$TMP_ROOT/pi-hung-settlement-second-cycle.trigger"
+  stop="$TMP_ROOT/pi-hung-settlement-second-cycle.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$marker_root"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+marker=$(mktemp "${FM_MARKER_ROOT:?}/arm.XXXXXX") || exit 1
+cleanup() { rm -f "$marker"; }
+trap cleanup EXIT
+trap 'exit 0' TERM INT
+printf 'arm pid=%s marker=%s\n' "$$" "$marker" >> "${FM_ARM_LOG:?}"
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=hung-settlement-fixture\n' "$$"
+while :; do
+  if [ -e "$FM_TRIGGER_FILE" ]; then
+    outcome=$(cat "$FM_TRIGGER_FILE")
+    rm -f "$FM_TRIGGER_FILE"
+    printf 'signal: '
+    sleep 0.02
+    printf '%s\n' "$outcome"
+    exit 0
+  fi
+  [ ! -e "$FM_STOP_FILE" ] || exit 0
+  sleep 0.02
+done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let deliveryStarted = false;
+
+function makePi() {
+  const eventHandlers = new Map();
+  let tool = null;
+  const prompts = [];
+  const pi = {
+    on() {},
+    registerCommand() {},
+    registerTool(candidate) {
+      if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+    },
+    sendUserMessage: async (message) => {
+      prompts.push(message);
+    },
+    events: {
+      on(event, handler) {
+        eventHandlers.set(event, [...(eventHandlers.get(event) ?? []), handler]);
+      },
+      emit(event, data) {
+        if (event === "fm-branch-supervision:dispatch") {
+          deliveryStarted = true;
+          data.accept(new Promise(() => {}));
+        }
+        for (const handler of eventHandlers.get(event) ?? []) handler(data);
+      },
+    },
+  };
+  return { pi, getTool: () => tool, prompts };
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function armRows() {
+  if (!existsSync(process.env.FM_ARM_LOG)) return [];
+  return readFileSync(process.env.FM_ARM_LOG, "utf8")
+    .trim()
+    .split(/\n/)
+    .filter((row) => row.startsWith("arm "))
+    .map((row) => {
+      const match = /pid=(\d+) marker=(\S+)/.exec(row);
+      return match ? { pid: match[1], marker: match[2] } : { pid: "", marker: "" };
+    });
+}
+
+function liveArms() {
+  return armRows().filter((arm) => arm.pid && arm.marker && existsSync(arm.marker) && pidAlive(arm.pid));
+}
+
+async function waitFor(pred, label, attempts = 500) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${label}: live=${liveArms().length} rows=${armRows().length}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${process.env.FM_HOME}/state/hung-cycle.meta`, "project=/projects/hung-cycle\nwindow=fm-hung-cycle\n");
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\thung-cycle.status\tsignal: hung-cycle first outcome\n");
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const session = makePi();
+mod.default(session.pi);
+const initial = await session.getTool().execute("initial-arm", {}, undefined, undefined, {});
+if (!initial.details?.ok || !String(initial.details.message).includes("started Pi extension arm child")) {
+  throw new Error(`initial arm failed: ${JSON.stringify(initial.details)}`);
+}
+await waitFor(() => liveArms().length === 1, "initial live arm");
+
+writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle first outcome\n");
+await waitFor(() => deliveryStarted, "branch accepted hung first delivery");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 2, "first successor during hung settlement");
+if (session.prompts.length !== 0) {
+  throw new Error(`hung first wake reached main: ${session.prompts.join(" | ")}`);
+}
+
+writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle second outcome\n");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "second successor during hung settlement");
+
+writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle third outcome\n");
+await waitFor(() => liveArms().length === 1 && armRows().length >= 4, "third successor during hung settlement");
+
+const liveBeforeHold = liveArms().length;
+const rowsBeforeHold = armRows().length;
+await new Promise((resolve) => setTimeout(resolve, 200));
+if (liveArms().length !== 1 || armRows().length !== rowsBeforeHold) {
+  throw new Error(`unattended hold lost the restored successor: live=${liveArms().length} rows=${armRows().length} before=${liveBeforeHold}/${rowsBeforeHold}`);
+}
+if (session.prompts.length !== 0) {
+  throw new Error(`hung later wakes reached main: ${session.prompts.join(" | ")}`);
+}
+
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi hung settlement must still restore later-cycle successors"
+  [ -z "$out" ] || fail "Pi hung-settlement later-cycle test printed output: $out"
+  pass "Pi restores later-cycle successors while an earlier branch settlement is still hung"
 }
 
 test_pi_late_retiring_actionable_reaches_replacement() {
@@ -4946,6 +5096,7 @@ test_pi_streaming_followup_is_replayed_after_replacement
 test_pi_streaming_followup_is_replayed_after_replacement away
 test_pi_streaming_time_delivery_keeps_the_successor_chain
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
+test_pi_hung_settlement_later_cycles_restore_successor
 test_pi_late_retiring_actionable_reaches_replacement
 test_pi_replacement_tokens_are_process_unique
 test_pi_replacement_persistence_failure_stops_arm_child

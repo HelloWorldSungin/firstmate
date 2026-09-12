@@ -335,6 +335,7 @@ family_for_basename() {
     fm-rovo-signals-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
+    fm-pi-hung-delivery-herdr-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -692,6 +693,7 @@ tests/fm-pending-reply.test.sh 24679
 tests/fm-pi-branch-extension.test.sh 22239
 tests/fm-pi-branch-live-e2e.test.sh 56
 tests/fm-pi-branch-responsiveness-live-e2e.test.sh 21
+tests/fm-pi-hung-delivery-herdr-e2e.test.sh 23
 tests/fm-pi-primary-live-e2e.test.sh 20
 tests/fm-pi-watch-extension.test.sh 42970
 tests/fm-pointer-check.test.sh 1314
