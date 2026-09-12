@@ -3013,8 +3013,8 @@ while :; do
 done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(FM_RESTORE_MODE="$mode" FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=10 FM_PI_ARM_READY_TIMEOUT_MS=5000 PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+  out=$(FM_RESTORE_MODE="$mode" FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=10 FM_PI_ARM_READY_TIMEOUT_MS=5000 PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --unhandled-rejections=strict --input-type=module 2>&1 <<'EOF'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let deliveryStarted = false;
@@ -3023,10 +3023,11 @@ let offers = 0;
 
 function makePi() {
   const eventHandlers = new Map();
+  const handlers = new Map();
   let tool = null;
   const prompts = [];
   const pi = {
-    on() {},
+    on(event, handler) { handlers.set(event, handler); },
     registerCommand() {},
     registerTool(candidate) {
       if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -3048,7 +3049,7 @@ function makePi() {
       },
     },
   };
-  return { pi, getTool: () => tool, prompts };
+  return { pi, getTool: () => tool, prompts, handlers };
 }
 
 function pidAlive(pid) {
@@ -3103,7 +3104,31 @@ if (session.prompts.length !== 0) {
   throw new Error(`hung first wake reached main: ${session.prompts.join(" | ")}`);
 }
 
+if (process.env.FM_RESTORE_MODE === "held-exception") {
+  const marker = `${process.env.FM_HOME}/state/.pi-watch-extension-loaded`;
+  unlinkSync(marker);
+  mkdirSync(marker);
+}
+
 writeFileSync(process.env.FM_TRIGGER_FILE, "hung-cycle second outcome\n");
+if (process.env.FM_RESTORE_MODE === "held-exception") {
+  await waitFor(() => session.prompts.some((message) =>
+    message.includes("watcher: FAILED - Pi extension could not restore watcher continuity") && message.includes("EISDIR")),
+  "typed side restore exception while first delivery remains hung");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (offers !== 1 || session.prompts.length !== 1 || session.prompts[0].includes("second outcome")) {
+    throw new Error("restore exception delivered a later wake during hung settlement");
+  }
+  await session.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "new" }, {});
+  const handoff = JSON.parse(readFileSync(`${process.env.FM_HOME}/state/extensions/pi-primary-watch/session-replacement-actionable.json`, "utf8"));
+  if (handoff.pending.length !== 2 || handoff.pending.some((pending) => pending.delivered)) {
+    throw new Error(`restore exception lost pending wakes: ${JSON.stringify(handoff)}`);
+  }
+  if (armRows().length !== 2 || liveArms().length !== 0) throw new Error("restore exception launched an unexpected successor");
+  writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+  process.exit(0);
+}
+
 await waitFor(() => liveArms().length === 1 && armRows().length >= 3, "second successor during hung settlement");
 
 if (process.env.FM_RESTORE_MODE !== "consecutive") {
@@ -3153,7 +3178,7 @@ process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi hung settlement must still restore later-cycle successors"
+  expect_code 0 "$status" "Pi hung settlement must still restore later-cycle successors ($mode): $out"
   [ -z "$out" ] || fail "Pi hung-settlement later-cycle test printed output: $out"
   pass "Pi restores later-cycle successors while an earlier branch settlement is still hung"
 }
@@ -5140,6 +5165,7 @@ test_pi_streaming_time_delivery_keeps_the_successor_chain
 test_pi_successor_failure_during_delivery_is_retried_after_delivery
 test_pi_hung_settlement_later_cycles_restore_successor
 test_pi_hung_settlement_later_cycles_restore_successor held-failure
+test_pi_hung_settlement_later_cycles_restore_successor held-exception
 test_pi_hung_settlement_later_cycles_restore_successor slow-success
 test_pi_hung_settlement_later_cycles_restore_successor slow-failure
 test_pi_late_retiring_actionable_reaches_replacement

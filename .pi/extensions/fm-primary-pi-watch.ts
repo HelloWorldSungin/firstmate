@@ -812,8 +812,13 @@ export default function (pi: ExtensionAPI) {
     if (owner.delivering) {
       const newest = owner.pendingActionables[owner.pendingActionables.length - 1];
       if (newest && !newest.delivered && !owner.unconsumedWakes.has(newest.token)) {
-        const restoration = await restoreContinuity(owner, newest.predecessorArmPid);
-        if (restoration.failure) surfaceFailure(owner, restoration.failure);
+        try {
+          const restoration = await restoreContinuity(owner, newest.predecessorArmPid);
+          if (restoration.failure) surfaceFailure(owner, restoration.failure);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          surfaceFailure(owner, `watcher: FAILED - Pi extension could not restore watcher continuity\n${detail}`);
+        }
       }
       return;
     }
