@@ -194,6 +194,7 @@ test_every_live_guard_is_wired_to_the_shared_gate() {
       fm-agy-smoke.test.sh) expected="skip: set FM_CURSOR_AGY_LIVE_E2E=1" ;;
       fm-dashboard-browser.test.sh) expected="skip: set FM_DASHBOARD_BROWSER_E2E=1" ;;
       fm-gbrain-capture-e2e.test.sh|fm-gbrain-readonly-e2e.test.sh) expected="skip: set FM_GBRAIN_LIVE_E2E=1" ;;
+      fm-pi-hung-delivery-herdr-e2e.test.sh) expected="skip: set FM_PI_HUNG_DELIVERY_HERDR_E2E=1" ;;
       fm-stow-horizon-live-e2e.test.sh) expected="skip: set FM_STOW_HORIZON_LIVE_E2E=1" ;;
     esac
     out=$(clean_env CI=true FM_LIVE=0 bash "$script" 2>&1) || fail "$(basename "$script") must exit 0 when live guards are disabled"
@@ -220,6 +221,7 @@ test_ordinary_ci_preserves_protected_execution_gates() {
 fm-agy-smoke.test.sh skip: set FM_CURSOR_AGY_LIVE_E2E=1
 fm-dashboard-browser.test.sh skip: set FM_DASHBOARD_BROWSER_E2E=1
 fm-afk-pi-dual-supervision-e2e.test.sh skip: set FM_AFK_PI_DUAL_SUPERVISION_E2E=1
+fm-pi-hung-delivery-herdr-e2e.test.sh skip: set FM_PI_HUNG_DELIVERY_HERDR_E2E=1
 fm-stow-horizon-live-e2e.test.sh skip: set FM_STOW_HORIZON_LIVE_E2E=1
 fm-gbrain-capture-e2e.test.sh skip: set FM_GBRAIN_LIVE_E2E=1
 fm-gbrain-readonly-e2e.test.sh skip: set FM_GBRAIN_LIVE_E2E=1

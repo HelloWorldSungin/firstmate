@@ -81,14 +81,14 @@ The refreshed shared hints and retained fork-only hints now put the slowest of e
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
 | `portable-serial-1of8` | 24 | 580936 ms (~9.68 min) |
-| `portable-serial-2of8` | 24 | 580921 ms (~9.68 min) |
-| `portable-serial-3of8` | 24 | 580918 ms (~9.68 min) |
+| `portable-serial-2of8` | 24 | 580922 ms (~9.68 min) |
+| `portable-serial-3of8` | 24 | 580919 ms (~9.68 min) |
 | `portable-serial-4of8` | 26 | 580933 ms (~9.68 min) |
-| `portable-serial-5of8` | 26 | 580921 ms (~9.68 min) |
-| `portable-serial-6of8` | 25 | 580916 ms (~9.68 min) |
+| `portable-serial-5of8` | 26 | 580922 ms (~9.68 min) |
+| `portable-serial-6of8` | 26 | 580936 ms (~9.68 min) |
 | `portable-serial-7of8` | 24 | 580921 ms (~9.68 min) |
 | `portable-serial-8of8` | 26 | 580925 ms (~9.68 min) |
-| imbalance | | 20 ms |
+| imbalance | | 17 ms |
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 262626 ms, is the floor for any shard count.
 
