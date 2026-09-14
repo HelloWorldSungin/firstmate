@@ -48,11 +48,14 @@
 #   Either way fm-spawn.sh copies the explicit markers into task metadata, where
 #   bin/fm-issue-comment.sh reads the recorded PR target to decide whether it may
 #   write firstmate's own living status comment to that tracker.
-#   --design writes the interactive design contract: the worker reads the
-#   installed mattpocock grilling and domain-modeling skills, asks one
-#   evidence-first question at a time through firstmate, and produces a tracked
-#   ADR through the selected delivery mode. The plugin is read in place and is
-#   never installed, updated, copied, vendored, pinned, or modified here.
+#   --design writes one planning conversation whose only tracked project
+#   deliverable is a short ADR: the worker researches facts, may use an optional
+#   visual proposal, and reads the installed mattpocock grilling and
+#   domain-modeling skills selectively for dependency-aware questioning and
+#   terms. It asks one evidence-first question at a time through firstmate and
+#   ships the ADR through the selected delivery mode. The plugin is read in
+#   place and is never installed, updated, copied, vendored, pinned, or
+#   modified here. Plugin lifecycle is captain-owned outside this repository.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -436,7 +439,7 @@ BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 if [ "$KIND" = design ]; then
   "$FM_ROOT/bin/fm-design-skills.sh" check >/dev/null || {
-    echo "error: --design requires the captain-installed mattpocock grilling and domain-modeling skills; do not install or copy them from a worker" >&2
+    echo "error: --design requires the captain-owned mattpocock grilling and domain-modeling skills; do not install or copy them from a worker" >&2
     exit 1
   }
 fi
@@ -1049,26 +1052,34 @@ if [ "$KIND" = design ]; then
   OUTPUT_KIND=design
   IFS= read -r -d '' DESIGN_SECTION <<EOF || true
 # Design profile
-This is an interactive DESIGN task whose only tracked project deliverable is one architectural decision record.
+This is one DESIGN planning conversation whose only tracked project deliverable is one short architectural decision record.
 Do not implement the resulting design or make unrelated project changes.
 Do not create or modify any other tracked project file, including \`AGENTS.md\` or \`CLAUDE.md\`.
+Do not stack a separate Kun workflow, a separate Matt workflow, and this ADR as three passes.
 
-Read and follow \`$FM_ROOT/.agents/skills/design-profile/SKILL.md\` before beginning the interview.
+Read and follow \`$FM_ROOT/.agents/skills/design-profile/SKILL.md\` before beginning the conversation.
 At dispatch Firstmate prepends the exact \`grilling\` and \`domain_modeling\` paths from the resolver call whose plugin release it records for this task.
 Read only those dispatch-pinned paths, never resolve the plugin again from this worker, and stop with the binding's blocker if either exact file is unavailable.
 This direct file-binding contract is identical on Claude, Codex, and Pi and does not depend on harness-specific skill-command spelling.
 Never install, update, copy, vendor, pin, or modify that plugin from this task.
-Use those skills for modeling and interrogation only.
+Plugin lifecycle is captain-owned outside this repository; do not add a competing updater here.
+Use those skills selectively for the design tree, the next unblocked question, and domain terms.
+Do not import grill-with-docs, to-spec, to-tickets, wayfinder, implement, or CONTEXT.md from that plugin.
 Do not create or update \`CONTEXT.md\`, even if a dependency instructs you to do so.
 Record every resolved term only in the ADR so it remains the sole tracked project deliverable.
 
 Investigate factual questions from repository evidence before asking for a decision.
+If an ambiguous choice is clearer as a diagram or interactive proposal, you may use lavish-axi in this same conversation.
+Do not require a visual review, and do not start a separate visual-review workflow for a well-specified ADR ask.
 Ask exactly one decision question at a time, with one stable key, the evidence, and your recommended answer.
+Choose that question as the next unblocked decision on the design tree; do not batch the whole frontier.
 Append \`needs-decision [key=<stable-slug>]: {one question} Recommendation: {answer and evidence}\`, then stop and wait.
 Never batch questions, answer on behalf of firstmate, or proceed while the current key is unresolved.
 When an answer arrives, append \`resolved [key=<same-stable-slug>]: {decision returned by firstmate}\` and \`working: continuing the design interview\` in the same breath, then capture the decision in the ADR.
 State the converged decision back to firstmate before drafting the ADR.
 
+Write a short ADR only when the dispatched domain-modeling skill's ADR bar is met.
+If the conversation shows a routine configuration change rather than a consequential architectural tradeoff, append \`needs-decision\` rather than padding a ceremonial ADR.
 Use an existing project ADR convention when one exists.
 Otherwise use \`docs/adr/NNNN-<slug>.md\`, incrementing the highest existing number.
 The ADR must stand alone with context, decision, rationale, relevant alternatives, and non-obvious consequences.

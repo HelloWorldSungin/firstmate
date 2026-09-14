@@ -267,8 +267,8 @@ The helper's header owns the exact signal detection, relocated-home limitation, 
 
 ## Three task shapes
 
-Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); design tasks use the same delivery modes for an interactive interview's ADR and never implement it; scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
-The intake and authority contract in `AGENTS.md` owns when design work or separate scout research is warranted, while the `design-profile` skill owns the ADR interview and installed-plugin boundary.
+Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); design tasks use the same delivery modes for one planning conversation's ADR and never implement it; scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
+The intake and authority contract in `AGENTS.md` owns when design work or separate scout research is warranted, while the `design-profile` skill owns the unified planning conversation, ADR-only deliverable, and installed-plugin boundary.
 
 ## Dispatch profiles
 

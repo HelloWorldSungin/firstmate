@@ -25,7 +25,8 @@ design_skill_path_is_safe() {  # <path>
 }
 # adopt_relaunch_design_skills: reuse the dispatch pin already recorded for
 # this design task. Never call fm-design-skills.sh resolve here; a later
-# plugin auto-update must not silently rebind the interview.
+# change to the captain-owned plugin install must not silently rebind the
+# interview.
 adopt_relaunch_design_skills() {
   local RELAUNCH_META=$1 ID=$2
   local recorded_plugin recorded_version recorded_updated tasktmp dispatch_brief
