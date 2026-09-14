@@ -2264,6 +2264,15 @@ assert_present "$HMISS/state/procevent/$missing_id.source" \
 MISSING_CAPTURED=$(first_result "$HMISS" "$missing_id" || true)
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$MISSING_CAPTURED")" artifact-missing \
   "the recurring result from a deleted artifact classifies as artifact-missing"
+# Capture precedes runner exit and claim release. This case tests retiring the
+# registered id after completed polls, not racing the runner's identity proof
+# against its exit; live-runner retirement has separate blocking-source cases.
+for _ in $(seq 1 100); do
+  [ ! -e "$FM_PROCEVENT_CLAIM_ROOT/$missing_id.claim" ] && break
+  sleep 0.1
+done
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/$missing_id.claim" \
+  "the completed missing-artifact runner releases its claim before retirement"
 # Retire by source id stops the recurring wakes (the wake text carries the id).
 # Retire returns only after the runner it owns is stopped and its claim
 # released, so the count taken after it is a settled baseline.
