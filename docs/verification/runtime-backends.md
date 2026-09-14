@@ -1725,6 +1725,35 @@ The real-session suite proved each overlap is still rejected by an unwrapped Pi 
 The same TUI guard run against the extensions from before the delivery owner timed out waiting for the captain-first watcher wake to reach a model turn.
 Rerun the live guard after every Pi upgrade, because the delivery owner wraps the private `AgentSession._runAgentPrompt` seam and the watcher extension reports rather than patches around a build that lacks it.
 
+### 2026-09-14 settlement controls and prompt overlap in a named Herdr lab
+
+Observed on Linux x86_64 with Node v22.23.2, Pi 0.85.1, and herdr 0.8.2.
+One named non-default lab session was provisioned and torn down only through `bin/fm-herdr-lab.sh`, which both guards reused through `HERDR_LAB_SESSION`; teardown exited 0 with its default-session tripwire intact.
+Each settlement control and the overlap guard used its own isolated `FM_HOME`, a synthetic worker endpoint that issues no Herdr call, and no credential.
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-pi-prompt-collision-fix)
+trap '"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"' EXIT
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
+export HERDR_LAB_HELPER HERDR_LAB_SESSION
+FM_PI_HUNG_DELIVERY_HERDR_E2E=1 FM_PI_PROMPT_COLLISION_LIVE_E2E=1 \
+  bin/fm-test-run.sh tests/fm-pi-hung-delivery-herdr-e2e.test.sh tests/fm-pi-prompt-collision-live-e2e.test.sh
+```
+
+```text
+ok - isolated Pi hung-settlement Herdr lab linked every close, kept a fresh beacon, and ran exactly one monitoring cycle
+ok - isolated Pi slow-settlement Herdr lab linked every close, kept a fresh beacon, and ran exactly one monitoring cycle
+ok - isolated Pi healthy-settlement Herdr lab linked every close, kept a fresh beacon, and ran exactly one monitoring cycle
+ok - real Pi 0.85.1 TUI (herdr): captain-first overlap (before-reload-1) delivers the captain message and the watcher wake in one turn with no banner
+ok - real Pi 0.85.1 TUI (herdr): wake-first overlap (before-reload-2) delivers the captain message and the watcher wake in one turn with no banner
+ok - real Pi 0.85.1 TUI (herdr): captain-first overlap (after-reload-1) delivers the captain message and the watcher wake in one turn with no banner
+ok - real Pi 0.85.1 TUI (herdr): wake-first overlap (after-reload-2) delivers the captain message and the watcher wake in one turn with no banner
+ok - real Pi 0.85.1 TUI (herdr): overlapping prompts kept exactly one linked monitoring cycle across /reload
+```
+
+The slow control's branch settles each accepted wake after 20 s, so four closes restore successors while settlements are pending and a fifth runs after they resolve; the healthy control delivers every wake to a real main turn against an in-process provider.
+
 ## Oh My Pi (omp)
 
 omp runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#omp-oh-my-pi-native-delivery-2026-09-05) owns the primary evidence.

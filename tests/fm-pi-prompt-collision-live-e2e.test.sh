@@ -10,9 +10,13 @@
 # prompt`, and that message is dropped. This guard requires both messages to
 # reach one model turn with no banner, and one monitoring cycle to keep running.
 #
-# Isolation: a private tmux socket, an isolated FM_HOME and Pi agent directory,
-# an in-process deterministic provider (no credentials, no network), and a
-# companion extension that adds preflight latency and records Pi's lifecycle.
+# Isolation: an isolated FM_HOME and Pi agent directory, an in-process
+# deterministic provider (no credentials, no network), and a companion
+# extension that adds preflight latency and records Pi's lifecycle. The TUI runs
+# on a private tmux socket by default. A caller that provisioned a named Herdr
+# lab through fm-herdr-lab.sh passes HERDR_LAB_HELPER and HERDR_LAB_SESSION, and
+# the TUI then runs in a workspace of that lab, with every Herdr call made
+# through the helper and teardown left to that caller.
 # tests/fm-pi-prompt-delivery.test.sh owns the portable, always-run layer that
 # also proves the unwrapped session still rejects each overlap.
 set -u
@@ -26,7 +30,14 @@ if [ "${FM_PI_PROMPT_COLLISION_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 command -v pi >/dev/null 2>&1 || fail "pi not found"
-command -v tmux >/dev/null 2>&1 || fail "tmux not found"
+TERMINAL=tmux
+if [ -n "${HERDR_LAB_SESSION:-}" ]; then
+  TERMINAL=herdr
+  [ -x "${HERDR_LAB_HELPER:-}" ] || fail "HERDR_LAB_SESSION requires HERDR_LAB_HELPER to name fm-herdr-lab.sh"
+  command -v jq >/dev/null 2>&1 || fail "jq not found"
+else
+  command -v tmux >/dev/null 2>&1 || fail "tmux not found"
+fi
 PI_VERSION=$(pi --version 2>/dev/null) || fail "pi --version failed"
 [ -n "$PI_VERSION" ] || fail "pi --version printed nothing"
 
@@ -39,20 +50,27 @@ COMPANION="$TMP_ROOT/companion.ts"
 LAUNCH="$TMP_ROOT/launch-pi.sh"
 SOCKET="fm-pi-collision-$$"
 SESSION=pi-collision
+PANE=
 PREFLIGHT_MS=3000
 REPLY_MS=4000
 
 cleanup() {
   local rc=$? pid
   trap - EXIT
-  if tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
-    tmux -L "$SOCKET" send-keys -t "$SESSION" -l "/quit" >/dev/null 2>&1 || true
-    tmux -L "$SOCKET" send-keys -t "$SESSION" Enter >/dev/null 2>&1 || true
-    sleep 2
+  if [ "$TERMINAL" = herdr ]; then
+    if [ -n "$PANE" ]; then
+      type_line "/quit" >/dev/null 2>&1 || true
+      sleep 2
+    fi
+  else
+    if tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+      type_line "/quit" >/dev/null 2>&1 || true
+      sleep 2
+    fi
+    tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   fi
-  tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  # The lab watcher runs under the tmux server, outside this shell's process
-  # tree, so it is retired by its recorded pid when it is still this lab's.
+  # The lab watcher runs under the terminal server, outside this shell's
+  # process tree, so it is retired by its recorded pid when it is still this lab's.
   pid=$(cat "$HOME_DIR/state/.watch.lock/pid" 2>/dev/null || true)
   if [ -n "$pid" ] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fxq "FM_HOME=$HOME_DIR"; then
     kill "$pid" 2>/dev/null || true
@@ -155,12 +173,21 @@ EOF
 chmod +x "$LAUNCH"
 
 capture() {
-  tmux -L "$SOCKET" capture-pane -p -t "$SESSION" -S -2000 2>/dev/null || true
+  if [ "$TERMINAL" = herdr ]; then
+    "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane read "$PANE" --source recent --lines 2000 2>/dev/null || true
+  else
+    tmux -L "$SOCKET" capture-pane -p -t "$SESSION" -S -2000 2>/dev/null || true
+  fi
 }
 
 type_line() { # <text>
-  tmux -L "$SOCKET" send-keys -t "$SESSION" -l "$1"
-  tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
+  if [ "$TERMINAL" = herdr ]; then
+    "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane send-text "$PANE" "$1" >/dev/null
+    "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane send-keys "$PANE" enter >/dev/null
+  else
+    tmux -L "$SOCKET" send-keys -t "$SESSION" -l "$1"
+    tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
+  fi
 }
 
 event_count() { # <exact line> [first line]
@@ -239,10 +266,18 @@ overlap() { # <order> <tag>
     fail "$tag showed the prompt-collision banner: $(printf '%s\n' "$pane" | grep -F 'already processing')"
   fi
   watcher_alive || fail "$tag left no live monitoring cycle"
-  pass "real Pi $PI_VERSION TUI: $order overlap ($tag) delivers the captain message and the watcher wake in one turn with no banner"
+  pass "real Pi $PI_VERSION TUI ($TERMINAL): $order overlap ($tag) delivers the captain message and the watcher wake in one turn with no banner"
 }
 
-tmux -L "$SOCKET" new-session -d -s "$SESSION" -x 200 -y 50 "$LAUNCH; sleep 60"
+if [ "$TERMINAL" = herdr ]; then
+  out=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" workspace create --cwd "$PROJECT" --label fm-pi-collision --no-focus) \
+    || fail "Herdr lab workspace create failed"
+  PANE=$(printf '%s' "$out" | jq -er '.result.root_pane.pane_id') || fail "Herdr lab workspace create omitted pane id"
+  "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane run "$PANE" "$LAUNCH" >/dev/null \
+    || fail "could not launch isolated Pi in the named Herdr lab"
+else
+  tmux -L "$SOCKET" new-session -d -s "$SESSION" -x 200 -y 50 "$LAUNCH; sleep 60"
+fi
 wait_event "session_start startup" 1 "Pi startup"
 i=0
 while ! watcher_alive && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
@@ -257,8 +292,11 @@ wait_event "user CAPTAIN_WARMUP" 1 "the warm-up captain message"
 wait_event agent_settled 1 "the warm-up turn"
 sleep 2
 
+# The synthetic worker's endpoint is a tmux target that cannot exist, so the
+# watcher's endpoint probes never reach the lab terminal; only the status line
+# drives these closes.
 cat > "$HOME_DIR/state/collision.meta" <<EOF
-window=$SESSION:collision
+window=fm-pi-collision-absent-$$:collision
 backend=tmux
 kind=ship
 mode=direct-PR
@@ -292,6 +330,6 @@ done
 # other cycle must hand off to one.
 unlinked=$(grep 'successor=none' "$HOME_DIR/state/.watch-cycle-exits.log" 2>/dev/null | grep -v 'reason=arm-interrupted' || true)
 [ -z "$unlinked" ] || fail "a monitoring cycle ended without a successor: $unlinked"
-pass "real Pi $PI_VERSION TUI: overlapping prompts kept exactly one linked monitoring cycle across /reload"
+pass "real Pi $PI_VERSION TUI ($TERMINAL): overlapping prompts kept exactly one linked monitoring cycle across /reload"
 
 printf '\nall fm-pi-prompt-collision-live-e2e tests passed\n'
