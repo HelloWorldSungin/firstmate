@@ -2,6 +2,12 @@
 # Behavioral tests for bin/fm-procevent-quota.sh.
 set -u
 
+# Pin the fixture umask exactly as tests/lib.sh does for the suites that source
+# it: the process-event state root refuses a group- or world-writable directory,
+# so an ambient umask such as 0002 fails the retire case before the behavior
+# under test runs.
+umask 022
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BIN="$FM_ROOT/bin"
