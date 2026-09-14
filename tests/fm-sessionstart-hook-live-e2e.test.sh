@@ -174,6 +174,7 @@ SH
       mkdir -p "$lab/.pi/extensions/lib"
       cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$lab/.pi/extensions/"
       cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" \
+        "$ROOT/.pi/extensions/lib/fm-pi-loaded-marker.ts" "$ROOT/.pi/extensions/lib/fm-pi-prompt-delivery.ts" \
         "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$lab/.pi/extensions/lib/"
       cp "$ROOT/bin/fm-operational-input.sh" "$lab/bin/"
       printf '%s\n' '{"compaction":{"keepRecentTokens":200}}' > "$lab/.pi/settings.json"
@@ -350,6 +351,7 @@ probe_pi_sessionstart_prerequisite() {
   printf '# Offline Pi startup-prerequisite lab\n' > "$project/AGENTS.md"
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$project/.pi/extensions/"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" \
+    "$ROOT/.pi/extensions/lib/fm-pi-loaded-marker.ts" "$ROOT/.pi/extensions/lib/fm-pi-prompt-delivery.ts" \
     "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$project/.pi/extensions/lib/"
   cp "$ROOT/bin/fm-operational-input.sh" "$project/bin/"
   cat > "$project/bin/fm-turnend-guard.sh" <<'SH'
