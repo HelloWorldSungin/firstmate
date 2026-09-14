@@ -119,7 +119,7 @@ _fm_surface_digest() {
 open_decision_id() {  # <task>
   local task=$1 open
   [ -n "$task" ] || return 0
-  open=$(status_open_decisions "$STATE/$task.status")
+  open=$(status_open_decisions "$STATE/$task.status" --explicit-only)
   [ -n "$open" ] || return 0
   printf '%s' "$open" | _fm_surface_digest
 }

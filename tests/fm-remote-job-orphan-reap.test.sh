@@ -61,6 +61,30 @@ wait_child() { # <pid> <seconds>
   return 1
 }
 
+# True when <pid>'s parent is a reaper for orphaned processes: init itself, or
+# a subreaper systemd registers one hop below init (PR_SET_CHILD_SUBREAPER,
+# e.g. `systemd --user`) - a live host's per-user manager adopts orphans there
+# instead of letting them reach real init, and that is just as orphaned for
+# this fixture's purpose.
+is_orphaned() { # <pid>
+  local parent
+  parent=$(ppid_of "$1")
+  case "$parent" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$parent" = 1 ] && return 0
+  [ "$(ppid_of "$parent")" = 1 ]
+}
+
+# Wait up to <seconds> for <pid> to be reparented to an orphan reaper (see
+# is_orphaned) after its launching shell exits; 0 when it does.
+wait_orphaned() { # <pid> <seconds>
+  local pid=$1 deadline=$(( $(date +%s) + $2 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    is_orphaned "$pid" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 # --- a real worker fixture, launched exactly the way fm-on's Linux start does -
 
 # build_remote_root <dir>: a minimal but genuine Firstmate code root carrying

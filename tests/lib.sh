@@ -42,6 +42,11 @@ umask 022
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
+# panes. This suite builds git-init fixture repositories whose primary checkout
+# it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary
+# under the marker. A case that verifies the refusal sets FM_TASK_ID itself.
+unset FM_TASK_ID
 # Isolate the dashboard's event instrumentation and its store from the
 # developer's own host. Both live OUTSIDE any FM_HOME by design, so neither is
 # covered by the FM_*_OVERRIDE isolation every other suite relies on.
@@ -154,6 +159,56 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
   return 1
 }
 
+# --- process-event runner reaping -------------------------------------------
+#
+# A process-event runner is detached into its own process group and reparents to
+# init, so removing a fixture directory does not stop one: only sweeping the home
+# that owns it does. Registration goes through a `$$`-keyed registry file for the
+# same reason the temp roots do - a fixture home is almost always built inside a
+# command substitution (`home=$(make_home x)`), and an array append there never
+# reaches the caller, so a suite that tracked its homes in a shell array was
+# silently tracking nothing and left every runner it started behind.
+#
+# The sweep is scoped to the exact home (and its claim root when the suite uses a
+# private one). It never matches on a script or process name, which would reach
+# into another home's live runners.
+
+FM_TEST_PROCEVENT_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/.fm-test-procevent.$$.XXXXXX") || return 1
+
+fm_test_track_procevent_home() {  # <home> [claim-root]
+  [ -n "${1:-}" ] || return 1
+  printf '%s\t%s\n' "$1" "${2-}" >> "$FM_TEST_PROCEVENT_REGISTRY"
+}
+
+fm_test_reap_procevent_homes() {
+  local home claim_root seen=$'\n'
+  [ -f "$FM_TEST_PROCEVENT_REGISTRY" ] || return 0
+  while IFS=$'\t' read -r home claim_root; do
+    [ -n "$home" ] || continue
+    case "$seen" in *$'\n'"$home"$'\n'*) continue ;; esac
+    seen+="$home"$'\n'
+    [ -d "$home/state/procevent" ] || continue
+    if [ -n "$claim_root" ]; then
+      FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_PROCEVENT_CLAIM_ROOT="$claim_root" \
+        "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
+    else
+      FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+        "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
+    fi
+  done < "$FM_TEST_PROCEVENT_REGISTRY"
+  rm -f "$FM_TEST_PROCEVENT_REGISTRY"
+}
+
+# Ceiling on how long a fixture's blocking stub may keep polling. A stub that
+# waits for a trigger file by re-running `sleep` is a high-frequency source of
+# process spawns, and one that outlives its test - because the test was killed
+# before any cleanup ran - is what turned leftover fixtures into a host-wide
+# process storm. Every blocking stub this suite writes stops itself at this
+# bound, so an escaped one is bounded in duration and cost on its own, before
+# its owner's guard reaps it.
+FM_TEST_STUB_MAX_BLOCK_SECONDS=${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}
+export FM_TEST_STUB_MAX_BLOCK_SECONDS
+
 fm_test_cleanup() {
   # Ordered before the directory removal below on purpose: a daemon left alive
   # can write its state back into a tree that is being unlinked, which fails the
@@ -162,6 +217,7 @@ fm_test_cleanup() {
   fm_test_reap_descendants
 
   local d
+  fm_test_reap_procevent_homes
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     # A case that hardened a directory to prove a read-only path leaves a tree
     # rm cannot unlink, and an aborted case never gets to restore it. Write
@@ -324,6 +380,8 @@ fm_assert_no_user_event_store_leak() {  # <snapshot-taken-before-the-suite>
 trap fm_test_cleanup EXIT
 trap 'fm_test_cleanup; exit 130' INT
 trap 'fm_test_cleanup; exit 143' TERM
+trap 'fm_test_cleanup; exit 129' HUP
+trap 'fm_test_cleanup; exit 131' QUIT
 
 # fm_test_reap_orphans: best-effort sweep for fixture roots left behind by a
 # prior run that was killed hard enough to skip the traps above (e.g. a
@@ -366,6 +424,101 @@ fm_test_reap_orphans() {
 if [ "${FM_TEST_SKIP_ORPHAN_REAP:-0}" != 1 ]; then
   fm_test_reap_orphans
 fi
+
+# --- live-capability gate ---------------------------------------------------
+#
+# fm_live_gate <policy> <vars> [tool ...]
+#
+# The single gate every live-harness guard opens with, so "can this host run
+# this guard for real, and should it?" is decided in one place instead of in
+# two dozen hand-rolled env checks. It returns 0 when the guard should run, and
+# otherwise ends the script with one runner-readable line:
+#
+#   skip: live: <tool> absent                 this host cannot run the guard
+#   skip: live: disabled by <VAR>=0           an explicit local opt-out
+#   skip: live: opt-in; set <VAR>=1 to run    a guard that spends model tokens
+#
+# <policy> is default-on for a guard that spends no model tokens, so it runs
+# wherever its tools are installed - notably on the machine the product and its
+# validation actually run on - and opt-in for a guard that submits prompts,
+# which stays deliberate. <vars> is the guard's own control variable, or a
+# comma-separated list when a guard has more than one entry point.
+#
+# Setting any of those variables to 1 (or FM_LIVE=1, for every guard at once)
+# both turns the guard on and makes an absent tool a hard failure rather than a
+# skip, which is how "run it after a harness upgrade" keeps proving the guard
+# actually ran. Setting one to 0 (or FM_LIVE=0) turns it off; a guard's own
+# variable wins over FM_LIVE.
+#
+# Sourcing this library also exports FM_GATE_REFUSE_BYPASS=1, which is what
+# lets a live guard drive the real fm-spawn/fm-send/fm-teardown from inside a
+# no-mistakes gate worktree instead of being refused by
+# bin/fm-gate-refuse-lib.sh.
+
+fm_live_gate() {
+  local policy=$1 vars=$2
+  shift 2
+  local var value rest primary requested=0 disabled_by='' tool
+  local -a var_list=()
+
+  case "$policy" in
+    default-on | opt-in) ;;
+    *) fail "fm_live_gate: unknown policy '$policy' (expected default-on or opt-in)" ;;
+  esac
+
+  rest=$vars
+  while [ -n "$rest" ]; do
+    var=${rest%%,*}
+    if [ "$var" = "$rest" ]; then
+      rest=''
+    else
+      rest=${rest#*,}
+    fi
+    [ -n "$var" ] && var_list+=("$var")
+  done
+  [ "${#var_list[@]}" -gt 0 ] || fail "fm_live_gate: at least one control variable is required"
+  primary=${var_list[0]}
+
+  for var in "${var_list[@]}"; do
+    value=${!var:-}
+    case "$value" in
+      1) requested=1 ;;
+      0) [ -n "$disabled_by" ] || disabled_by=$var ;;
+    esac
+  done
+
+  if [ "$requested" -eq 0 ]; then
+    if [ -n "$disabled_by" ]; then
+      printf 'skip: live: disabled by %s=0\n' "$disabled_by"
+      exit 0
+    fi
+    case "${FM_LIVE:-}" in
+      0)
+        printf 'skip: live: disabled by FM_LIVE=0\n'
+        exit 0
+        ;;
+      1) requested=1 ;;
+      *)
+        if [ "$policy" = opt-in ]; then
+          printf 'skip: live: opt-in; set %s=1 to run\n' "$primary"
+          exit 0
+        fi
+        ;;
+    esac
+  fi
+
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 && continue
+    if [ "$requested" -eq 1 ]; then
+      printf 'not ok - %s was requested but %s is not installed\n' "$primary" "$tool" >&2
+      exit 1
+    fi
+    printf 'skip: live: %s absent\n' "$tool"
+    exit 0
+  done
+
+  return 0
+}
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #
@@ -582,4 +735,44 @@ assert_absent() {
 # assert_present <path> <msg>: path must exist.
 assert_present() {
   [ -e "$1" ] || fail "$2"
+}
+
+# fm_test_base_path_sans <base_path> <tool...>: returns the path to a single
+# curated directory that resolves every tool <base_path> would have resolved,
+# except the named ones. Some hosts have real system binaries (node, orca,
+# ...) sitting in BASE_PATH; a fixture that simulates a tool as missing by
+# omitting it from fakebin still falls through to that host binary via
+# BASE_PATH, silently defeating the simulation. Dropping whole directories
+# out of BASE_PATH is not a safe fix: on a usr-merged host /bin, /sbin, and
+# /usr/sbin are symlinks that collapse to the same directory as /usr/bin, so
+# dropping any one of them because it resolves the excluded tool drops every
+# other tool a test still needs (git, awk, sed, ...) too. Building a curated
+# directory instead hides only the named tool(s). Use only at the specific
+# assertions that simulate a tool as absent - every other case keeps using
+# bare BASE_PATH.
+fm_test_base_path_sans() {
+  local base_path=$1 dir src entry name tool skip
+  shift
+  local tools=("$@")
+  dir=$(fm_test_tmproot fm-base-path-sans) || return 1
+  local dirs
+  IFS=: read -ra dirs <<< "$base_path"
+  for src in "${dirs[@]}"; do
+    [ -d "$src" ] || continue
+    for entry in "$src"/*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      name=${entry##*/}
+      [ -e "$dir/$name" ] && continue
+      skip=0
+      for tool in "${tools[@]}"; do
+        if [ "$name" = "$tool" ]; then
+          skip=1
+          break
+        fi
+      done
+      [ "$skip" -eq 1 ] && continue
+      ln -s "$entry" "$dir/$name" 2>/dev/null || true
+    done
+  done
+  printf '%s\n' "$dir"
 }

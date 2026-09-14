@@ -83,6 +83,25 @@ Default disposition also means the herdr event wait's command substitution can b
 Upstream's `fm_backend_herdr_wait_transition` always allocates that directory with its own `mktemp -d`, so the caller-owned staging and its fail-closed return for a directory the caller has already released sit inside upstream-owned code in [`bin/backends/herdr.sh`](../bin/backends/herdr.sh) and the contract comment in [`bin/fm-backend.sh`](../bin/fm-backend.sh), with [`tests/fm-backend-herdr.test.sh`](../tests/fm-backend-herdr.test.sh) pinning both halves.
 [`verification/supervision.md`](verification/supervision.md#watcher-stop-disposition) owns the measurements, the narrowed `HelloWorldSungin/firstmate#160` burst window, and the residual this leaves.
 
+### Keyed decision repaint suppression
+
+The fork suppresses pane-repaint repeats for an already-surfaced explicitly keyed open-decision set, while retaining dead-agent wedge recovery.
+`bin/fm-push-transition-lib.sh` owns the surfaced identity, using `bin/fm-classify-lib.sh`'s explicit-only view without changing the durable open-decision fold.
+Upstream has no equivalent one-shot suppression for keyed decisions and instead bounds stale alarms when a backlog call is open.
+Firstmate aligned the fork suppression with its documented explicit-key boundary during the collision with `kunchenguid/firstmate#3842`: an unkeyed blocker without a backlog hold retains upstream's repaint alarms.
+An explicit `[key=default]` remains keyed, while an implicit default bucket does not acquire suppression merely by remaining durably open.
+`docs/architecture.md` owns the wake contract, and `tests/fm-watch-triage.test.sh` proves keyed suppression, unkeyed re-alarming, dead-agent recovery, and durable retention after acknowledgement.
+
+### Secondmate queue-stall semantic thresholds
+
+The fork retains semantic busy classification through `fm_busy_classify_live` and separate 60-second proven-idle and 1800-second unknown-state thresholds in `bin/fm-watch.sh`.
+Upstream `kunchenguid/firstmate#3943` uses a single 180-second no-progress threshold and a rendered active-turn check.
+Firstmate preserved the fork's classification and thresholds because an unreadable agent is not evidence of idleness and a shorter unknown-state deadline loses the existing false-alarm protection.
+Upstream's epoch-sequence progress identity, reset on progress, declared-wait exclusion, and once-per-episode notification are adopted in that same owner.
+Busy suppression is bounded by `FM_BUSY_TURN_MAX_SECS`; after that boundary the unknown-state threshold permits an inspection without relabeling busy as idle.
+`docs/architecture.md` owns the mechanism description, `docs/configuration.md` owns the settings, and `tests/fm-wake-queue.test.sh` exercises progress, busy, idle, unknown, reused endpoint, and bounded suppression behavior.
+This divergence was previously unrecorded after its introduction in `HelloWorldSungin/firstmate#216`.
+
 ### Run-progress wedge hold
 
 The fork carries [`bin/fm-run-progress.sh`](../bin/fm-run-progress.sh), which upstream has no equivalent of, and threads a per-pane hold-count file through `wedge_timer_check` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) so a wedge escalation is held while the crew's validation run is demonstrably still moving.
@@ -105,6 +124,10 @@ This divergence went unrecorded from its introduction until 2026-09-02.
 Upstream `kunchenguid/firstmate#3532` adds a declaration-scoped throttle for a live captain-held pane after its first inspection, so a changing pane hash cannot continually re-alarm the same hold.
 That throttle is adopted while a worker's own `paused:` declaration keeps the fork's immediate absorption, widening cadence, and reset to the replacement wait's base deadline.
 
+
+Upstream `kunchenguid/firstmate#3842` adds backlog-backed call identity to the stale-alarm throttle.
+That identity and its release/re-hold reset are adopted while a worker's own paused declaration still routes directly to the fork's widening-cadence owner.
+The backlog read remains outside the secondmate ordinary-poll path.
 
 ### Herdr pre-Enter footer read on a native working baseline
 
@@ -149,6 +172,8 @@ The rationale beside the constant owns why 480s and what the bound costs each CI
 The upstream `kunchenguid/firstmate#3489` rebalance refreshes shared duration hints and raises the portable serial job cap to 20 minutes.
 The fork retains eight shards and its fork-only timing hints, while adopting that cap; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
 
+Watcher triage cases are partitioned between `tests/fm-watch-triage.test.sh` and `tests/fm-watch-triage-waits.test.sh`, with shared case definitions in `tests/watch-triage-helpers.sh`, so suite growth does not weaken the per-script bound.
+
 ### Locale-independent test coverage comparisons
 
 The fork retains the C-collation invariant owned by the coverage guard in [`bin/fm-test-run.sh`](../bin/fm-test-run.sh).
@@ -160,6 +185,9 @@ Upstream `kunchenguid/firstmate#3489` adds an unhinted-script set comparison, wh
 The fork retains pending-queue supervision through the shared predicate in [`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh), including a home with no task metadata, process-event source, or Relay poll.
 The new presentation-deadline case from upstream `kunchenguid/firstmate#3475` must therefore allow the deliberate guard advisory while continuing to reject helper-process diagnostics.
 [`tests/fm-wake-queue.test.sh`](../tests/fm-wake-queue.test.sh), [`tests/fm-guard-stale-banner.test.sh`](../tests/fm-guard-stale-banner.test.sh), and [`tests/fm-turnend-guard.test.sh`](../tests/fm-turnend-guard.test.sh) preserve the queued-wake cause and the guarded handling behavior.
+
+Upstream `kunchenguid/firstmate#3860` adds registered custom checks as another supervision cause in the same predicate.
+Its `kunchenguid/firstmate#3950` actor-specific pending count controls which drain warning an actor receives, while the pending queue still requires supervision even when a live branch owns its rows.
 
 ### No-mistakes run attribution
 
@@ -197,6 +225,8 @@ Upstream's byte-identity check between the promotion and brief paths stays green
 The handoff itself went unrecorded here from its introduction until 2026-09-04.
 
 The intent/spec split and current intent overlay from `kunchenguid/firstmate#3597` and `kunchenguid/firstmate#3671` apply to design workers too, while the fork's delivery fragments remain the rendering owner.
+The fork update in [HelloWorldSungin/firstmate#272](https://github.com/HelloWorldSungin/firstmate/pull/272) keeps the design task in one planning conversation, owned by [`design-profile`](../.agents/skills/design-profile/SKILL.md), and preserves its dispatch-pinned skill release on relaunch, owned by [`docs/fleet-data-contracts.md`](fleet-data-contracts.md#the-design-tasks-plugin-release).
+`tests/fm-brief.test.sh`, `tests/fm-design-skills.test.sh`, and `tests/fm-control-relaunch.test.sh` verify that composition alongside upstream task-copy isolation.
 `bin/fm-spawn.sh` reads structural branch and work-item identity from the authored brief, not the derived launch overlay that can repeat intent text.
 
 ### A preserving refusal withdraws the pending backlog close
@@ -257,12 +287,6 @@ Upstream's OMP watcher port in `kunchenguid/firstmate#3867` receives the same st
 `tests/fm-omp-harness.test.sh` exercises flag-present launch, child retirement, pending-wake preservation, one-cycle return, and replacement through the extension interface.
 This is the existing `.afk` ownership contract, not the later upstream AFK-posture design, and portable extension tests do not establish live OMP vendor compatibility.
 
-### Local lock scope for remotely parented homes
-
-The Treehouse project lock added by `kunchenguid/firstmate#3837` must coordinate a home's locally registered descendants without requiring a parent on another machine to be locally addressable.
-The fork's `fm_firstmate_root_home` in [`bin/fm-wake-lib.sh`](../bin/fm-wake-lib.sh) stops at a validated remote parent boundary, where upstream refuses the traversal and consequently refuses every fresh Treehouse worker spawn from that home.
-Local parent traversal, malformed-binding and cycle refusal, project identity, and slot-exclusivity checks remain intact.
-[`tests/fm-spawn-worktree-settle.test.sh`](../tests/fm-spawn-worktree-settle.test.sh) drives worker creation beneath a remote root, verifies that local peers share the same project lock, and rejects malformed or cyclic bindings before allocation.
 
 ### Herdr presentation fixture ownership and cleanup
 
@@ -381,7 +405,8 @@ Its recurring merge cost is likewise attachment rather than fork-only files: [`b
 Teardown publishes both of those fleet-owned records inside the upstream-owned [`bin/fm-teardown.sh`](../bin/fm-teardown.sh): a best-effort refresh of the task's usage sessions that never blocks cleanup, and the completion manifest composed while the volatile records feeding it still exist; the same opt-in refresh is wired into the upstream-owned [`bin/fm-bootstrap.sh`](../bin/fm-bootstrap.sh) at a locked session boundary, bounded by `FM_BOOTSTRAP_USAGE_TIMEOUT` and reporting on its own `USAGE_STORE:` diagnostic line.
 The manifest publication deliberately blocks the lifecycle - teardown refuses to erase a task whose manifest could not be written, because a task that cannot be archived must not be erased - so a merge must preserve that refusal rather than relax it into a best-effort skip on the strength of this entry's off-the-critical-path posture.
 [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) and its `fm-fleet-snapshot.v1` contract are upstream-owned, so the divergence is the dashboard-consumed fields the fork adds to that snapshot, among them the quiet window owned in [`bin/fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) and consumed by [`bin/fm-watch.sh`](../bin/fm-watch.sh), published as `quiet_allowance_seconds` so the dashboard judges quiet on supervision's own tolerance rather than inventing a second one.
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) pins the Node 22 floor the usage collector requires, and [`bin/fm-test-run.sh`](../bin/fm-test-run.sh) classifies `tests/fm-dashboard-browser.test.sh` into the opt-in `live-harness-optin` family so the one suite needing a real browser stays out of every portable lane.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) pins the Node 22 floor the usage collector requires, and [`bin/fm-test-run.sh`](../bin/fm-test-run.sh) classifies `tests/fm-dashboard-browser.test.sh` into the opt-in `live-harness-optin` family whose portable-serial membership leaves execution gated by the suite's explicit `FM_DASHBOARD_BROWSER_E2E=1` opt-in.
+Ordinary CI inventories this guard but skips browser execution, while installed token-free guards run under upstream's shared live-gate policy.
 `tests/lib.sh` redirects the event config, the event store, and the dashboard credentials into a throwaway isolation root so no fixture home can reach a developer's real instrumentation, and `docs/configuration.md`, `docs/documentation-audiences.json`, and `docs/scripts.md` are the documentation catalogs this subsystem shares with the GBrain entry above.
 A merge must preserve the additive wiring property that [`dashboard-events.md`](dashboard-events.md) owns: instrumentation is off until enabled, the wiring is absent entirely when off, and the emitter exits 0 on every path, writes nothing to either stream, and does its work in a detached child, so an entry firing beside the turn-end guard or the watcher auto-arm can never change that guard's exit status, output, timing, or ordering.
 [`tests/fm-dashboard-events.test.sh`](../tests/fm-dashboard-events.test.sh) pins that by running the real guards in two identical homes with the emitter firing against a deliberately hung dashboard and requiring an identical decision from both.
@@ -396,6 +421,13 @@ The dashboard forces the snapshot's `FM_SNAPSHOT_CACHE_READ_ONLY=1` mode so it c
 The snapshot header owns that mode, `tests/fm-bearings-snapshot.test.sh` proves its no-create, no-overwrite, fresh-read, and cached-fallback behavior, and `tests/fm-dashboard.test.sh` proves the server forces it even over a write-enabled ambient setting.
 
 ## Retired divergences
+
+### Local lock scope for remotely parented homes - retired 2026-09-11
+
+Upstream `kunchenguid/firstmate#3883` now terminates the local-root traversal at a validated remote parent boundary, supplying the fork's existing lock-scope behavior.
+The shared implementation retains malformed-binding, local-parent reachability, cycle, and depth refusals.
+`tests/fm-spawn-worktree-settle.test.sh` preserves the fork's remote-root worker and local-peer lock cases, while upstream's `tests/fm-teardown-endpoint-safety.test.sh` adds allocation/return serialization and child-slot ownership coverage.
+The fork no longer needs a separate implementation of the parent-route branch.
 
 ### Pre-move crash fixture - retired 2026-09-11
 
