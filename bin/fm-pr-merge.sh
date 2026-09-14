@@ -18,7 +18,8 @@
 # --match-head-commit, so a push that lands between that read and the merge
 # fails the merge instead of landing commits nothing verified. Reading that
 # state needs gh and jq, and either one absent stops the merge before any
-# state is recorded. An attended --allow-red <check-name> may be passed once,
+# state is recorded. github_verified_upstream_sync below owns the narrow
+# reviewed upstream-sync policy exception. An attended --allow-red <check-name> may be passed once,
 # with the name as a separate argument; it waives only checks with that exact
 # name, still requires every other check green, and still binds the head. It is
 # refused while the away-posture record exists, and it never
@@ -801,14 +802,87 @@ github_checks_not_green() {
   ' 2>/dev/null || return 1
 }
 
+# A review declaration is task metadata, not a general red-check waiver.
+# Firstmate records exactly one upstream_sync_review=<base>:<target>:<head>
+# after reviewing this round's tests, lint, fork survival and substantive CI.
+# These full commit IDs pin the fork base, upstream endpoint and reviewed head.
+# Only a direct-PR fm-upstream-sync-* task in HelloWorldSungin/firstmate can
+# consume it, and only with --merge. The task worktree must prove the live
+# branch/head, fork push target, upstream ancestry and exactly one two-parent
+# merge from that base to that endpoint, followed only by linear fix commits.
+# The base must still equal the live default tip. No fetch or metadata write
+# happens here. Missing, duplicate, stale or unreadable proof leaves checks red.
+# This exempts only completed FAILURE CheckRuns named exactly
+# "PR must be raised via no-mistakes"; pending/cancelled checks and status
+# contexts never qualify. All ordinary authority, hold and merge gates remain.
+github_upstream_sync_task() {
+  [ "$PR_HOST/$PR_PATH" = github.com/HelloWorldSungin/firstmate ] || return 1
+  case "$ID" in fm-upstream-sync-*) ;; *) return 1 ;; esac
+  [ "$(sed -n 's/^mode=//p' "$META")" = direct-PR ]
+}
+
+github_verified_upstream_sync() {
+  local json=$1 live_head=$2 review wt base target reviewed rest
+  local origin upstream branch merges merge parents upstream_line
+  github_upstream_sync_task || return 1
+  [ "$FM_PR_GITHUB_CALLER_METHOD" = merge ] || return 1
+  [ "${#ALLOW_RED[@]}" -eq 0 ] || return 1
+  review=$(sed -n 's/^upstream_sync_review=//p' "$META")
+  wt=$(sed -n 's/^worktree=//p' "$META")
+  [ -d "$wt" ] || return 1
+  base=${review%%:*}; rest=${review#*:}
+  target=${rest%%:*}; reviewed=${rest#*:}
+  fm_pr_head_valid "$base" && fm_pr_head_valid "$target" \
+    && fm_pr_head_valid "$reviewed" || return 1
+  [ "$review" = "$base:$target:$reviewed" ] || return 1
+  [ "$reviewed" = "$live_head" ] && [ "$base" = "$github_judged_default_tip" ] || return 1
+  branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD) || return 1
+  [ "$branch" = "fm/$ID" ] || return 1
+  [ "$(git -C "$wt" rev-parse --verify HEAD)" = "$reviewed" ] || return 1
+  origin=$(git -C "$wt" remote get-url --push --all origin) || return 1
+  case "$origin" in
+    https://github.com/HelloWorldSungin/firstmate.git|git@github.com:HelloWorldSungin/firstmate.git) ;;
+    *) return 1 ;;
+  esac
+  upstream=$(git -C "$wt" remote get-url upstream) || return 1
+  case "$upstream" in
+    https://github.com/kunchenguid/firstmate.git|git@github.com:kunchenguid/firstmate.git) ;;
+    *) return 1 ;;
+  esac
+  upstream_line=$(git -C "$wt" rev-list --first-parent refs/remotes/upstream/main) || return 1
+  printf '%s\n' "$upstream_line" | grep -qxF "$target" || return 1
+  git -C "$wt" merge-base --is-ancestor "$base" "$reviewed" || return 1
+  if git -C "$wt" merge-base --is-ancestor "$target" "$base"; then return 1; fi
+  # First-parent traversal excludes upstream's own merge commits.
+  merges=$(git -C "$wt" rev-list --first-parent --min-parents=2 "$base..$reviewed") || return 1
+  [ -n "$merges" ] || return 1
+  merge=$merges
+  parents=$(git -C "$wt" show -s --format=%P "$merge" 2>/dev/null) || return 1
+  [ "$parents" = "$base $target" ] || return 1
+  printf '%s' "$json" | jq -e --arg branch "$branch" '
+    .headRefName == $branch
+    and .headRepository.nameWithOwner == "HelloWorldSungin/firstmate"
+    and ([.statusCheckRollup[] | select(.name == "PR must be raised via no-mistakes")] | length > 0)
+    and all(.statusCheckRollup[];
+      if (.name == "PR must be raised via no-mistakes" or .context == "PR must be raised via no-mistakes")
+      then .__typename == "CheckRun" and .status == "COMPLETED"
+        and (.conclusion == "FAILURE" or .conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED")
+      else true end)
+  ' >/dev/null 2>&1
+}
+
 # Pre-merge conditions for a GitHub pull request, read from one live view.
 # Sets FM_PR_MERGE_HEAD to the verified head on success.
 github_verify_mergeable() {
-  local json fields line red name covered
+  local json fields line red name covered sync_policy=false
   local total=0 named=0 refusals=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
 
-  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup 2>/dev/null) \
+  if github_upstream_sync_task && [ "$FM_PR_GITHUB_CALLER_METHOD" != merge ]; then
+    echo 'error: upstream-sync tasks require explicit --merge to preserve upstream parentage' >&2
+    return 1
+  fi
+  if ! json=$(gh pr view "$URL" --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup,headRefName,headRepository 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitHub pull request state before merging" >&2
     return 1
@@ -873,10 +947,17 @@ FIELDS
     || refusals="$refusals  - mergeStateStatus is DIRTY (conflicts)
 "
 
+  if github_verified_upstream_sync "$json" "$live_head"; then
+    sync_policy=true
+    printf 'verified: reviewed upstream-sync graph at %s permits only the completed no-mistakes policy failure\n' "$live_head" >&2
+  fi
   uncovered=''
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     covered=0
+    if [ "$sync_policy" = true ] && [ "$name" = 'PR must be raised via no-mistakes' ]; then
+      covered=1
+    fi
     if [ "${#ALLOW_RED[@]}" -gt 0 ]; then
       for check in "${ALLOW_RED[@]}"; do
         [ "$check" = "$name" ] && covered=1
@@ -897,7 +978,7 @@ EOF
     [ -z "$uncovered" ] || printf 'error: these checks are not green: %s\n' "$uncovered" >&2
     return 1
   fi
-  printf 'verified: %s is open and mergeable, with every required check green at head %s\n' \
+  printf 'verified: %s is open and mergeable, with every unwaived check green at head %s\n' \
     "$URL" "$live_head" >&2
   FM_PR_MERGE_HEAD=$live_head
   FM_PR_GITHUB_BASE=$base

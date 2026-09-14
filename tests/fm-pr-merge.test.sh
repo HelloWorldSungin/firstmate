@@ -4821,6 +4821,111 @@ SH
 
 test_degraded_view_cannot_answer_the_post_merge_question
 
+# Real Git histories prove the exception's parentage; only forge transport is
+# mocked. Every refusal must leave the forge merge command uncalled.
+test_reviewed_upstream_sync_policy_exception() {
+  local case_dir scenario wt base target head id meta rc saved_tip url method filter
+  saved_tip=$DEFAULT_TIP
+  for scenario in attended away fix-forward absent-review stale-review wrong-target duplicate-review \
+    wrong-mode wrong-task wrong-repo wrong-push wrong-upstream side-endpoint wrong-branch wrong-live-branch \
+    wrong-live-repo wrong-local-head moved-base squash green-squash pending cancelled status-context lint-red lint-pending \
+    extra-merge no-grant; do
+    case_dir=$(make_case "sync-policy-$scenario")
+    wt="$case_dir/wt"
+    id=fm-upstream-sync-2026-09-14-tail
+    url=https://github.com/HelloWorldSungin/firstmate/pull/96
+    git init -q "$wt"
+    git -C "$wt" commit -qm root --allow-empty
+    git -C "$wt" checkout -qb upstream
+    git -C "$wt" commit -qm upstream --allow-empty
+    target=$(git -C "$wt" rev-parse HEAD)
+    git -C "$wt" checkout -qb "fm/$id" HEAD~1
+    git -C "$wt" commit -qm fork --allow-empty
+    base=$(git -C "$wt" rev-parse HEAD)
+    git -C "$wt" merge -q --no-ff -m sync "$target"
+    if [ "$scenario" = extra-merge ]; then
+      git -C "$wt" checkout -qb extra "$base"
+      git -C "$wt" commit -qm extra --allow-empty
+      git -C "$wt" checkout -q "fm/$id"
+      git -C "$wt" merge -q --no-ff -m extra extra
+    fi
+    [ "$scenario" != fix-forward ] || git -C "$wt" commit -qm fix --allow-empty
+    head=$(git -C "$wt" rev-parse HEAD)
+    git -C "$wt" remote add origin https://github.com/HelloWorldSungin/firstmate.git
+    git -C "$wt" remote add upstream https://github.com/kunchenguid/firstmate.git
+    git -C "$wt" update-ref refs/remotes/upstream/main "$target"
+    if [ "$scenario" = side-endpoint ]; then
+      git -C "$wt" checkout -qb upstream-main "$target~1"
+      git -C "$wt" commit -qm mainline --allow-empty
+      git -C "$wt" merge -q --no-ff -m side-target "$target"
+      git -C "$wt" update-ref refs/remotes/upstream/main HEAD
+      git -C "$wt" checkout -q "fm/$id"
+    fi
+    DEFAULT_TIP=$base
+    add_gh_mocks "$case_dir" "$head"
+    write_github_red_json "$case_dir" "$head" 'PR must be raised via no-mistakes'
+    jq --arg branch "fm/$id" '. + {headRefName:$branch,headRepository:{nameWithOwner:"HelloWorldSungin/firstmate"}}' \
+      "$case_dir/github-view.json" > "$case_dir/view.tmp"
+    mv "$case_dir/view.tmp" "$case_dir/github-view.json"
+    [ "$scenario" != wrong-task ] || id=ordinary-task
+    meta="$case_dir/state/$id.meta"
+    mv "$case_dir/state/task-x1.meta" "$meta"
+    sed 's/^mode=.*/mode=direct-PR/' "$meta" > "$case_dir/meta.tmp"
+    mv "$case_dir/meta.tmp" "$meta"
+    printf 'upstream_sync_review=%s:%s:%s\n' "$base" "$target" "$head" >> "$meta"
+    method=--merge
+    case "$scenario" in
+      away|no-grant) write_away_record "$case_dir" --grant "$id"
+        [ "$scenario" != no-grant ] || write_away_record "$case_dir" ;;
+      absent-review) sed '/^upstream_sync_review=/d' "$meta" > "$case_dir/meta.tmp"; mv "$case_dir/meta.tmp" "$meta" ;;
+      stale-review|wrong-target)
+        sed '/^upstream_sync_review=/d' "$meta" > "$case_dir/meta.tmp"; mv "$case_dir/meta.tmp" "$meta"
+        if [ "$scenario" = stale-review ]; then
+          printf 'upstream_sync_review=%s:%s:%s\n' "$base" "$target" "$base" >> "$meta"
+        else
+          printf 'upstream_sync_review=%s:%s:%s\n' "$base" "$base" "$head" >> "$meta"
+        fi ;;
+      duplicate-review) printf 'upstream_sync_review=%s:%s:%s\n' "$base" "$target" "$head" >> "$meta" ;;
+      wrong-mode) printf 'mode=no-mistakes\n' >> "$meta" ;;
+      wrong-repo) url=https://github.com/example/repo/pull/96 ;;
+      wrong-push) git -C "$wt" remote set-url --push origin https://github.com/kunchenguid/firstmate.git ;;
+      wrong-upstream) git -C "$wt" remote set-url upstream https://github.com/example/repo.git ;;
+      wrong-branch) git -C "$wt" checkout -qb unrelated ;;
+      wrong-local-head) git -C "$wt" commit -qm unreviewed --allow-empty ;;
+      moved-base) DEFAULT_TIP=$target ;;
+      squash|green-squash) method=--squash ;;
+    esac
+    case "$scenario" in
+      green-squash) filter='.statusCheckRollup[0].conclusion="SUCCESS"' ;;
+      pending) filter='.statusCheckRollup[0].status="IN_PROGRESS"' ;;
+      cancelled) filter='.statusCheckRollup[0].conclusion="CANCELLED"' ;;
+      status-context) filter='.statusCheckRollup += [{__typename:"StatusContext",context:"PR must be raised via no-mistakes",state:"PENDING"}]' ;;
+      lint-red) filter='.statusCheckRollup += [{__typename:"CheckRun",name:"lint",status:"COMPLETED",conclusion:"FAILURE"}]' ;;
+      lint-pending) filter='.statusCheckRollup += [{__typename:"CheckRun",name:"lint",status:"QUEUED",conclusion:null}]' ;;
+      wrong-live-branch) filter='.headRefName="unrelated"' ;;
+      wrong-live-repo) filter='.headRepository.nameWithOwner="example/repo"' ;;
+      *) filter='.' ;;
+    esac
+    jq "$filter" "$case_dir/github-view.json" > "$case_dir/view.tmp"
+    mv "$case_dir/view.tmp" "$case_dir/github-view.json"
+    rc=0
+    run_pr_merge "$case_dir" "$id" "$url" -- "$method" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    case "$scenario" in
+      attended|away|fix-forward)
+        expect_code 0 "$rc" "sync-policy-$scenario: verified round should merge: $(cat "$case_dir/stderr")"
+        assert_logged_gh_merge "$case_dir" 96 HelloWorldSungin/firstmate --merge ;;
+      *)
+        [ "$rc" -ne 0 ] || fail "sync-policy-$scenario: invalid proof or check was accepted"
+        assert_no_grep 'pr merge' "$case_dir/gh.log" "sync-policy-$scenario: forge merge ran" ;;
+    esac
+  done
+  DEFAULT_TIP=$saved_tip
+  pass "fm-pr-merge limits the sync exception to reviewed graphs and completed policy failures"
+}
+
+test_reviewed_upstream_sync_policy_exception
+
 test_github_red_checks_refuse_and_allow_red_waives_named
 test_superseded_failed_check_run_no_longer_refuses
 test_check_runs_never_supersede_status_contexts

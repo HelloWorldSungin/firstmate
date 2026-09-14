@@ -294,6 +294,10 @@ brief_fingerprint() {
 
 test_no_issue_briefs_match_exact_goldens() {
   local home actual id
+  local PATH="$TMP_ROOT/golden-bin:$PATH"
+  mkdir -p "$TMP_ROOT/golden-bin"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "lavish-axi 0.1.62"' > "$TMP_ROOT/golden-bin/lavish-axi"
+  chmod +x "$TMP_ROOT/golden-bin/lavish-axi"
   home="$TMP_ROOT/no-issue-golden-home"
   actual="$TMP_ROOT/no-issue-golden.actual"
   write_registry "$home"

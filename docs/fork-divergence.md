@@ -403,6 +403,8 @@ This fork carries the optional drift detector, bootstrap diagnostic, sync-round 
 The feature is inert when no `upstream` git remote exists so upstream users do not acquire fork behavior merely by taking another change.
 The detector fetches only into a disposable repository and never changes the source repository's objects, refs, index, branch, or worktree.
 A sync request dispatches an isolated merge task and PR rather than merging in the primary copy or extending `/updatefirstmate` with merge behavior.
+The standing Firstmate review and landing authority lives in [`sync-upstream`](../.agents/skills/sync-upstream/SKILL.md); the exact-head expected-policy exception is owned by `github_verified_upstream_sync` in [`bin/fm-pr-merge.sh`](../bin/fm-pr-merge.sh) and exercised by [`tests/fm-pr-merge.test.sh`](../tests/fm-pr-merge.test.sh).
+This deliberately preserves direct-PR upstream parentage while retaining every substantive-check, publishing, task-hold, default-tip and away-authority gate.
 
 ### Repository-local validation evidence
 
