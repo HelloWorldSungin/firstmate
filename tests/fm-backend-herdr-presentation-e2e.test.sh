@@ -201,7 +201,8 @@ pass "real Herdr lab: every projected create, task-tab create, seeded prune, and
 mkdir -p "$ACTIVE_SEEDED_CONTROL"
 printf '%s\n' requested > "$ACTIVE_SEEDED_CONTROL/stage"
 ACTIVE_SEEDED_START=$(log_line_count)
-cp "$MOVE_CALL_LOG" "$EVIDENCE_ROOT/move-log-before-active-seeded"
+cp "$MOVE_CALL_LOG" "$EVIDENCE_ROOT/move-log-before-active-seeded" \
+  || fail "could not save the move audit before the active seeded-tab fixture"
 if ! spawn_task active-seeded "$HOME_DIR" "$PROJECT_DIR" > "$EVIDENCE_ROOT/active-seeded.out" 2> "$EVIDENCE_ROOT/active-seeded.err"; then
   fail "detached persisted-focus seeded prune should succeed: $(cat "$EVIDENCE_ROOT/active-seeded.err")"
 fi
@@ -223,7 +224,8 @@ rm -rf "$ACTIVE_SEEDED_CONTROL"
 remember_meta_worktree "$HOME_DIR/state/active-seeded.meta" >/dev/null
 teardown_task active-seeded "$HOME_DIR" > "$TMP_ROOT/active-seeded-teardown.out" 2> "$TMP_ROOT/active-seeded-teardown.err" \
   || fail "detached persisted-focus seeded prune leftover teardown failed: $(cat "$TMP_ROOT/active-seeded-teardown.err")"
-cp "$TMP_ROOT/move-log-before-active-seeded" "$MOVE_CALL_LOG"
+cp "$EVIDENCE_ROOT/move-log-before-active-seeded" "$MOVE_CALL_LOG" \
+  || fail "could not restore the move audit after the active seeded-tab fixture"
 assert_focus_is "$CAPTAIN_FOCUS" "active seeded-tab fixture cleanup"
 pass "real Herdr lab: persisted-focused seeded prune proceeds when no live client is attached"
 

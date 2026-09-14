@@ -6,38 +6,38 @@
 ## Verification inputs
 
 The proven-isolated candidate set remains the 24-script concurrent proof recorded in [fm-test-isolation-proof.md](fm-test-isolation-proof.md).
-Placement timings are refreshed from completed script measurements in [CI run 34800278334](https://github.com/HelloWorldSungin/firstmate/actions/runs/34800278334).
-Its first parallel lane reached the unchanged ten-minute job limit after passing nine scripts; the old two-minute estimate no longer represented the enlarged suites.
+The 2026-09-14 placement refresh uses completed script measurements in [CI run 34837015817](https://github.com/HelloWorldSungin/firstmate/actions/runs/34837015817).
+Its first parallel lane reached the unchanged ten-minute job limit after five completed scripts, with the enlarged hold and merge suites accounting for 504 seconds together.
 The second parallel lane completed successfully.
-The two scripts not completed before the first lane was cancelled retain the passing local full-sweep measurements shown explicitly below.
+The six scripts not completed before the first lane was cancelled retain the earlier passing measurements from [CI run 34800278334](https://github.com/HelloWorldSungin/firstmate/actions/runs/34800278334), shown explicitly below.
 These measurements change placement, not isolation eligibility or execution deadlines.
 
 | duration_ms | script | Measurement |
 |---:|---|---|
-| 203500 | `tests/fm-captain-hold-lifecycle.test.sh` | CI completed script |
-| 179803 | `tests/fm-lint.test.sh` | CI completed script |
-| 150192 | `tests/fm-test-run.test.sh` | CI completed script |
-| 122702 | `tests/fm-pr-merge.test.sh` | CI completed script |
-| 32818 | `tests/fm-crew-state.test.sh` | CI completed script |
-| 28065 | `tests/fm-x-mode.test.sh` | CI completed script |
-| 26899 | `tests/fm-arm-pretool-check.test.sh` | CI completed script |
-| 21249 | `tests/fm-backend-herdr.test.sh` | CI completed script |
-| 15995 | `tests/fm-cd-pretool-check.test.sh` | CI completed script |
-| 14889 | `tests/fm-brief.test.sh` | Local full sweep, 2026-09-12 |
-| 6983 | `tests/fm-grok-harness.test.sh` | CI completed script |
-| 6788 | `tests/fm-send-strict.test.sh` | CI completed script |
-| 6351 | `tests/fm-herdr-lab.test.sh` | CI completed script |
-| 4464 | `tests/fm-send-popup-settle.test.sh` | CI completed script |
-| 4220 | `tests/fm-pi-primary-types.test.sh` | CI completed script |
-| 4219 | `tests/fm-composer-lib.test.sh` | CI completed script |
-| 3832 | `tests/fm-review-diff.test.sh` | CI completed script |
-| 2271 | `tests/fm-tmux-submit-busy.test.sh` | CI completed script |
-| 2241 | `tests/fm-spawn-batch.test.sh` | CI completed script |
-| 2049 | `tests/fm-composer-ghost.test.sh` | CI completed script |
-| 1834 | `tests/fm-send-settle.test.sh` | CI completed script |
-| 810 | `tests/fm-ensure-agents-md.test.sh` | CI completed script |
-| 307 | `tests/fm-supervision-instructions.test.sh` | CI completed script |
-| 93 | `tests/fm-transition-lib.test.sh` | Local full sweep, 2026-09-12 |
+| 305369 | `tests/fm-captain-hold-lifecycle.test.sh` | CI completed script |
+| 209643 | `tests/fm-lint.test.sh` | CI completed script |
+| 198766 | `tests/fm-pr-merge.test.sh` | CI completed script |
+| 157536 | `tests/fm-test-run.test.sh` | CI completed script |
+| 41660 | `tests/fm-crew-state.test.sh` | CI completed script |
+| 30805 | `tests/fm-arm-pretool-check.test.sh` | CI completed script |
+| 29237 | `tests/fm-x-mode.test.sh` | CI completed script |
+| 27380 | `tests/fm-backend-herdr.test.sh` | CI completed script |
+| 23099 | `tests/fm-brief.test.sh` | CI completed script |
+| 16799 | `tests/fm-cd-pretool-check.test.sh` | CI completed script |
+| 7584 | `tests/fm-send-strict.test.sh` | CI completed script |
+| 6983 | `tests/fm-grok-harness.test.sh` | Previous recorded measurement |
+| 6351 | `tests/fm-herdr-lab.test.sh` | Previous recorded measurement |
+| 4883 | `tests/fm-send-popup-settle.test.sh` | CI completed script |
+| 4644 | `tests/fm-composer-lib.test.sh` | CI completed script |
+| 4220 | `tests/fm-pi-primary-types.test.sh` | Previous recorded measurement |
+| 3832 | `tests/fm-review-diff.test.sh` | Previous recorded measurement |
+| 2505 | `tests/fm-spawn-batch.test.sh` | CI completed script |
+| 2453 | `tests/fm-tmux-submit-busy.test.sh` | CI completed script |
+| 2049 | `tests/fm-composer-ghost.test.sh` | Previous recorded measurement |
+| 1834 | `tests/fm-send-settle.test.sh` | Previous recorded measurement |
+| 906 | `tests/fm-ensure-agents-md.test.sh` | CI completed script |
+| 342 | `tests/fm-supervision-instructions.test.sh` | CI completed script |
+| 171 | `tests/fm-transition-lib.test.sh` | CI completed script |
 
 ## Parallel lanes
 
@@ -45,9 +45,9 @@ The two parallel lanes use longest-processing-time assignment from those measure
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-parallel-1` | 11 | 421533 ms (~7.03 min) |
-| `portable-parallel-2` | 13 | 421041 ms (~7.02 min) |
-| imbalance | | 492 ms |
+| `portable-parallel-1` | 12 | 544542 ms (~9.08 min) |
+| `portable-parallel-2` | 12 | 544509 ms (~9.08 min) |
+| imbalance | | 33 ms |
 
 `bin/fm-test-run.sh` contains the exact ordered memberships in `list_portable_parallel_1` and `list_portable_parallel_2`.
 
@@ -85,21 +85,21 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 Shard count is sized from that total rather than left where an earlier, smaller remainder put it.
 The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the hints then put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
-The merged shared maxima and retained fork-only hints put the slowest of eight shards at about 13.52 minutes.
-The current 206-script serial lane has three unhinted scripts, using the runner's conservative default, and totals 6491397 ms of assignment weight.
+The merged shared maxima and retained fork-only hints put the slowest of eight shards at about 13.69 minutes.
+The current 209-script serial lane has six unhinted scripts, using the runner's conservative default, and totals 6572397 ms of assignment weight.
 The 30-minute serial job cap adopted from upstream leaves setup and runner-speed margin; the fork's 480-second per-script bound remains unchanged.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 26 | 811442 ms (~13.52 min) |
-| `portable-serial-2of8` | 26 | 811429 ms (~13.52 min) |
-| `portable-serial-3of8` | 26 | 811431 ms (~13.52 min) |
-| `portable-serial-4of8` | 26 | 811434 ms (~13.52 min) |
-| `portable-serial-5of8` | 26 | 811434 ms (~13.52 min) |
-| `portable-serial-6of8` | 25 | 811379 ms (~13.52 min) |
-| `portable-serial-7of8` | 25 | 811399 ms (~13.52 min) |
-| `portable-serial-8of8` | 26 | 811449 ms (~13.52 min) |
-| imbalance | | 70 ms |
+| `portable-serial-1of8` | 26 | 821551 ms (~13.69 min) |
+| `portable-serial-2of8` | 26 | 821546 ms (~13.69 min) |
+| `portable-serial-3of8` | 26 | 821547 ms (~13.69 min) |
+| `portable-serial-4of8` | 26 | 821552 ms (~13.69 min) |
+| `portable-serial-5of8` | 27 | 821587 ms (~13.69 min) |
+| `portable-serial-6of8` | 26 | 821546 ms (~13.69 min) |
+| `portable-serial-7of8` | 26 | 821534 ms (~13.69 min) |
+| `portable-serial-8of8` | 26 | 821534 ms (~13.69 min) |
+| imbalance | | 53 ms |
 
 The watcher triage cases are split into core and wait/decision scripts with one shared fixture owner in `tests/watch-triage-helpers.sh`.
 All 125 original cases remain in exactly one script, with compatible new upstream progress and declared-deadline cases added beside them.
@@ -143,8 +143,8 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 
 | Lane | Bound | Rationale |
 |---|---|---|
-| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 7 minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 12.89 minutes, leaving roughly seven minutes for setup and runner-speed spread. |
+| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 9.08 minutes, leaving about 55 seconds for setup and runner variation. |
+| portable serial 1-8 | job `timeout-minutes: 30` | The slowest estimated shard is about 13.69 minutes, leaving setup and runner-speed margin. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | The required lane is bounded independently of the per-script deadline; refresh timings from its uploaded artifacts. Previous healthy runs finished around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
@@ -152,7 +152,7 @@ Timeouts are hang tripwires rather than expected healthy durations.
 
 Inside each lane, `bin/fm-test-run.sh` applies its own default per-script bound, so a hung script usually turns red with per-script attribution before the job cap cancels the lane; its `--help` owns that bound's value and opt-out, and the rationale beside `DEFAULT_PER_SCRIPT_TIMEOUT_SECS` owns the per-lane margin arithmetic.
 Neither portable lane has room to spare, because a hung script spends the bound instead of its own healthy slot.
-On the slowest estimated serial shard, replacing its average script with the 480-second bound puts script time around 20.4 minutes, past the 20-minute cap before checkout and bootstrap overhead.
-A hung script may therefore reach the job limit before the per-script limit can report it; the healthy estimate retains roughly seven minutes for setup and runner-speed variation.
+On the slowest estimated serial shard, replacing its average script with the 480-second bound puts script time around 21 minutes, within the 30-minute cap before checkout and bootstrap overhead.
+The healthy estimate retains roughly sixteen minutes for setup and runner-speed variation.
 The portable parallel cap is tighter still: the same arithmetic already lands past its 10-minute cap before setup, so expect the job timeout rather than per-script attribution when a script hangs there.
 On the required Herdr lane the bound has the thinnest margin over its slowest measured script, so a healthy but unusually slow Herdr end-to-end script can turn red as `exit=124`; that margin is accepted rather than widened, tracked in `HelloWorldSungin/firstmate#256`.

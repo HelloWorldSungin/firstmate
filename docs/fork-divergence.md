@@ -305,6 +305,7 @@ Portable extension tests do not establish live OMP vendor compatibility.
 
 The fork separates presentation, focus, and negative-path coverage in [`tests/fm-backend-herdr-presentation-e2e.test.sh`](../tests/fm-backend-herdr-presentation-e2e.test.sh) from multi-home ownership and restart coverage in [`tests/fm-backend-herdr-recovery-e2e.test.sh`](../tests/fm-backend-herdr-recovery-e2e.test.sh), keeping both within ordinary runner bounds.
 They share common setup and instrumentation functions in [`tests/herdr-presentation-fixture.sh`](../tests/herdr-presentation-fixture.sh), while each entrypoint owns independent source, home, lab, evidence, and task identities.
+The shared fixture supports a task-specific lab label and derives its version probe from the guarded lab status response, keeping Herdr command execution inside the lab helper.
 The recovery fixture retires completed multi-home task records before whole-session restart scenarios.
 Its secondmate homes carry local parent bindings and registry entries, so concurrent positive cases exercise the shared project lock and ownership checks, with a bounded retry only for the expected lock-contention refusals.
 Both entrypoints belong to the existing real-Herdr family and use the ordinary default timeout in local and CI runs; no per-script timeout allowance is required.
@@ -312,6 +313,7 @@ Treehouse leases belong to processes, so leaving those completed records after t
 Both fixtures keep their worktree journals across command-substitution subshells and delegate cleanup to [`tests/herdr-presentation-cleanup.sh`](../tests/herdr-presentation-cleanup.sh).
 That owner waits for outstanding fixture operations, shuts down the named lab before ordinary slot returns, verifies each copy's source repository, and preserves source Git metadata and separate evidence after any failure.
 Repeated cleanup retains the first verdict without repeating partial mutations.
+The presentation fixture restores its move audit from the same separate evidence directory that owns the saved snapshot, with copy failures stopping the fixture before later ordering assertions.
 [`tests/fm-test-fixture-cleanup.test.sh`](../tests/fm-test-fixture-cleanup.test.sh) covers return failure, lifecycle failure, foreign ownership, outstanding operations, and repeated cleanup without using real Herdr.
 Production allocation and slot-exclusivity policy remain unchanged.
 

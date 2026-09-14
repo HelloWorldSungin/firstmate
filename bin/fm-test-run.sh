@@ -185,13 +185,13 @@ PER_SCRIPT_TIMEOUT_SET=
 #
 # The arithmetic is replacement, not addition: a hung script spends the bound
 # INSTEAD of its own healthy slot. The merged portable-serial hint table totals
-# about 6491s over eight shards, with the slowest near 812s. Replacing its ~32s
-# average script with 480s puts script time near 1260s, inside the 1800s CI cap
+# about 6572s over eight shards, with the slowest near 822s. Replacing its ~32s
+# average script with 480s puts script time near 1270s, inside the 1800s CI cap
 # with about nine minutes left for setup and runner variability. The script
 # bound stays unchanged; the serial job adopts upstream's 30-minute cap.
 # real-Herdr is 420s less its ~35s mean slot plus 480s, inside its 1200s step cap.
-# portable-parallel is tighter: CI runs that lane serially, so ~422s less its
-# ~38s mean slot plus 480s is ~864s, already past its 600s job cap before setup.
+# portable-parallel is tighter: CI runs that lane serially, so ~545s less its
+# ~45s mean slot plus 480s is ~980s, already past its 600s job cap before setup.
 # That lane can therefore lose per-script attribution to a job cancellation.
 # Raising the script bound would not remedy that enclosing-job limit.
 #
@@ -319,6 +319,7 @@ family_for_basename() {
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
+    fm-pi-loaded-marker.test.sh|fm-pi-prompt-delivery.test.sh|\
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
@@ -381,7 +382,7 @@ family_for_basename() {
     fm-rovo-signals-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
-    fm-pi-hung-delivery-herdr-e2e.test.sh|\
+    fm-pi-hung-delivery-herdr-e2e.test.sh|fm-pi-prompt-collision-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -527,16 +528,17 @@ EOF
 list_portable_parallel_1() {
   cat <<'EOF'
 tests/fm-captain-hold-lifecycle.test.sh
-tests/fm-pr-merge.test.sh
-tests/fm-crew-state.test.sh
-tests/fm-backend-herdr.test.sh
-tests/fm-cd-pretool-check.test.sh
+tests/fm-test-run.test.sh
+tests/fm-x-mode.test.sh
+tests/fm-brief.test.sh
+tests/fm-send-strict.test.sh
 tests/fm-grok-harness.test.sh
-tests/fm-herdr-lab.test.sh
+tests/fm-send-popup-settle.test.sh
 tests/fm-pi-primary-types.test.sh
-tests/fm-review-diff.test.sh
+tests/fm-spawn-batch.test.sh
 tests/fm-composer-ghost.test.sh
-tests/fm-send-settle.test.sh
+tests/fm-ensure-agents-md.test.sh
+tests/fm-transition-lib.test.sh
 EOF
 }
 
@@ -544,18 +546,17 @@ EOF
 list_portable_parallel_2() {
   cat <<'EOF'
 tests/fm-lint.test.sh
-tests/fm-test-run.test.sh
-tests/fm-x-mode.test.sh
+tests/fm-pr-merge.test.sh
+tests/fm-crew-state.test.sh
 tests/fm-arm-pretool-check.test.sh
-tests/fm-brief.test.sh
-tests/fm-send-strict.test.sh
-tests/fm-send-popup-settle.test.sh
+tests/fm-backend-herdr.test.sh
+tests/fm-cd-pretool-check.test.sh
+tests/fm-herdr-lab.test.sh
 tests/fm-composer-lib.test.sh
+tests/fm-review-diff.test.sh
 tests/fm-tmux-submit-busy.test.sh
-tests/fm-spawn-batch.test.sh
-tests/fm-ensure-agents-md.test.sh
+tests/fm-send-settle.test.sh
 tests/fm-supervision-instructions.test.sh
-tests/fm-transition-lib.test.sh
 EOF
 }
 
@@ -1485,6 +1486,25 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-pi-primary-types.test.sh
       # Whether an arriving outcome still lets the captain type is a fact only
       # a real Pi TUI can answer, so the live guards are selected too.
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-pi-prompt-delivery.ts)
+      # The primary prompt delivery owner: its own suites, the watch extension
+      # that installs it, and the live TUI guard for the captain-visible overlap.
+      printf '%s\n' __script__:fm-pi-prompt-delivery.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-loaded-marker.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-pi-loaded-marker.ts)
+      # The loaded-marker writer rule both primary extensions apply, and the
+      # session-start proof that reads those markers.
+      printf '%s\n' __script__:fm-pi-loaded-marker.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-session-start.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
       printf '%s\n' live-harness-optin
       ;;
     .pi/extensions/lib/fm-operational-input.ts)

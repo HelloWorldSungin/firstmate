@@ -26,10 +26,14 @@
 // queued while main is streaming joins the running run without ever raising
 // before_agent_start, so waiting on that event stalls every later close.
 // Consumption is tracked only so a replacement can replay a follow-up Pi had
-// not consumed. An idle main consumes at before_agent_start; a streaming main
-// consumes at the user message_start carrying the exact wake text; either
-// event finishes the pending record, and a still-unconsumed record rides the
-// replacement handoff.
+// not consumed. A wake is consumed only when a model turn accepts it, which is
+// the user message_start carrying the exact wake text on every path: an idle
+// main raises it in the turn the wake opens, a streaming main raises it when
+// the running turn drains the follow-up, and a wake that lost a preflight race
+// raises it in the turn it joined (./lib/fm-pi-prompt-delivery.ts owns that
+// join). before_agent_start is not consumption, because Pi's preflight can
+// still reject the prompt after it. Consumption finishes the pending record,
+// and a still-unconsumed record rides the replacement handoff.
 //
 // Restore versus delivery (stated once here):
 // delivering is true while the serialized pending-wake pump is in flight.
@@ -65,6 +69,8 @@ import {
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { markerWriterMayRecord } from "./lib/fm-pi-loaded-marker.ts";
+import { installPiPromptDelivery } from "./lib/fm-pi-prompt-delivery.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -265,8 +271,15 @@ function lockOwnership(): LockOwnership {
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
+// The loaded-generation marker is evidence that THIS session process loaded
+// this build (bin/fm-wake-lib.sh fm_pi_extension_loaded owns the proof). Only
+// a live session writes it - session_start or an arm - never factory load,
+// because a descendant `pi --list-models` probe loads the same factory without
+// starting a session. The writer must be the lock pid itself, or no live
+// process may hold the lock yet; a descendant of the lock holder can never
+// satisfy the proof and must not overwrite the holder's evidence.
 function markLoaded(): void {
-  if (lockOwnership() === "other") return;
+  if (!markerWriterMayRecord(`${state}/.lock`)) return;
   mkdirSync(state, { recursive: true });
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
@@ -537,6 +550,7 @@ const cleanupOnProcessExit = () => {
 process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
+  const promptDelivery = installPiPromptDelivery();
   let generation = createGeneration();
   activateGeneration(generation);
 
@@ -583,8 +597,8 @@ export default function (pi: ExtensionAPI) {
     return generationIsLive(owner);
   }
 
-  // Pi consumed a main follow-up: an idle main at before_agent_start, a
-  // streaming main at the user message_start that joins the running run.
+  // A model turn accepted a main follow-up: the user message_start carrying
+  // its exact text (see "Delivery versus consumption" above).
   function consumeWake(owner: SessionGeneration, text: string): void {
     for (const [token, wake] of owner.unconsumedWakes) {
       if (wake.content !== text) continue;
@@ -1248,17 +1262,20 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
-  pi.on?.("before_agent_start", (event) => {
-    consumeWake(generation, event.prompt);
-  });
   pi.on?.("message_start", (event) => {
     if (event.message.role !== "user") return;
     consumeWake(generation, userMessageText(event.message.content));
   });
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
+    if (!promptDelivery.ok) {
+      ctx?.ui?.notify?.(
+        `watcher: prompt delivery unprotected - overlapping Firstmate and captain prompts can still be dropped (${promptDelivery.detail})`,
+        "warning",
+      );
+    }
     markLoaded();
     if (lockOwnership() !== "owned") return;
     activateOwnedWatch(generation);
@@ -1320,6 +1337,4 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
-
-  markLoaded();
 }
