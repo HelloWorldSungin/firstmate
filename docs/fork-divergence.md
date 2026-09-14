@@ -172,6 +172,8 @@ The rationale beside the constant owns why 480s and what the bound costs each CI
 The upstream `kunchenguid/firstmate#3489` rebalance refreshes shared duration hints and raises the portable serial job cap to 20 minutes.
 The fork retains eight shards and its fork-only timing hints, while adopting that cap; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
 
+Watcher triage cases are partitioned between `tests/fm-watch-triage.test.sh` and `tests/fm-watch-triage-waits.test.sh`, with shared case definitions in `tests/watch-triage-helpers.sh`, so suite growth does not weaken the per-script bound.
+
 ### Locale-independent test coverage comparisons
 
 The fork retains the C-collation invariant owned by the coverage guard in [`bin/fm-test-run.sh`](../bin/fm-test-run.sh).

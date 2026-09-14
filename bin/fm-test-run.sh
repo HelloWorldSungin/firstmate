@@ -325,7 +325,7 @@ family_for_basename() {
     fm-wake-drain-unread-status.test.sh|\
     fm-tool-update-check.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
-    fm-watch-triage.test.sh|fm-task-inbox.test.sh|\
+    fm-watch-triage.test.sh|fm-watch-triage-waits.test.sh|fm-task-inbox.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -519,40 +519,40 @@ EOF
 }
 
 # Portable parallel shard 1: LPT balance of the proven-isolated set using the
-# current concurrent-proof durations in docs/fm-test-isolation-proof.json.
+# measured CI durations recorded in docs/fm-test-portable-shards.md.
 # Execution order is longest first so wall-clock stays near the balanced sum.
 list_portable_parallel_1() {
   cat <<'EOF'
-tests/fm-x-mode.test.sh
-tests/fm-cd-pretool-check.test.sh
 tests/fm-captain-hold-lifecycle.test.sh
-tests/fm-test-run.test.sh
-tests/fm-composer-ghost.test.sh
+tests/fm-pr-merge.test.sh
+tests/fm-crew-state.test.sh
+tests/fm-backend-herdr.test.sh
+tests/fm-cd-pretool-check.test.sh
 tests/fm-grok-harness.test.sh
-tests/fm-lint.test.sh
+tests/fm-herdr-lab.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-review-diff.test.sh
-tests/fm-brief.test.sh
-tests/fm-transition-lib.test.sh
+tests/fm-composer-ghost.test.sh
+tests/fm-send-settle.test.sh
 EOF
 }
 
 # Portable parallel shard 2: the complementary LPT half of the proven set.
 list_portable_parallel_2() {
   cat <<'EOF'
-tests/fm-backend-herdr.test.sh
+tests/fm-lint.test.sh
+tests/fm-test-run.test.sh
+tests/fm-x-mode.test.sh
 tests/fm-arm-pretool-check.test.sh
-tests/fm-crew-state.test.sh
-tests/fm-herdr-lab.test.sh
-tests/fm-pr-merge.test.sh
-tests/fm-send-popup-settle.test.sh
-tests/fm-tmux-submit-busy.test.sh
-tests/fm-send-settle.test.sh
+tests/fm-brief.test.sh
 tests/fm-send-strict.test.sh
-tests/fm-spawn-batch.test.sh
-tests/fm-supervision-instructions.test.sh
-tests/fm-ensure-agents-md.test.sh
+tests/fm-send-popup-settle.test.sh
 tests/fm-composer-lib.test.sh
+tests/fm-tmux-submit-busy.test.sh
+tests/fm-spawn-batch.test.sh
+tests/fm-ensure-agents-md.test.sh
+tests/fm-supervision-instructions.test.sh
+tests/fm-transition-lib.test.sh
 EOF
 }
 
@@ -638,7 +638,8 @@ list_portable_serial() {
 
 # Measured portable-serial script durations in milliseconds, from the CI timing
 # artifacts recorded in docs/fm-test-portable-shards.md. Each value is the
-# slowest of several green runs, so the balance holds on a slow runner rather
+# slowest of several green runs, except the documented local split-suite hints,
+# so the balance holds on a slow runner rather
 # than only on the fastest one measured. These are balance hints only: the shard
 # partition stays complete and disjoint whatever they say, so a stale hint costs
 # balance rather than coverage. That doc owns the refresh procedure.
@@ -821,7 +822,8 @@ tests/fm-wake-queue.test.sh 56674
 tests/fm-watch-arm.test.sh 58528
 tests/fm-watch-checkpoint.test.sh 5779
 tests/fm-watch-recovery-loop.test.sh 58731
-tests/fm-watch-triage.test.sh 262626
+tests/fm-watch-triage.test.sh 160205
+tests/fm-watch-triage-waits.test.sh 191775
 tests/fm-watcher-lock.test.sh 88554
 EOF
 }

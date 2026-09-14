@@ -5,35 +5,39 @@
 
 ## Verification inputs
 
-The current candidate timings came from the 2026-08-20 concurrent proof recorded in [fm-test-isolation-proof.md](fm-test-isolation-proof.md).
-The proof ran 24 candidates with four workers and no failures.
+The proven-isolated candidate set remains the 24-script concurrent proof recorded in [fm-test-isolation-proof.md](fm-test-isolation-proof.md).
+Placement timings are refreshed from completed script measurements in [CI run 34800278334](https://github.com/HelloWorldSungin/firstmate/actions/runs/34800278334).
+Its first parallel lane reached the unchanged ten-minute job limit after passing nine scripts; the old two-minute estimate no longer represented the enlarged suites.
+The second parallel lane completed successfully.
+The two scripts not completed before the first lane was cancelled retain the passing local full-sweep measurements shown explicitly below.
+These measurements change placement, not isolation eligibility or execution deadlines.
 
-| duration_ms | script |
-|---:|---|
-| 45356 | `tests/fm-backend-herdr.test.sh` |
-| 35415 | `tests/fm-x-mode.test.sh` |
-| 35095 | `tests/fm-captain-hold-lifecycle.test.sh` |
-| 27529 | `tests/fm-arm-pretool-check.test.sh` |
-| 20922 | `tests/fm-test-run.test.sh` |
-| 17558 | `tests/fm-crew-state.test.sh` |
-| 16582 | `tests/fm-cd-pretool-check.test.sh` |
-| 9766 | `tests/fm-lint.test.sh` |
-| 9562 | `tests/fm-herdr-lab.test.sh` |
-| 6768 | `tests/fm-grok-harness.test.sh` |
-| 6290 | `tests/fm-pr-merge.test.sh` |
-| 5569 | `tests/fm-composer-ghost.test.sh` |
-| 4563 | `tests/fm-send-popup-settle.test.sh` |
-| 4021 | `tests/fm-tmux-submit-busy.test.sh` |
-| 3544 | `tests/fm-composer-lib.test.sh` |
-| 3025 | `tests/fm-send-strict.test.sh` |
-| 2753 | `tests/fm-send-settle.test.sh` |
-| 2166 | `tests/fm-review-diff.test.sh` |
-| 1315 | `tests/fm-brief.test.sh` |
-| 975 | `tests/fm-spawn-batch.test.sh` |
-| 598 | `tests/fm-pi-primary-types.test.sh` |
-| 513 | `tests/fm-ensure-agents-md.test.sh` |
-| 331 | `tests/fm-supervision-instructions.test.sh` |
-| 99 | `tests/fm-transition-lib.test.sh` |
+| duration_ms | script | Measurement |
+|---:|---|---|
+| 203500 | `tests/fm-captain-hold-lifecycle.test.sh` | CI completed script |
+| 179803 | `tests/fm-lint.test.sh` | CI completed script |
+| 150192 | `tests/fm-test-run.test.sh` | CI completed script |
+| 122702 | `tests/fm-pr-merge.test.sh` | CI completed script |
+| 32818 | `tests/fm-crew-state.test.sh` | CI completed script |
+| 28065 | `tests/fm-x-mode.test.sh` | CI completed script |
+| 26899 | `tests/fm-arm-pretool-check.test.sh` | CI completed script |
+| 21249 | `tests/fm-backend-herdr.test.sh` | CI completed script |
+| 15995 | `tests/fm-cd-pretool-check.test.sh` | CI completed script |
+| 14889 | `tests/fm-brief.test.sh` | Local full sweep, 2026-09-12 |
+| 6983 | `tests/fm-grok-harness.test.sh` | CI completed script |
+| 6788 | `tests/fm-send-strict.test.sh` | CI completed script |
+| 6351 | `tests/fm-herdr-lab.test.sh` | CI completed script |
+| 4464 | `tests/fm-send-popup-settle.test.sh` | CI completed script |
+| 4220 | `tests/fm-pi-primary-types.test.sh` | CI completed script |
+| 4219 | `tests/fm-composer-lib.test.sh` | CI completed script |
+| 3832 | `tests/fm-review-diff.test.sh` | CI completed script |
+| 2271 | `tests/fm-tmux-submit-busy.test.sh` | CI completed script |
+| 2241 | `tests/fm-spawn-batch.test.sh` | CI completed script |
+| 2049 | `tests/fm-composer-ghost.test.sh` | CI completed script |
+| 1834 | `tests/fm-send-settle.test.sh` | CI completed script |
+| 810 | `tests/fm-ensure-agents-md.test.sh` | CI completed script |
+| 307 | `tests/fm-supervision-instructions.test.sh` | CI completed script |
+| 93 | `tests/fm-transition-lib.test.sh` | Local full sweep, 2026-09-12 |
 
 ## Parallel lanes
 
@@ -41,9 +45,9 @@ The two parallel lanes use longest-processing-time assignment from those measure
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-parallel-1` | 11 | 134295 ms (~134.3 s) |
-| `portable-parallel-2` | 13 | 126020 ms (~126.0 s) |
-| imbalance | | 8275 ms |
+| `portable-parallel-1` | 11 | 421533 ms (~7.03 min) |
+| `portable-parallel-2` | 13 | 421041 ms (~7.02 min) |
+| imbalance | | 492 ms |
 
 `bin/fm-test-run.sh` contains the exact ordered memberships in `list_portable_parallel_1` and `list_portable_parallel_2`.
 
@@ -76,21 +80,23 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 Shard count is sized from that total rather than left where an earlier, smaller remainder put it.
 The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the hints then put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
-The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 9.68 minutes.
+The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 9.87 minutes.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 24 | 580936 ms (~9.68 min) |
-| `portable-serial-2of8` | 24 | 580922 ms (~9.68 min) |
-| `portable-serial-3of8` | 24 | 580919 ms (~9.68 min) |
-| `portable-serial-4of8` | 26 | 580933 ms (~9.68 min) |
-| `portable-serial-5of8` | 26 | 580922 ms (~9.68 min) |
-| `portable-serial-6of8` | 26 | 580936 ms (~9.68 min) |
-| `portable-serial-7of8` | 24 | 580921 ms (~9.68 min) |
-| `portable-serial-8of8` | 26 | 580925 ms (~9.68 min) |
-| imbalance | | 17 ms |
+| `portable-serial-1of8` | 25 | 592093 ms (~9.87 min) |
+| `portable-serial-2of8` | 25 | 592101 ms (~9.87 min) |
+| `portable-serial-3of8` | 25 | 592093 ms (~9.87 min) |
+| `portable-serial-4of8` | 25 | 592092 ms (~9.87 min) |
+| `portable-serial-5of8` | 26 | 592105 ms (~9.87 min) |
+| `portable-serial-6of8` | 25 | 592092 ms (~9.87 min) |
+| `portable-serial-7of8` | 25 | 592101 ms (~9.87 min) |
+| `portable-serial-8of8` | 25 | 592091 ms (~9.87 min) |
+| imbalance | | 14 ms |
 
-The single longest script, `tests/fm-watch-triage.test.sh` at 262626 ms, is the floor for any shard count.
+The watcher triage cases are split into core and wait/decision scripts with one shared fixture owner in `tests/watch-triage-helpers.sh`.
+All 125 original cases remain in exactly one script.
+Their passing local measurements on 2026-09-14 are 160205 ms and 191775 ms; these replace the former combined hint after CI reached the unchanged 480-second script limit while still passing cases.
 
 Refresh the CI-derived hints by downloading the per-shard timing artifacts from several green CI runs, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the slowest measured `duration_ms` per `path`, and updating the table above:
 
@@ -129,8 +135,8 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 
 | Lane | Bound | Rationale |
 |---|---|---|
-| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 2.2 minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 9.68 minutes, leaving roughly 2.3x margin for setup and runner-speed spread. |
+| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about 7 minutes and the timeout is a hang tripwire. |
+| portable serial 1-8 | job `timeout-minutes: 20` | The slowest estimated shard is about 9.87 minutes, leaving roughly 2x margin for setup and runner-speed spread. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | The required lane is bounded independently of the per-script deadline; refresh timings from its uploaded artifacts. Previous healthy runs finished around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
