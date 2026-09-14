@@ -1135,17 +1135,17 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
-# busy_turn_over_age: 0 iff <task>'s latest turn-boundary wake marker is at least
-# BUSY_TURN_MAX_SECS old. Ages the per-task turn-ended marker, the harness-neutral
-# wake written by a verified turn-end producer or the cursor/agy native-idle
-# detector; before any such wake arrives, ages the task's spawn record so a
-# fresh task gets a bound. The caller checks that the pane is busy and routes a
-# crossed bound through busy_turn_bound_check, never anything that touches the
-# worker itself.
+# busy_turn_over_age: 0 iff the last completed turn or explicit native-harness
+# progress is at least BUSY_TURN_MAX_SECS old. Progress is actual observed model
+# or tool activity, never a timer or a busy footer. It does not emit a wake or
+# change semantic busy state. Before either marker exists, age the spawn record.
+# The caller checks busy state and routes a crossed bound through inspection.
 busy_turn_over_age() {  # <task>
-  local task=$1 f
+  local task=$1 f progress
   f="$STATE/$task.turn-ended"
   [ -e "$f" ] || f="$STATE/$task.meta"
+  progress="$STATE/$task.progress"
+  if [ -f "$progress" ] && [ "$progress" -nt "$f" ]; then f="$progress"; fi
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
@@ -1176,7 +1176,7 @@ busy_turn_over_age() {  # <task>
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age detail reason rf rf_age wait_line streak_file resurface_window
+  local win=$1 task=$2 h=$3 key statusf mtime age detail reason rf rf_age wait_line streak_file resurface_window until now due due_now=0
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -1185,12 +1185,14 @@ handle_paused_stale() {  # <window> <task> <hash>
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
+  now=$(date +%s)
+  age=$(( now - mtime ))
   rf="$STATE/.paused-resurfaced-$key"
   wait_line=$(last_status_line "$statusf")
   streak_file="$STATE/.paused-streak-$key"
+  due="$STATE/.paused-until-due-$key"
   if pause_streak_sync "$streak_file" "$wait_line"; then
-    rm -f "$rf"
+    rm -f "$rf" "$due"
   fi
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
   resurface_window=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
@@ -1201,8 +1203,23 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="paused, awaiting external"
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
   fi
-  if [ "$age" -ge "$resurface_window" ] && [ "$rf_age" -ge "$resurface_window" ]; then
+  until=
+  if status_is_paused "$wait_line" && until=$(status_paused_until "$wait_line"); then
+    if [ "$now" -lt "$until" ] && [ "$age" -lt "$resurface_window" ]; then
+      triage_log "absorbed stale (paused, declared time not reached): $win"
+      return 0
+    elif [ "$now" -lt "$until" ]; then
+      reason="stale: $win (paused ${age}s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds)"
+    elif [ "$(cat "$due" 2>/dev/null || true)" != "$until" ]; then
+      due_now=1
+      reason="stale: $win (paused ${age}s, awaiting external - the declared clearing time has passed; confirm the wait cleared)"
+    fi
+  fi
+  if [ "$due_now" = 1 ] || { [ "$age" -ge "$resurface_window" ] && [ "$rf_age" -ge "$resurface_window" ]; }; then
     fm_wake_append stale "$win" "$reason" || exit 1
+    if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
+      printf '%s\n' "$until" > "$due"
+    fi
     date +%s > "$rf"
     pause_streak_bump "$streak_file" "$wait_line"
     wake "$reason"
@@ -1270,7 +1287,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 clear_pause_state() {  # <window-key>
   local key=$1
   rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" \
-    "$STATE/.paused-streak-$key"
+    "$STATE/.paused-streak-$key" "$STATE/.paused-until-due-$key"
 }
 
 # The hash-scoped half of clear_pause_tracking: the stale suppressor, its wedge
@@ -2393,11 +2410,9 @@ EOF
     # instead of the ordinary "signal:" below (other files in the same batch
     # keep the ordinary payload). The wake reason line itself, and every
     # harness-arm consumer that pattern-matches it, stays byte-identical -
-    # only the per-row payload changes, which is what
-    # docs/pi-supervision-branch.md's Pi-only branch dispatcher reads to keep a
-    # decision-owned row off the supervision branch (fm-branch-dispatch.ts,
-    # fm-primary-pi-watch.ts). Every other harness and script keeps seeing the
-    # exact same "signal:$files" wake it always has.
+    # only the per-row payload changes. The supervision branch dispatcher uses
+    # it to exclude decision-owned rows, and the away daemon passes it through
+    # handle_durable_wakes to handle_wake for once-per-declaration escalation.
     # shellcheck disable=SC2086  # same space-separated status-path list
     if afk_present || [ "$signal_actionable" -eq 0 ] \
       || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then

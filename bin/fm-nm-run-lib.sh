@@ -195,10 +195,22 @@ fm_nm_runs_row_fields_valid() {  # <status> <branch> <head> <date> <time> <pr> <
   return 0
 }
 
+# Classify a ledger status for live-over-terminal selection. Unknown statuses
+# retain their existing newest-row precedence.
+fm_nm_run_status_class() {
+  case "${1:-}" in
+    completed|failed|cancelled) printf terminal ;;
+    running) printf live ;;
+    *) printf unknown ;;
+  esac
+}
+
 # One owner for runs-ledger attribution, returning the newest matching branch
 # row as <evidence>\t<status>\t<head>. Evidence is attributable, inconclusive,
-# or rejected; an absent branch prints nothing. Older rows never answer as the
-# current run. The only use of an older row is the approved narrow anchor:
+# or rejected; an absent branch prints nothing. A binding terminal row yields
+# to an older live row that also binds. An unresolved live sibling requires the
+# held terminal row to be exactly local HEAD; no other unknown head is admitted.
+# Within a liveness class the newest row wins. The other older-row use is the anchor:
 # a newest running unresolved head is attributable when the immediately older
 # same-branch row is completed, failed, or cancelled at exactly local HEAD.
 # Missing, nonterminal, and mismatched anchors remain inconclusive. This is a
@@ -208,18 +220,29 @@ fm_nm_runs_row_fields_valid() {  # <status> <branch> <head> <date> <time> <pr> <
 # Malformed input is inconclusive, never proof that this branch has no run.
 fm_nm_runs_row_for_worktree() {  # <worktree> <branch> <runs-list-output>
   local wt=$1 branch=$2 list=$3 row st br sha relation pending_head=''
-  local day clock pr extra
+  local day clock pr extra decided_status='' decided_head='' decided_relation=''
   [ -n "$list" ] || return 0
   while IFS= read -r row; do
     row=$(fm_nm_trim "$row")
     [ -n "$row" ] || continue
     IFS=$' \t' read -r st br sha day clock pr extra <<< "$row"
     if ! fm_nm_runs_row_fields_valid "$st" "$br" "$sha" "$day" "$clock" "$pr" "$extra"; then
+      [ -z "$decided_status" ] || break
       printf 'inconclusive\tmalformed\t-'
       return 0
     fi
     [ "$br" = "$branch" ] || continue
     relation=$(fm_nm_head_relation "$wt" "$sha")
+    if [ -n "$decided_status" ]; then
+      [ "$(fm_nm_run_status_class "$st")" = live ] || continue
+      case "$relation" in
+        equal|run-ahead) ;;
+        unresolved) [ "$decided_relation" = equal ] || continue ;;
+        *) continue ;;
+      esac
+      printf 'attributable\trunning\t%s' "$sha"
+      return 0
+    fi
     if [ -n "$pending_head" ]; then
       case "$st:$relation" in
         completed:equal|failed:equal|cancelled:equal)
@@ -229,7 +252,16 @@ fm_nm_runs_row_for_worktree() {  # <worktree> <branch> <runs-list-output>
       return 0
     fi
     case "$relation" in
-      equal|run-ahead) printf 'attributable\t%s\t%s' "$st" "$sha"; return 0 ;;
+      equal|run-ahead)
+        if [ "$(fm_nm_run_status_class "$st")" = terminal ]; then
+          decided_status=$st
+          decided_head=$sha
+          decided_relation=$relation
+        else
+          printf 'attributable\t%s\t%s' "$st" "$sha"
+          return 0
+        fi
+        ;;
       unresolved)
         case "$st" in
           running) pending_head=$sha ;;
@@ -239,6 +271,10 @@ fm_nm_runs_row_for_worktree() {  # <worktree> <branch> <runs-list-output>
       *) printf 'rejected\t%s\t%s' "$st" "$sha"; return 0 ;;
     esac
   done <<< "$list"
+  if [ -n "$decided_status" ]; then
+    printf 'attributable\t%s\t%s' "$decided_status" "$decided_head"
+    return 0
+  fi
   [ -z "$pending_head" ] || printf 'inconclusive\trunning\t%s' "$pending_head"
   return 0
 }

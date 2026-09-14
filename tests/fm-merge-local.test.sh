@@ -14,7 +14,8 @@ test_recorded_continued_branch_lands_locally() {
   project="$case_dir/project"
   wt="$case_dir/wt"
   branch=feature/existing-local
-  mkdir -p "$case_dir/state" "$project"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$project"
+  cp "$ROOT/.tasks.toml" "$case_dir/.tasks.toml"
   git init -q "$project"
   git -C "$project" symbolic-ref HEAD refs/heads/main
   printf 'base\n' > "$project/base.txt"
@@ -29,8 +30,9 @@ test_recorded_continued_branch_lands_locally() {
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "project=$project" "mode=local-only" "branch=$branch"
 
-  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
-    "$MERGE_LOCAL" task-x1 2> "$case_dir/stderr")
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$MERGE_LOCAL" task-x1 2> "$case_dir/stderr") \
+    || fail "local merge refused the fixture: $(cat "$case_dir/stderr")"
 
   [ "$(git -C "$project" rev-parse main)" = "$after" ] \
     || fail "local landing ignored the recorded continued branch"

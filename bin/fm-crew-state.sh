@@ -134,10 +134,12 @@ META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
 LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh) scans. Generous
-# enough to still find a branch's own run on a busy multi-crew fleet without
-# listing the entire history every call.
+# How many of the most recent `no-mistakes runs` rows each ledger read
+# (fm_nm_runs_status_for_worktree in bin/fm-nm-run-lib.sh) scans, whether it is
+# the cross-branch fallback or the live-sibling probe behind a terminal `axi
+# status` answer (docs/configuration.md owns the setting). Generous enough to
+# still find a branch's own run on a busy multi-crew fleet without listing the
+# entire history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 # How long a recorded run-step stays usable as the degraded answer after the run
@@ -1046,6 +1048,22 @@ if tracked_output_kind && [ -n "$WORKTREE_BRANCH" ] && [ -n "$LOOKUP_BRANCH" ] \
         LOOKUP_COMPLETED=1
         if [ -n "$TASK_BRANCH" ]; then
           HAVE_RUN=1
+          # A terminal AXI answer is provisional until the ledger excludes a
+          # live sibling. Failed or inconclusive probes retain full AXI detail.
+          if ! fm_nm_run_is_active "$RUN_OUT"; then
+            live_row=
+            if live_runs=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT"); then
+              live_row=$(fm_nm_runs_row_for_worktree "$WT" "$LOOKUP_BRANCH" "$live_runs")
+            fi
+            IFS=$'\t' read -r live_evidence live_status live_head <<< "$live_row"
+            if [ "$live_evidence" = attributable ] \
+              && [ "$(fm_nm_run_status_class "$live_status")" = live ]; then
+              COARSE_STATUS=$live_status
+              COARSE_HEAD=$live_head
+              COARSE_EVIDENCE=$live_evidence
+              RUN_SOURCE=coarse
+            fi
+          fi
         else
           RUN_ATTRIBUTION_FAULT="run on $run_branch is unattributable: task branch not recorded"
         fi

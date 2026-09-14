@@ -24,6 +24,7 @@ install_marker_fixture() { # <repo>
     "$repo/node_modules/typebox"
   cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$repo/.pi/extensions/"
   cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$ROOT/.pi/extensions/lib/fm-async-exec.ts" \
+    "$ROOT/.pi/extensions/lib/fm-native-contract.ts" \
     "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$ROOT/.pi/extensions/lib/fm-operational-input.ts" \
     "$ROOT/.pi/extensions/lib/fm-pi-loaded-marker.ts" "$ROOT/.pi/extensions/lib/fm-pi-prompt-delivery.ts" \
     "$repo/.pi/extensions/lib/"

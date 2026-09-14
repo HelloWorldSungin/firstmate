@@ -1509,7 +1509,9 @@ test_an_unknown_milestone_is_a_usage_error() {
 test_the_merge_path_posts_its_own_milestones() {
   local dir out rc body
   dir=$(board_case mergepath)
-  mkdir -p "$dir/wt" "$dir/projects/widget"
+  mkdir -p "$dir/wt" "$dir/projects/widget" "$dir/data"
+  # The merge guard must resolve a real home before proving no delivery hold.
+  cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
   # `gh api` is the fake GitHub; every other `gh` call fm-pr-check.sh makes
   # answers as the PR-head lookup, and gh-axi records the merge.
   mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
@@ -1563,7 +1565,9 @@ SH
 test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable() {
   local dir out rc
   dir=$(board_case mergepath-refused)
-  mkdir -p "$dir/wt" "$dir/projects/widget"
+  mkdir -p "$dir/wt" "$dir/projects/widget" "$dir/data"
+  # The merge guard must resolve a real home before proving no delivery hold.
+  cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
   mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
   cat > "$dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash

@@ -440,10 +440,11 @@ fm_launch_model_flag() {
 }
 
 # fm_launch_effort_flag: render the per-harness effort flag for <harness> given
-# <effort>, or nothing when the effort is empty/default, the harness has no
-# effort flag, or the level is outside that harness's verified vocabulary.
+# <effort> and optional <model>, or nothing when effort is empty/default or
+# unsupported. Pi native ultra requires an explicit codex-native model and
+# renders its provider flag rather than Pi's ordinary thinking flag.
 fm_launch_effort_flag() {
-  local harness=$1 effort=$2
+  local harness=$1 effort=$2 model=${3:-}
   [ -n "$effort" ] && [ "$effort" != default ] || return 0
   case "$harness" in
     claude)
@@ -468,9 +469,18 @@ fm_launch_effort_flag() {
         low|medium|high) printf -- '--reasoning-effort %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac
       ;;
-    pi|pi-signed|omp)
-      # Pi and pi-signed 0.82.0 both accept the full shared effort vocabulary,
-      # including max, through their --thinking flag.
+    pi|pi-signed)
+      if [ "$effort" = ultra ]; then
+        "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-harness.sh" validate-native-effort "$harness" "$model" "$effort" || return 1
+        printf -- '--codex-effort %s ' "$(fm_launch_shell_quote ultra)"
+        return 0
+      fi
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(fm_launch_shell_quote "$effort")" ;;
+      esac
+      ;;
+    omp)
+      # OMP retains the shared effort vocabulary through its --thinking flag.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(fm_launch_shell_quote "$effort")" ;;
       esac

@@ -288,6 +288,24 @@ test_adapter_bindings_are_single_pass() {
   pass "adapter path bindings render once and reject duplicate or incomplete bindings"
 }
 
+test_pi_native_effort_uses_provider_flag() {
+  local harness model output
+  for harness in pi pi-signed; do
+    assert_eq "$(fm_launch_effort_flag "$harness" ultra codex-native/gpt-6)" "--codex-effort 'ultra' " \
+      "$harness native ultra must reach the provider flag"
+    assert_eq "$(fm_launch_effort_flag "$harness" high codex-native/gpt-6)" "--thinking 'high' " \
+      "$harness ordinary effort must retain the thinking flag"
+    for model in '' default openai-codex/gpt-6 codex-native/; do
+      if output=$(fm_launch_effort_flag "$harness" ultra "$model" 2>&1); then
+        fail "$harness accepted native ultra without an explicit native model: $model ($output)"
+      fi
+    done
+  done
+  assert_eq "$(fm_launch_effort_flag omp ultra codex-native/gpt-6)" "" \
+    "OMP must not acquire Pi native provider effort"
+  pass "Pi native ultra requires an explicit provider model and preserves ordinary effort rendering"
+}
+
 test_rovo_override_keeps_paths_and_effort_together() {
   local data state flag parsed effort
   data="$TMP_LAUNCH_ROOT/rovo data'quote"; state="$TMP_LAUNCH_ROOT/rovo state"
@@ -310,6 +328,7 @@ test_rovo_override_keeps_paths_and_effort_together() {
 }
 
 test_adapter_bindings_are_single_pass
+test_pi_native_effort_uses_provider_flag
 test_rovo_override_keeps_paths_and_effort_together
 test_render_substitutes_operational_input
 test_render_rejects_unknown_placeholder

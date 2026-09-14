@@ -3,6 +3,7 @@
 # Each entrypoint calls setup and seed functions in its own process, creating
 # fresh source/home/lab/evidence state and installing cleanup before provision.
 # No fixture state or pool slot is transferred between entrypoints.
+# FM_HERDR_LAB_LABEL selects the task label used to generate a fresh lab name.
 
 fail() { FIXTURE_FAILED=1; printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -22,7 +23,6 @@ presentation_fixture_setup() {
   command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found"; exit 0; }
   [ -x "$HERDR_LAB_HELPER" ] || { echo "skip: Herdr lab helper not executable at $HERDR_LAB_HELPER"; exit 0; }
 
-  REAL_HERDR=$(command -v herdr)
   REAL_TREEHOUSE=$(command -v treehouse)
   HERDR_ORIGINAL_PATH=$PATH
   TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
@@ -41,15 +41,15 @@ presentation_fixture_setup() {
   : > "$MOVE_CALL_LOG"
   : > "$FOCUS_AUDIT_LOG"
   REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
-  export REAL_HERDR REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
+  export REAL_TREEHOUSE REAL_MOVER HERDR_CALL_LOG TREEHOUSE_CALL_LOG MOVE_CALL_LOG FOCUS_AUDIT_LOG HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
   export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL TMP_ROOT
 
   # Log every production-adapter call, remove its already-validated trailing
   # session flag, and send the operation through the lab helper so that helper
   # remains the sole process which appends the real trailing session flag.
   # The adapter's deliberately session-independent version read cannot pass the
-  # helper's leading-option guard, so the wrapper sends only that read straight
-  # to the absolute real binary with the same explicit trailing lab session.
+  # helper's leading-option guard, so derive that read from its guarded status
+  # response instead of bypassing the helper.
   cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -80,7 +80,10 @@ for arg in "$@"; do
   esac
 done
 if [ "${1:-}" = --version ]; then
-  exec env PATH="$HERDR_ORIGINAL_PATH" "$REAL_HERDR" "$@" --session "$HERDR_LAB_SESSION"
+  [ "$#" -eq 1 ] || exit 1
+  status=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" status --json) || exit 1
+  printf '%s' "$status" | jq -er '.client.version | select(type == "string" and length > 0) | "herdr \(.)"'
+  exit "$?"
 fi
 focus_snapshot() {
   local list row workspace tab tabs
@@ -271,7 +274,7 @@ SH
   herdr_forget_inherited_pane
 
   HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
-    "$HERDR_LAB_HELPER" name fm-herdr-presentation-projection)
+    "$HERDR_LAB_HELPER" name "${FM_HERDR_LAB_LABEL:-fm-herdr-presentation-projection}")
   export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
   LAB_READY=0
   RECORDED_WORKTREES="$EVIDENCE_ROOT/worktrees"

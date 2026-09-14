@@ -184,15 +184,14 @@ PER_SCRIPT_TIMEOUT_SET=
 # is accepted rather than widened (HelloWorldSungin/firstmate#256).
 #
 # The arithmetic is replacement, not addition: a hung script spends the bound
-# INSTEAD of its own healthy slot. The current portable-serial hint table totals
-# about 6188s over eight shards, with the slowest near 774s. Replacing its ~31s
-# average script with 480s puts script time near 1223s, beyond the 1200s CI cap
-# before checkout and bootstrap. A hung script can therefore lose per-script
-# attribution to the enclosing job cancellation; healthy estimates retain about
-# seven minutes for setup and runner variability. Neither deadline is widened.
+# INSTEAD of its own healthy slot. The merged portable-serial hint table totals
+# about 6572s over eight shards, with the slowest near 822s. Replacing its ~32s
+# average script with 480s puts script time near 1270s, inside the 1800s CI cap
+# with about nine minutes left for setup and runner variability. The script
+# bound stays unchanged; the serial job adopts upstream's 30-minute cap.
 # real-Herdr is 420s less its ~35s mean slot plus 480s, inside its 1200s step cap.
-# portable-parallel is tighter: CI runs that lane serially, so ~422s less its
-# ~38s mean slot plus 480s is ~864s, already past its 600s job cap before setup.
+# portable-parallel is tighter: CI runs that lane serially, so ~545s less its
+# ~45s mean slot plus 480s is ~980s, already past its 600s job cap before setup.
 # That lane can therefore lose per-script attribution to a job cancellation.
 # Raising the script bound would not remedy that enclosing-job limit.
 #
@@ -325,6 +324,7 @@ family_for_basename() {
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
     fm-tool-update-check.test.sh|\
+    fm-mail.test.sh|fm-mail-check.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-recovery-loop.test.sh|\
     fm-watch-triage.test.sh|fm-watch-triage-waits.test.sh|fm-task-inbox.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
@@ -336,13 +336,15 @@ family_for_basename() {
     fm-backend-herdr-launcher-workspace-e2e.test.sh|\
     fm-backend-herdr-prune-safety-e2e.test.sh|fm-backend-herdr-respawn-idem-e2e.test.sh|\
     fm-backend-herdr-focus-flash-e2e.test.sh|\
+    fm-backend-herdr-stale-active-tab-e2e.test.sh|\
+    fm-backend-herdr-agent-exit-shell-e2e.test.sh|\
     fm-herdr-session-cleanup-e2e.test.sh|\
     fm-backend-herdr-smoke.test.sh|fm-backend-herdr-workspace-per-home-e2e.test.sh|\
     fm-control-herdr-smoke.test.sh)
       printf '%s\n' real-herdr-gated
       ;;
     fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
-    fm-remote-doctor.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
+    fm-remote-doctor.test.sh|fm-remote-herdr-guard.test.sh|fm-remote-job.test.sh|fm-remote-job-orphan-reap.test.sh|\
     fm-remote-job-worker-leak.test.sh|fm-remote-transport-lanes.test.sh|\
     fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
     fm-remote-secondmate-trace-context.test.sh|\
@@ -366,6 +368,7 @@ family_for_basename() {
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-dual-supervision-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|\
+    fm-pi-codex-native.test.sh|\
     fm-bearings-board-lavish-live-e2e.test.sh|\
     fm-claude-stop-autoarm-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
@@ -404,7 +407,7 @@ family_for_basename() {
     fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
-    fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
+    fm-afk-contract.test.sh|fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' afk
       ;;
     fm-bearings-board-render.test.sh|fm-bearings-snapshot.test.sh|\
@@ -525,16 +528,17 @@ EOF
 list_portable_parallel_1() {
   cat <<'EOF'
 tests/fm-captain-hold-lifecycle.test.sh
-tests/fm-pr-merge.test.sh
-tests/fm-crew-state.test.sh
-tests/fm-backend-herdr.test.sh
-tests/fm-cd-pretool-check.test.sh
+tests/fm-test-run.test.sh
+tests/fm-x-mode.test.sh
+tests/fm-brief.test.sh
+tests/fm-send-strict.test.sh
 tests/fm-grok-harness.test.sh
-tests/fm-herdr-lab.test.sh
+tests/fm-send-popup-settle.test.sh
 tests/fm-pi-primary-types.test.sh
-tests/fm-review-diff.test.sh
+tests/fm-spawn-batch.test.sh
 tests/fm-composer-ghost.test.sh
-tests/fm-send-settle.test.sh
+tests/fm-ensure-agents-md.test.sh
+tests/fm-transition-lib.test.sh
 EOF
 }
 
@@ -542,18 +546,17 @@ EOF
 list_portable_parallel_2() {
   cat <<'EOF'
 tests/fm-lint.test.sh
-tests/fm-test-run.test.sh
-tests/fm-x-mode.test.sh
+tests/fm-pr-merge.test.sh
+tests/fm-crew-state.test.sh
 tests/fm-arm-pretool-check.test.sh
-tests/fm-brief.test.sh
-tests/fm-send-strict.test.sh
-tests/fm-send-popup-settle.test.sh
+tests/fm-backend-herdr.test.sh
+tests/fm-cd-pretool-check.test.sh
+tests/fm-herdr-lab.test.sh
 tests/fm-composer-lib.test.sh
+tests/fm-review-diff.test.sh
 tests/fm-tmux-submit-busy.test.sh
-tests/fm-spawn-batch.test.sh
-tests/fm-ensure-agents-md.test.sh
+tests/fm-send-settle.test.sh
 tests/fm-supervision-instructions.test.sh
-tests/fm-transition-lib.test.sh
 EOF
 }
 
@@ -645,6 +648,7 @@ list_portable_serial() {
 # balance rather than coverage. That doc owns the refresh procedure.
 portable_serial_weight_hints() {
   cat <<'EOF'
+tests/fm-afk-contract.test.sh 3000
 tests/fm-afk-inject-e2e.test.sh 35792
 tests/fm-afk-pi-dual-supervision-e2e.test.sh 109
 tests/fm-afk-pi-herdr-return-e2e.test.sh 100
@@ -661,7 +665,7 @@ tests/fm-backend-tmux-smoke.test.sh 393
 tests/fm-backend-zellij-smoke.test.sh 55
 tests/fm-backend-zellij.test.sh 10313
 tests/fm-backend.test.sh 22748
-tests/fm-backlog-atomicity.test.sh 154917
+tests/fm-backlog-atomicity.test.sh 161989
 tests/fm-backlog-handoff.test.sh 54825
 tests/fm-bearings-board-lavish-live-e2e.test.sh 117
 tests/fm-bearings-board-render.test.sh 17024
@@ -671,7 +675,7 @@ tests/fm-bootstrap-network-parallel.test.sh 20354
 tests/fm-bootstrap.test.sh 75613
 tests/fm-branch-supervision.test.sh 9222
 tests/fm-brief-repo-lib.test.sh 227
-tests/fm-busy-adapter-wiring.test.sh 29970
+tests/fm-busy-adapter-wiring.test.sh 49731
 tests/fm-busy-state.test.sh 3171
 tests/fm-calm-pi-extension.test.sh 52972
 tests/fm-check-unregister.test.sh 565
@@ -684,7 +688,7 @@ tests/fm-cmux-claude-composer-live-e2e.test.sh 92
 tests/fm-codex-continuity-live-e2e.test.sh 108
 tests/fm-composer-matrix-live-e2e.test.sh 114
 tests/fm-control-relaunch.test.sh 72543
-tests/fm-control.test.sh 38952
+tests/fm-control.test.sh 54301
 tests/fm-cursor-harness.test.sh 30129
 tests/fm-cursor-primary-live-e2e.test.sh 131
 tests/fm-cursor-primary.test.sh 55508
@@ -720,7 +724,7 @@ tests/fm-gitignore-config.test.sh 112
 tests/fm-gotmp.test.sh 2157
 tests/fm-grok-continuity-live-e2e.test.sh 159
 tests/fm-grok-stop-live-e2e.test.sh 92
-tests/fm-guard-stale-banner.test.sh 13176
+tests/fm-guard-stale-banner.test.sh 32981
 tests/fm-harness-adapter-instructions-live-e2e.test.sh 107
 tests/fm-harness-adapter-references.test.sh 118
 tests/fm-harness-liveness-drift-live-e2e.test.sh 856
@@ -728,7 +732,7 @@ tests/fm-herdr-session-cleanup.test.sh 6858
 tests/fm-herdr-submit-confirm-live-e2e.test.sh 118
 tests/fm-herdr-version-floor-live-e2e.test.sh 93
 tests/fm-home-summary-refresh.test.sh 39231
-tests/fm-inactive-reconcile.test.sh 48508
+tests/fm-inactive-reconcile.test.sh 74399
 tests/fm-issue-linkage.test.sh 17659
 tests/fm-issue-writeback.test.sh 29552
 tests/fm-kimi-harness.test.sh 20521
@@ -742,14 +746,14 @@ tests/fm-muse-signals-live-e2e.test.sh 90
 tests/fm-nm-test-contract.test.sh 812
 tests/fm-no-mistakes-required-gate.test.sh 4578
 tests/fm-no-mistakes-required.test.sh 370
-tests/fm-omp-harness.test.sh 20362
+tests/fm-omp-harness.test.sh 59969
 tests/fm-omp-primary-live-e2e.test.sh 187
-tests/fm-on.test.sh 12020
+tests/fm-on.test.sh 34087
 tests/fm-opencode-primary-live-e2e.test.sh 112
 tests/fm-operational-input.test.sh 308
 tests/fm-outcome-manifest.test.sh 8021
 tests/fm-peek-remote.test.sh 1018
-tests/fm-pending-reply.test.sh 30068
+tests/fm-pending-reply.test.sh 86711
 tests/fm-pi-branch-extension.test.sh 176128
 tests/fm-pi-branch-live-e2e.test.sh 163
 tests/fm-pi-branch-responsiveness-live-e2e.test.sh 13245
@@ -758,7 +762,7 @@ tests/fm-pi-primary-live-e2e.test.sh 132
 tests/fm-pi-watch-extension.test.sh 62408
 tests/fm-pi-windows-shell-invocation.test.sh 5121
 tests/fm-pointer-check.test.sh 1314
-tests/fm-pr-check-security.test.sh 171211
+tests/fm-pr-check-security.test.sh 172215
 tests/fm-pr-status.test.sh 420
 tests/fm-procevent-quota.test.sh 1949
 tests/fm-procevent-when.test.sh 17550
@@ -772,6 +776,7 @@ tests/fm-recall.test.sh 60802
 tests/fm-remote-backlog-handoff.test.sh 109295
 tests/fm-remote-doctor.test.sh 5335
 tests/fm-remote-entrypoint.test.sh 167
+tests/fm-remote-herdr-guard.test.sh 1500
 tests/fm-remote-job-orphan-reap.test.sh 2972
 tests/fm-remote-job-worker-leak.test.sh 3854
 tests/fm-remote-job.test.sh 97985
@@ -779,7 +784,7 @@ tests/fm-remote-reply.test.sh 101690
 tests/fm-remote-secondmate-lifecycle-e2e.test.sh 292054
 tests/fm-remote-secondmate-parent-binding.test.sh 103889
 tests/fm-remote-secondmate-trace-context.test.sh 69915
-tests/fm-remote-transport-lanes.test.sh 63140
+tests/fm-remote-transport-lanes.test.sh 63976
 tests/fm-rovo-harness.test.sh 14983
 tests/fm-rovo-signals-live-e2e.test.sh 113
 tests/fm-run-attribution-legacy-transition.test.sh 3737
@@ -788,7 +793,7 @@ tests/fm-secondmate-harness.test.sh 157114
 tests/fm-secondmate-lifecycle-e2e.test.sh 8793
 tests/fm-secondmate-liveness.test.sh 18146
 tests/fm-secondmate-reconcile.test.sh 98643
-tests/fm-secondmate-restart.test.sh 108981
+tests/fm-secondmate-restart.test.sh 119085
 tests/fm-secondmate-safety.test.sh 65616
 tests/fm-secondmate-sync.test.sh 56818
 tests/fm-send-inbox-doorbell-live-e2e.test.sh 113
@@ -1467,7 +1472,7 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
     .pi/extensions/fm-branch-supervision.ts|.pi/extensions/lib/fm-async-exec.ts|\
-    .pi/extensions/lib/fm-branch-dispatch.ts)
+    .pi/extensions/lib/fm-branch-dispatch.ts|.pi/extensions/lib/fm-native-contract.ts)
       # The portable suites that actually load these files, named one by one.
       # Left unmapped, a Pi extension library resolves through the reference
       # scan, which widens to each referencing suite's WHOLE family - and

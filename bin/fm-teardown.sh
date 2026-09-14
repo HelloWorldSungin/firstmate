@@ -21,11 +21,12 @@
 # that withdrawal the next session start would replay the close and remove the
 # very record those refusals just preserved, which is the opposite of what each
 # of them is for.
-# A transition that fails is fatal and loud, preserves its pending-close record, and
+# A close that fails is fatal and loud, preserves its pending-close record, and
 # is retried by the next session start. The transition is skipped on a
-# config/backlog-backend=manual home and in a home that keeps no
-# data/backlog.md; those cases print the manual follow-up. An automatic-backend
-# home with a backlog but no compatible tasks-axi refuses before cleanup.
+# config/backlog-backend=manual home and in a markdown home that keeps no
+# data/backlog.md; those cases print the manual follow-up. A configured
+# non-markdown adapter remains active without a markdown file; any active
+# automatic backend without compatible tasks-axi refuses before cleanup.
 # None of this loosens the landed-work gates below: the transition runs only on
 # the paths that already proceed to remove the record.
 # Ordinary tracked-output cleanup also reaps exactly refs/heads/fm/<task-id>, never the
@@ -55,11 +56,12 @@
 # The close - and only the close - is replaced by `tasks-axi reopen` with the
 # deliverable recorded while the backlog item is still an open captain call
 # (bin/fm-captain-hold.sh `open` owns that predicate), because the policy holds
+# the very work item a question gates and cleanup must never retire the
+# captain's own question.
 # NOTE: this uses `open`'s silent default and depends only on its unchanged
 # 0/1/2 exit-code contract. The optional `--identity` output that bin/fm-watch.sh
 # asks for prints only on an exit 0 and changes nothing read here.
-# the very work item a question gates and cleanup must never retire the
-# captain's own question. The same pending-close record carries that intent as
+# The same pending-close record carries that intent as
 # `mode=retain`, so an interrupted cleanup replays the retention rather than a
 # close. "Cannot tell" refuses before any destructive step, --force does not
 # lift the deferral (it authorizes discarding unlanded WORK, never the
@@ -1010,7 +1012,7 @@ remote_secondmate_teardown() {
   mv -f -- "$tmp" "$SECONDMATE_REG"
   status_retire_presentation_task "$STATE" "$ID" || return 1
   fm_backlog_atomic_transition remove "$STATE/$ID.meta" "task record" "$STATE" || return 1
-  rm -f -- "$STATE/$ID.status" "$STATE/$ID.turn-ended" \
+  rm -f -- "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
     "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions" \
     "$STATE/.$ID.open-decisions-cursor"
   printf 'teardown %s complete (remote %s:%s)\n' "$ID" "$remote_host" "$remote_home"
@@ -1959,10 +1961,13 @@ withdraw_pending_backlog_close() {
 # invariant). This prints what already happened, so the follow-up wording stays
 # only where a human still owes the edit.
 backlog_refresh_reminder() {
-  local backlog_display root
+  local backlog_display root backend=markdown
   [ "$KIND" = secondmate ] && return 0
   [ "$CLEANUP_RECOVERY" = orca ] && return 0
-  if root=$(fm_backlog_root "$DATA") && [ "$(fm_tasks_axi_backend "$root")" != markdown ]; then
+  if root=$(fm_backlog_root "$DATA"); then
+    backend=$(fm_tasks_axi_backend "$root") || return 2
+  fi
+  if [ "$backend" != markdown ]; then
     backlog_display="this home's configured tasks-axi backend (data directory $DATA)"
   elif backlog_display=$(fm_backlog_file "$DATA"); then
     :
@@ -3499,7 +3504,7 @@ cleanup_firstmate_home_children() {
     retire_busy_state "$sub_state" "$child_id" "$child_busy_gen" || return 1
     status_retire_presentation_task "$sub_state" "$child_id" || return 1
     fm_backlog_atomic_transition remove "$sub_state/$child_id.meta" "task record" "$sub_state" || return 1
-    rm -f "$sub_state/$child_id.turn-ended" \
+    rm -f "$sub_state/$child_id.turn-ended" "$sub_state/$child_id.progress" \
       "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.omp-ext.ts" \
       "$sub_state/$child_id.run-step" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
@@ -3972,7 +3977,7 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" \
+rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.omp-ext.ts" "$STATE/$ID.run-step" \
   "$STATE/$ID.grok-turnend-token" "$STATE/$ID.kimi-turnend-token" \
   "$STATE/$ID.pr-status" "$STATE/$ID.gbrain" "$STATE/$ID.usage-sessions" \

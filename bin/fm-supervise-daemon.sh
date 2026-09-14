@@ -187,6 +187,10 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # classification predicates have exactly one definition.
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
+# The away-posture record owner; declared waits retain the shared bounded
+# recheck cadence while this daemon owns away-mode supervision.
+# shellcheck source=bin/fm-afk-contract.sh
+. "$FM_DAEMON_DIR/fm-afk-contract.sh"
 
 # Supervisor-pane discovery (FM_SUPERVISOR_TARGET_DEFAULT,
 # FM_SUPERVISOR_BACKEND_DEFAULT, discover_supervisor_target,
@@ -294,7 +298,8 @@ afk_exit() {  # <state>
 }
 
 # should_exit_afk: encodes firstmate's afk-exit contract as a testable function.
-#   afk inactive            -> 1 (nothing to exit)
+#   away posture inactive   -> 1 (nothing to exit; the posture is the record
+#                              bin/fm-afk-contract.sh owns, or the legacy flag)
 #   message has marker      -> 1 (internal escalation; stay afk)
 #   message is /afk command -> 1 (re-entering/extending afk; stay afk)
 #   anything else           -> 0 (captain is back; exit afk)
@@ -302,7 +307,7 @@ afk_exit() {  # <state>
 # alive. A false exit is self-correcting (the captain re-runs /afk).
 should_exit_afk() {  # <state> <message-text>
   local state=$1 msg=$2
-  afk_active "$state" || return 1
+  afk_active "$state" || fm_afk_contract_present "$state" || return 1
   message_is_injection "$msg" && return 1
   case "$msg" in
     /afk*) return 1 ;;
@@ -543,7 +548,9 @@ pause_marker_record() {  # <window> <state> - create if absent
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
-  pause_streak_sync "$(pause_streak_path "$key" "$state")" "$(last_status_line "$state/$task.status")" || true
+  if pause_streak_sync "$(pause_streak_path "$key" "$state")" "$(last_status_line "$state/$task.status")"; then
+    rm -f "$state/.subsuper-pause-until-due-$key"
+  fi
   [ -e "$marker" ] || _now > "$marker"
 }
 
@@ -553,7 +560,7 @@ pause_marker_record() {  # <window> <state> - create if absent
 pause_marker_remove() {  # <window> <state>
   local win=$1 state=$2 key
   key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-paused-$key" "$(pause_streak_path "$key" "$state")"
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key" "$(pause_streak_path "$key" "$state")"
 }
 
 clear_pause_tracking() {  # <window> <state>
@@ -561,10 +568,10 @@ clear_pause_tracking() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
-  rm -f "$state/.subsuper-paused-$key" "$(pause_streak_path "$key" "$state")" "$state/.subsuper-stale-$key" \
+  rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key" "$(pause_streak_path "$key" "$state")" "$state/.subsuper-stale-$key" \
     "$(wedge_holds_path "$key" "$state")" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
-    "$state/.paused-streak-$watcher_key" \
+    "$state/.paused-streak-$watcher_key" "$state/.paused-until-due-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
     "$state/.wedge-holds-$watcher_key" \
     "$state/.writing-since-$watcher_key" "$state/.writing-resurfaced-$watcher_key"
@@ -1083,7 +1090,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
   local state=$1 now due f key task win marker age last max_defer oldest pause_secs streak_file progress \
-    holds_file holds hold_max escalated
+    holds_file holds hold_max escalated marker_epoch until bounded_until pause_reason
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1220,11 +1227,28 @@ housekeeping() {  # <state>
       reconcile_pause_tracking "$win" "$state" "$last"
       continue
     fi
-    age=$(( now - $(cat "$marker" 2>/dev/null || echo "$now") ))
     streak_file=$(pause_streak_path "$key" "$state")
-    pause_streak_sync "$streak_file" "$last" || true
+    if pause_streak_sync "$streak_file" "$last"; then
+      rm -f "$state/.subsuper-pause-until-due-$key"
+    fi
     pause_secs=$(pause_resurface_window "$(pause_streak_count "$streak_file")")
-    [ "$age" -ge "$pause_secs" ] || continue
+    marker_epoch=$(cat "$marker" 2>/dev/null || echo "$now")
+    case "$marker_epoch" in ''|*[!0-9]*) marker_epoch=$now ;; esac
+    age=$(( now - marker_epoch ))
+    due="$state/.subsuper-pause-until-due-$key"
+    until=
+    bounded_until=0
+    if until=$(status_paused_until "$last"); then
+      if [ "$now" -lt "$until" ] && [ "$age" -lt "$pause_secs" ]; then
+        continue
+      elif [ "$now" -lt "$until" ]; then
+        bounded_until=1
+      elif [ "$(cat "$due" 2>/dev/null || true)" = "$until" ]; then
+        [ "$age" -ge "$pause_secs" ] || continue
+      fi
+    else
+      [ "$age" -ge "$pause_secs" ] || continue
+    fi
     # Endpoint-readability probe only: exit code 2 means the capture failed, so the
     # endpoint is gone and there is nothing left to re-surface. The busy/idle verdict
     # is deliberately discarded here. Do NOT reinstate a `0)` arm dropping the marker
@@ -1233,17 +1257,26 @@ housekeeping() {  # <state>
     # restart forever and the wait would never mature into its one recheck.
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      2) rm -f "$marker" "$streak_file" ;;
+      2) rm -f "$marker" "$streak_file" "$due" ;;
       *)
         last=$(last_status_line "$state/$task.status")
         if [ -n "$last" ] && status_is_captain_held "$last"; then
           if escalate_add "$state" "captain-held ${age}s (awaiting the captain, answer the held decision or release the hold): $win"; then
             _now > "$marker"
+            pause_streak_bump "$streak_file" "$last"
           fi
         elif [ -n "$last" ] && status_is_paused "$last"; then
-          if escalate_add "$state" "paused ${age}s (awaiting external, recheck whether the wait still holds): $win"; then
+          if [ "$bounded_until" -eq 1 ]; then
+            pause_reason="paused ${age}s (awaiting external, the declared time is beyond the recheck cadence; confirm the wait still holds): $win"
+          else
+            pause_reason="paused ${age}s (awaiting external, recheck whether the wait still holds): $win"
+          fi
+          if escalate_add "$state" "$pause_reason"; then
             _now > "$marker"
             pause_streak_bump "$streak_file" "$last"
+            if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
+              printf '%s\n' "$until" > "$due"
+            fi
           fi
         else
           rm -f "$marker" "$streak_file"
@@ -1416,6 +1449,10 @@ is_wake_reason() {  # <reason>
 
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
+# A decision-owned queued row arrives as needs-decision:<files> rather than
+# signal:<files> (bin/fm-watch.sh). Classify it as a signal so the capture file
+# is populated, suppression markers commit, and the digest names the decision
+# instead of "unknown wake:".
 handle_wake() {  # <reason> <state>
   local reason=$1 state=$2 decision action distilled task last stale_detail
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
@@ -1427,7 +1464,12 @@ handle_wake() {  # <reason> <state>
     return
   fi
   case "$reason" in
-    signal:*) kind=signal; arg="${reason#signal: }"
+    signal:*|needs-decision:*)
+              kind=signal
+              case "$reason" in
+                needs-decision:*) arg="${reason#needs-decision: }" ;;
+                *) arg="${reason#signal: }" ;;
+              esac
               decision=$(FM_STATUS_SPAN_ENDPOINT_FILE="$capture" classify_signal "$arg" "$state") ;;
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
