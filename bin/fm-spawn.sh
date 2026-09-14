@@ -43,7 +43,7 @@
 #   transaction; call fm-control rather than this flag directly unless you are
 #   deliberately re-launching an already-stopped task. Every identity axis -
 #   backend, kind, project or home, worktree, endpoint - comes from the task's
-#   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
+#   validated state/<id>.meta, so --backend, --scout, --design, --secondmate, a project
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
@@ -179,9 +179,12 @@
 #   config reread generations because the new agent reads the converged files.
 #   --design records kind=design in the task's meta (interactive ADR deliverable;
 #   see the design-profile skill) and, from the one bin/fm-design-skills.sh
-#   resolve that gates the dispatch, records design_skills_plugin=,
+#   resolve that gates a fresh dispatch, records design_skills_plugin=,
 #   design_skills_version=, and design_skills_updated= so the auto-updating
-#   plugin release that informed the interview stays readable after cleanup;
+#   plugin release that informed the interview stays readable after cleanup.
+#   A --relaunch of that same design task reuses the recorded release and the
+#   dispatch-pinned skill paths rather than resolving again
+#   (docs/fleet-data-contracts.md "The design task's plugin release").
 #   --scout records kind=scout (report deliverable,
 #   scratch worktree; see AGENTS.md task lifecycle); --secondmate records
 #   kind=secondmate and launches in a provisioned firstmate home; the default is kind=ship.
@@ -557,7 +560,7 @@ esac
 # refusal rather than a silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
-  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
+  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--design/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
 else
@@ -1978,8 +1981,10 @@ SOURCE_BRIEF=$BRIEF
 # resolve call serves as both the dispatch gate and the provenance record, so
 # what is recorded is exactly what was verified present at dispatch. Reading the
 # plugin later - at cleanup, say - could name a version that only arrived after
-# the interview ended, which is worse than recording none. A relaunch resolves
-# again, so the recorded value always names this task's most recent dispatch.
+# the interview ended, which is worse than recording none. A relaunch of the
+# same design task reuses that recorded release and the worker-facing pinned
+# paths rather than resolving again
+# (docs/fleet-data-contracts.md "The design task's plugin release").
 # The resolver's own refusal already names the missing install or skill.
 DESIGN_SKILLS_PLUGIN=
 DESIGN_SKILLS_VERSION=
@@ -1987,45 +1992,28 @@ DESIGN_SKILLS_UPDATED=
 DESIGN_SKILLS_GRILLING=
 DESIGN_SKILLS_DOMAIN_MODELING=
 DESIGN_SKILLS_BINDING=
-# Matches the durable manifest's free-text cap (FM_OUTCOME_TEXT_MAX in
-# bin/fm-outcome-lib.sh), so a value recorded here can always be published.
-DESIGN_SKILLS_FIELD_MAX=240
-# Collapses to the same single-line, trimmed, capped shape the durable manifest
-# applies, so the emptiness check below sees exactly what would be published.
-design_skills_field() {  # <resolve-json> <field> -> one meta-safe line
-  printf '%s\n' "$1" \
-    | jq -r --arg field "$2" '.[$field] // ""' \
-    | tr -d '\000-\037\177' \
-    | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//' \
-    | cut -c "1-$DESIGN_SKILLS_FIELD_MAX"
-}
-design_skill_path() {  # <resolve-json> <skill-key> -> exact absolute path
-  printf '%s\n' "$1" \
-    | jq -er --arg skill "$2" '.skills[$skill] | select(type == "string" and length > 0)'
-}
-design_skill_path_is_safe() {  # <path>
-  case "$1" in
-    /*) ;;
-    *) return 1 ;;
-  esac
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')" = "$1" ]
-}
+# shellcheck source=bin/fm-design-skills-lib.sh
+. "$SCRIPT_DIR/fm-design-skills-lib.sh"
 if [ "$KIND" = design ]; then
-  DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
-    echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
-    exit 1
-  }
-  DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
-  DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
-  DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
-  DESIGN_SKILLS_GRILLING=$(design_skill_path "$DESIGN_SKILLS_RECORD" grilling) || DESIGN_SKILLS_GRILLING=
-  DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$DESIGN_SKILLS_RECORD" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
-  if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
-    || [ -z "$DESIGN_SKILLS_UPDATED" ] \
-    || ! design_skill_path_is_safe "$DESIGN_SKILLS_GRILLING" \
-    || ! design_skill_path_is_safe "$DESIGN_SKILLS_DOMAIN_MODELING"; then
-    echo "error: the installed mattpocock plugin resolved without a usable identity, version, update stamp, and absolute skill paths, so this design task's inputs could not be pinned and recorded; refusing rather than dispatching an untraceable design" >&2
-    exit 1
+  if [ "$RELAUNCH" -eq 1 ]; then
+    adopt_relaunch_design_skills "$RELAUNCH_META" "$ID" || exit 1
+  else
+    DESIGN_SKILLS_RECORD=$("$FM_ROOT/bin/fm-design-skills.sh" resolve) || {
+      echo "error: design spawn requires the captain-installed mattpocock design skills; do not install or copy them from a worker" >&2
+      exit 1
+    }
+    DESIGN_SKILLS_PLUGIN=$(design_skills_field "$DESIGN_SKILLS_RECORD" plugin)
+    DESIGN_SKILLS_VERSION=$(design_skills_field "$DESIGN_SKILLS_RECORD" version)
+    DESIGN_SKILLS_UPDATED=$(design_skills_field "$DESIGN_SKILLS_RECORD" last_updated)
+    DESIGN_SKILLS_GRILLING=$(design_skill_path "$DESIGN_SKILLS_RECORD" grilling) || DESIGN_SKILLS_GRILLING=
+    DESIGN_SKILLS_DOMAIN_MODELING=$(design_skill_path "$DESIGN_SKILLS_RECORD" domain_modeling) || DESIGN_SKILLS_DOMAIN_MODELING=
+    if [ -z "$DESIGN_SKILLS_PLUGIN" ] || [ -z "$DESIGN_SKILLS_VERSION" ] \
+      || [ -z "$DESIGN_SKILLS_UPDATED" ] \
+      || ! design_skill_path_is_safe "$DESIGN_SKILLS_GRILLING" \
+      || ! design_skill_path_is_safe "$DESIGN_SKILLS_DOMAIN_MODELING"; then
+      echo "error: the installed mattpocock plugin resolved without a usable identity, version, update stamp, and absolute skill paths, so this design task's inputs could not be pinned and recorded; refusing rather than dispatching an untraceable design" >&2
+      exit 1
+    fi
   fi
   DESIGN_SKILLS_BINDING=$(jq -cn \
     --arg plugin "$DESIGN_SKILLS_PLUGIN" \
@@ -3123,13 +3111,7 @@ TASK_TMP="/tmp/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
 
 if [ "$KIND" = design ]; then
-  if [ ! -f "$DESIGN_SKILLS_GRILLING" ] || [ -L "$DESIGN_SKILLS_GRILLING" ] \
-    || [ ! -r "$DESIGN_SKILLS_GRILLING" ] \
-    || [ ! -f "$DESIGN_SKILLS_DOMAIN_MODELING" ] || [ -L "$DESIGN_SKILLS_DOMAIN_MODELING" ] \
-    || [ ! -r "$DESIGN_SKILLS_DOMAIN_MODELING" ]; then
-    echo "error: a dispatch-pinned mattpocock design skill path disappeared or became unreadable after resolution; refusing instead of silently resolving a different plugin release" >&2
-    exit 1
-  fi
+  design_skill_files_readable || exit 1
   DESIGN_DISPATCH_BRIEF="$TASK_TMP/brief.md"
   DESIGN_DISPATCH_BRIEF_TMP="$TASK_TMP/.brief.${BASHPID:-$$}"
   {
@@ -3722,7 +3704,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo design_skills_plugin design_skills_version design_skills_updated tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree branch project harness kind mode yolo design_skills_plugin design_skills_version design_skills_updated tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
