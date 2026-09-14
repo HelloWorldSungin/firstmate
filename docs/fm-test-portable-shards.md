@@ -73,7 +73,8 @@ Shared scripts use those upstream per-script maxima; fork-only scripts retain th
 The round also includes upstream's retained native-Windows measurement for `tests/fm-pi-windows-shell-invocation.test.sh` and its new live-guard weights.
 The 2026-09-14 refresh takes the maximum of those retained hints and completed passing-script measurements from fork CI runs [34802687283](https://github.com/HelloWorldSungin/firstmate/actions/runs/34802687283) and [34804089007](https://github.com/HelloWorldSungin/firstmate/actions/runs/34804089007).
 The latter's serial lane 5 reached its unchanged 20-minute cap after 16 passing scripts; its completed `FM_TEST_END` records are included explicitly because cancellation prevented a timing artifact.
-These runs provide passing measurements for 200 of the 201 serial scripts; `tests/fm-test-isolation-proof.test.sh` retains its earlier 2567 ms hint, with its corrected assertion passing locally.
+Before the next upstream prefix was included, these runs provided passing measurements for 200 of the 201 serial scripts; `tests/fm-test-isolation-proof.test.sh` retains its earlier 2567 ms hint, with its corrected assertion passing locally.
+The next prefix takes the maximum of each retained fork hint and the upstream endpoint's existing hint.
 Taking maxima preserves native-Windows measurements and earlier slow-run evidence rather than replacing them with portable gate-skip durations.
 A script with no hint receives `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS`; the runner's coverage output reports that unmeasured share.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
@@ -84,22 +85,24 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 Shard count is sized from that total rather than left where an earlier, smaller remainder put it.
 The lane grew from about 19 minutes across 69 scripts to about 58 minutes across 154, which four shards could no longer carry inside the job timeout: on the run above, `portable-serial-2of4` was cancelled at 15 minutes having finished 24 of its 32 scripts, and the hints then put a perfectly balanced quarter at 14.5 minutes, still on the tripwire rather than inside it.
-The refreshed shared hints and retained fork-only hints now put the slowest of eight shards at about 12.89 minutes.
+The merged shared maxima and retained fork-only hints put the slowest of eight shards at about 13.52 minutes.
+The current 206-script serial lane has three unhinted scripts, using the runner's conservative default, and totals 6491397 ms of assignment weight.
+The 30-minute serial job cap adopted from upstream leaves setup and runner-speed margin; the fork's 480-second per-script bound remains unchanged.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 24 | 773453 ms (~12.89 min) |
-| `portable-serial-2of8` | 25 | 773490 ms (~12.89 min) |
-| `portable-serial-3of8` | 26 | 773503 ms (~12.89 min) |
-| `portable-serial-4of8` | 25 | 773453 ms (~12.89 min) |
-| `portable-serial-5of8` | 25 | 773452 ms (~12.89 min) |
-| `portable-serial-6of8` | 25 | 773452 ms (~12.89 min) |
-| `portable-serial-7of8` | 25 | 773453 ms (~12.89 min) |
-| `portable-serial-8of8` | 26 | 773502 ms (~12.89 min) |
-| imbalance | | 51 ms |
+| `portable-serial-1of8` | 26 | 811442 ms (~13.52 min) |
+| `portable-serial-2of8` | 26 | 811429 ms (~13.52 min) |
+| `portable-serial-3of8` | 26 | 811431 ms (~13.52 min) |
+| `portable-serial-4of8` | 26 | 811434 ms (~13.52 min) |
+| `portable-serial-5of8` | 26 | 811434 ms (~13.52 min) |
+| `portable-serial-6of8` | 25 | 811379 ms (~13.52 min) |
+| `portable-serial-7of8` | 25 | 811399 ms (~13.52 min) |
+| `portable-serial-8of8` | 26 | 811449 ms (~13.52 min) |
+| imbalance | | 70 ms |
 
 The watcher triage cases are split into core and wait/decision scripts with one shared fixture owner in `tests/watch-triage-helpers.sh`.
-All 125 original cases remain in exactly one script.
+All 125 original cases remain in exactly one script, with compatible new upstream progress and declared-deadline cases added beside them.
 Their initial passing local measurements were 160205 ms and 191775 ms after CI reached the unchanged 480-second combined-script limit while still passing cases.
 The refreshed CI hints are 236467 ms for core and 292716 ms for waits.
 

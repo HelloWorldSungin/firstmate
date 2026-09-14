@@ -129,6 +129,11 @@ Upstream `kunchenguid/firstmate#3842` adds backlog-backed call identity to the s
 That identity and its release/re-hold reset are adopted while a worker's own paused declaration still routes directly to the fork's widening-cadence owner.
 The backlog read remains outside the secondmate ordinary-poll path.
 
+Upstream `kunchenguid/firstmate#4048` also silences held-task rechecks under its away-posture record and raises the default cadence to four hours.
+Firstmate retained the fork's one-hour base and widening cadence for held tasks and external waits, including during a confirmed away posture.
+The compatible explicit `until` deadline wakes a cleared wait early while a distant deadline remains bounded by the shared cadence.
+`tests/fm-daemon.test.sh` verifies a confirmed posture still resurfaces a held task, and the watcher wait tests exercise early, future, and distant deadlines.
+
 ### Herdr pre-Enter footer read on a native working baseline
 
 The fork skips the pre-Enter rendered-footer read entirely when herdr's native agent-state baseline is already `working`, because the rendered-footer conversion refuses a `working` baseline outright and the read can therefore produce no verdict.
@@ -170,7 +175,8 @@ The rationale beside the constant owns why 480s and what the bound costs each CI
 [`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh) pins the default arming, the opt-out, the exit 124 versus exit 125 distinction, and the signal relay, so an upstream round that rewrites the timeout wiring cannot retire the default silently.
 
 The upstream `kunchenguid/firstmate#3489` rebalance refreshes shared duration hints and raises the portable serial job cap to 20 minutes.
-The fork retains eight shards and its fork-only timing hints, while adopting that cap; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
+The fork retains eight shards and its fork-only timing hints.
+The fork adopts the upstream 30-minute serial job cap and takes per-script maxima across both parents; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
 
 Watcher triage cases are partitioned between `tests/fm-watch-triage.test.sh` and `tests/fm-watch-triage-waits.test.sh`, with shared case definitions in `tests/watch-triage-helpers.sh`, so suite growth does not weaken the per-script bound.
 
@@ -212,6 +218,10 @@ The fork therefore omits upstream's ledger-only parked-run abort path and its te
 Compatible row-format validation lives in the existing relation-table reader; malformed input remains inconclusive so it cannot erase bounded degraded evidence by masquerading as a confirmed absence.
 `tests/fm-teardown.test.sh` requires an unfetched parked run to remain untouched even with a valid terminal exact-HEAD anchor, while fetched equal-or-descendant heads retain their existing abort behavior.
 `tests/fm-crew-state.test.sh` pins valid and invalid calendar dates, malformed rows and anchors, and degraded evidence versus confirmed absence.
+
+Upstream `kunchenguid/firstmate#2881` makes an attributable live run outrank an earlier terminal result.
+That precedence is adopted in the relation-table reader and full-detail reconciliation without widening teardown attribution or replacing the fork's degraded and abandoned verdicts.
+`tests/fm-crew-state.test.sh` covers live-versus-terminal selection alongside the retained attribution cases.
 
 ### Definition-of-done owner carries this fork's ready-to-validate handoff
 
@@ -285,7 +295,10 @@ The streaming-follow-up regression also runs a replacement while away, proving t
 
 Upstream's OMP watcher port in `kunchenguid/firstmate#3867` receives the same standby protection in [`.omp/extensions/fm-primary-omp-watch.ts`](../.omp/extensions/fm-primary-omp-watch.ts), preserving the shared daemon's ownership instead of starting a competing cycle.
 `tests/fm-omp-harness.test.sh` exercises flag-present launch, child retirement, pending-wake preservation, one-cycle return, and replacement through the extension interface.
-This is the existing `.afk` ownership contract, not the later upstream AFK-posture design, and portable extension tests do not establish live OMP vendor compatibility.
+Upstream `kunchenguid/firstmate#4048` adds durable away-posture records and removes the Pi daemon entry path.
+Firstmate retained the Pi/OMP daemon and extension standby contract while adopting the compatible proposal, confirmation, archive, and return flow.
+`tests/fm-afk-launch.test.sh` covers confirmed posture plus Pi/OMP lifecycle preparation, and the existing extension suites retain delivery and one-cycle resumption coverage.
+Portable extension tests do not establish live OMP vendor compatibility.
 
 
 ### Herdr presentation fixture ownership and cleanup
@@ -383,6 +396,13 @@ The rule is written for this fork specifically because the fork is the case that
 A full upstream merge must not restore that instruction, because pointing a fork contributor's `origin` at the parent is the exact misconfiguration hard rule 2 forbids.
 No test guards `CONTRIBUTING.md`'s content, so this ledger entry is the only standing record of intent for that half and must be consulted when a sync round touches the contributor workflow section.
 [`README.md`](../README.md)'s install instruction still clones upstream rather than this fork, a known and deliberately unresolved divergence tracked in `HelloWorldSungin/firstmate#172`, and a sync round must not read it as evidence that this fork intends upstream as its PR base.
+
+### Supervisor-only chat address
+
+Upstream `kunchenguid/firstmate#4075` binds its chat address requirement to every agent reading `AGENTS.md`.
+Firstmate retained the fork's supervisor-role boundary while adopting the upstream chat-only and non-artifact scope.
+`AGENTS.md` owns the address scope, and `bin/fm-dod-lib.sh` owns the worker role delivered at launch.
+`tests/fm-spawn-dispatch-profile.test.sh` consumes actual generated launch commands and verifies that the worker reporting and address exception reaches the harness without rewriting the authored brief.
 
 ### GBrain per-home knowledge memory
 

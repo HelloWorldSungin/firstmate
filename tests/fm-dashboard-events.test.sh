@@ -766,6 +766,7 @@ make_autoarm_primary() {  # <dir> <close-kind>
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'pending:downtime:fixture-generation\n' > "$FM_HOME/state/.watcher-down"
 printf 'stale: fixture-win actionable\n'
 exit 0
 SH
@@ -801,12 +802,14 @@ run_autoarm() {  # <dir> <stderr-file>
 # the only fields two separate runs cannot share - the identity records the
 # claiming process's own start time and its home-scoped command line - so those
 # three are normalized and everything else, the epoch sequence, the recorded
-# outcome, and the presence of each marker, has to match. Normalizing the
-# identity here would hide a claim that recorded none, so the caller asserts the
+# outcome, recovery generation, and marker presence must match.
+# The session pid is also process-specific and is checked before normalization.
+# Normalizing the identity would hide a claim that recorded none, so the caller asserts the
 # line is present before comparing.
 autoarm_ledger() {  # <dir>
   local marker
   sed -e '1s/owner_pid=[0-9]*/owner_pid=PID/' -e '1s/updated_at=[0-9]*/updated_at=AT/' \
+    -e '1s/session_pid=[0-9]*/session_pid=SESSION/' \
     -e '2s/^..*$/identity=RECORDED/' \
     "$1/state/.claude-autoarm-epoch" 2>/dev/null || printf 'epoch absent\n'
   for marker in .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed; do
@@ -859,6 +862,12 @@ test_instrumentation_cannot_change_what_the_stop_autoarm_decides() {
     done
     [ "$(autoarm_ledger "$bare")" = "$(autoarm_ledger "$with")" ] \
       || fail "the $kind-close auto-arm's ledger changed when the emitter ran beside it"
+  done
+
+  for home in "$root/autoarm-actionable-bare" "$root/autoarm-actionable-with"; do
+    grep -q "session_pid=$(cat "$home/state/.lock") recovery_generation=fixture-generation" \
+      "$home/state/.claude-autoarm-epoch" \
+      || fail "the actionable close did not bind its actual session and recovery generation"
   done
 
   # Both closes have to be the ones this test believes it exercised, or the
