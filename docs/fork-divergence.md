@@ -225,6 +225,8 @@ Upstream's byte-identity check between the promotion and brief paths stays green
 The handoff itself went unrecorded here from its introduction until 2026-09-04.
 
 The intent/spec split and current intent overlay from `kunchenguid/firstmate#3597` and `kunchenguid/firstmate#3671` apply to design workers too, while the fork's delivery fragments remain the rendering owner.
+The fork update in [HelloWorldSungin/firstmate#272](https://github.com/HelloWorldSungin/firstmate/pull/272) keeps the design task in one planning conversation, owned by [`design-profile`](../.agents/skills/design-profile/SKILL.md), and preserves its dispatch-pinned skill release on relaunch, owned by [`docs/fleet-data-contracts.md`](fleet-data-contracts.md#the-design-tasks-plugin-release).
+`tests/fm-brief.test.sh`, `tests/fm-design-skills.test.sh`, and `tests/fm-control-relaunch.test.sh` verify that composition alongside upstream task-copy isolation.
 `bin/fm-spawn.sh` reads structural branch and work-item identity from the authored brief, not the derived launch overlay that can repeat intent text.
 
 ### A preserving refusal withdraws the pending backlog close

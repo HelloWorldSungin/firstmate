@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Resolve named skills from the installed mattpocock plugin for a Firstmate
 # design task without installing, updating, copying, pinning, or modifying it.
-# The captain owns plugin lifecycle through Claude's /plugin action.
+# The captain owns plugin lifecycle outside this repository.
+# Workers never install, update, copy, pin, or modify the plugin.
 #
 # Usage:
 #   fm-design-skills.sh resolve [skill-name...]
@@ -41,7 +42,7 @@ command -v jq >/dev/null 2>&1 || {
 
 REGISTRY=${FM_MATTPOCOCK_PLUGIN_REGISTRY:-${CLAUDE_CONFIG_DIR:-${HOME:?}/.claude}/plugins/installed_plugins.json}
 [ -f "$REGISTRY" ] && [ ! -L "$REGISTRY" ] || {
-  echo "error: mattpocock plugin registry is unavailable at $REGISTRY; the captain must install or refresh it with /plugin" >&2
+  echo "error: mattpocock plugin registry is unavailable at $REGISTRY; refresh the captain-owned plugin install. Workers must not install or copy it" >&2
   exit 1
 }
 
@@ -55,7 +56,7 @@ ENTRY=$(jq -cer '
   | select(. != null)
   | {installPath, version: (.version // "unknown"), lastUpdated}
 ' "$REGISTRY" 2>/dev/null) || {
-  echo "error: no active mattpocock-skills@mattpocock install is recorded; the captain must install or refresh it with /plugin" >&2
+  echo "error: no active mattpocock-skills@mattpocock install is recorded; refresh the captain-owned plugin install. Workers must not install or copy it" >&2
   exit 1
 }
 
@@ -71,7 +72,7 @@ case "$INSTALL_PATH" in
     ;;
 esac
 INSTALL_PATH=$(CDPATH='' cd -- "$INSTALL_PATH" 2>/dev/null && pwd -P) || {
-  echo "error: recorded mattpocock plugin install is missing: $INSTALL_PATH; the captain must refresh it with /plugin" >&2
+  echo "error: recorded mattpocock plugin install is missing: $INSTALL_PATH; refresh the captain-owned plugin install. Workers must not install or copy it" >&2
   exit 1
 }
 
@@ -125,7 +126,7 @@ add_skill_record() {
 skill_path=
 for required in grilling domain-modeling ask-matt; do
   if ! skill_path=$(lookup_skill_path "$required"); then
-    echo "error: installed mattpocock plugin lacks required design skill $required; the captain must refresh it with /plugin" >&2
+    echo "error: installed mattpocock plugin lacks required design skill $required; refresh the captain-owned plugin install. Workers must not install or copy it" >&2
     exit 1
   fi
   add_skill_record "$required" "$skill_path"
