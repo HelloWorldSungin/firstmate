@@ -367,6 +367,7 @@ family_for_basename() {
       printf '%s\n' session-bootstrap
       ;;
     fm-afk-pi-dual-supervision-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|\
+    fm-pi-codex-native.test.sh|\
     fm-bearings-board-lavish-live-e2e.test.sh|\
     fm-claude-stop-autoarm-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
@@ -381,7 +382,7 @@ family_for_basename() {
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
     fm-pi-hung-delivery-herdr-e2e.test.sh|\
-    fm-pi-primary-live-e2e.test.sh|fm-pi-codex-native.test.sh|fm-omp-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
+    fm-pi-primary-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
