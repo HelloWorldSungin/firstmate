@@ -113,6 +113,8 @@ fm_launch_render() {  # <template> <model-flag> <effort-flag> <brief> <turnend> 
       __PITURNEND__)  out=$out$pi_turnend ;;
       __PIWATCH__)    out=$out$pi_watch ;;
       __OPINPUT__)    out=$out$op_input ;;
+      __AGYBIN__) out=$out'agy' ;;
+      __CLAUDEPERMFLAG__) out=$out'--dangerously-skip-permissions' ;;
       __PIBIN__|__PITUIMODE__|__CURSORBIN__|__WORKTREE__) out=$out$token ;;
       *)
         if [ "$allow_unresolved" = 1 ]; then
@@ -276,7 +278,7 @@ fm_launch_template() {
     # Carry attribution-off with the per-launch settings because worker settings
     # sources may omit the user's scope. Keep both feedback controls alongside
     # it so managed settings cannot re-enable the model-drafted feedback tool.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
@@ -338,7 +340,7 @@ fm_launch_template() {
     # before launch (bin/fm-agy-trust-lib.sh). --effort accepts only low|medium|high
     # (agy --help). Turn-end notification is the watcher's debounced native-idle detector,
     # so no launch-time hook is installed.
-    agy) printf '%s' 'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
     # the launch boundary and documented in the header above: foreign markers

@@ -495,7 +495,7 @@ set -u
 cmd=""
 for a in "$@"; do
   case "$a" in
-    status|pane|agent|prompt|get|read|capture|send-keys|send-text) cmd="$cmd $a" ;;
+    status|pane|agent|prompt|get|read|capture|send-keys|send-text|process-info) cmd="$cmd $a" ;;
   esac
 done
 dir=$(dirname "$0")/..
@@ -509,6 +509,9 @@ if [ "${1:-}" = agent ] && [ "${2:-}" = prompt ] \
 fi
 case "$cmd" in
   *"status"*) printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
+  *"pane process-info"*)
+    jq -cn --arg name "${FM_HERDR_FAKE_AGENT:-claude}" '{result:{type:"pane_process_info",process_info:{pane_id:"w1:p1",shell_pid:4242,foreground_process_group_id:4243,foreground_processes:[{pid:4243,name:$name,argv:[$name]}]}}}'
+    ;;
   *"pane get"*) printf '{"result":{"pane":{"pane_id":"w1:p1"}}}\n' ;;
   *"pane send-keys"*)
     printf 'enter\n' >> "$dir/enter_log"

@@ -110,6 +110,8 @@ test_live_captain_held_first_sight_silenced_by_away_record() {
 
 test_backlog_hold_never_rechecked_while_away_record_exists() {
   local dir out capture wakes
+  command -v tasks-axi >/dev/null 2>&1 \
+    || { echo "skip: tasks-axi not found (away-record backlog hold)"; return 0; }
   dir=$(make_hold_home away-record-backlog-hold 'done: PR https://example.test/pr/9 checks green' hold) \
     || fail "could not build the backlog-hold fixture"
   out="$dir/watch.out"; capture="$dir/pane.txt"
@@ -314,6 +316,8 @@ test_triage_log_size_cap_accepts_spaced_wc_counts
 test_procevent_captured_result_surfaces_proactively
 test_procevent_unacknowledged_result_redrains_until_handled
 test_procevent_marker_keys_are_injective
+test_procevent_headlines_classify_queue_keys
+test_procevent_launch_failed_episodes_are_each_delivered
 test_procevent_surface_serializes_with_drain
 test_procevent_surface_crash_boundaries
 test_procevent_marker_failure_exits_and_replays

@@ -55,6 +55,42 @@ confirm_posture() {  # <home>
 # back, `confirm` records it and announces hold-for-return, and every daemon
 # path requires that confirmed record.
 # ---------------------------------------------------------------------------
+unit_quiet_attended_lifecycle() {
+  local st out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-quiet.XXXXXX")
+  mkdir -p "$st/state"
+  if ! FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_MODE=quiet "$LAUNCH" start-native >"$st/output" 2>&1; then
+    fail "quiet: explicit native entry without an away record failed: $(cat "$st/output")"
+  fi
+  [ "$(head -1 "$st/state/.afk")" = quiet ] || fail "quiet: entry did not write quiet mode"
+  [ ! -e "$st/state/.afk-contract" ] || fail "quiet: entry fabricated an away record"
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$ROOT/bin/fm-afk-return.sh" guard 2>&1) \
+    || fail "quiet: ordinary work guard refused attended mode: $out"
+  [ "$(head -1 "$st/state/.afk")" = quiet ] || fail "quiet: ordinary guard exited quiet mode"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$ROOT/bin/fm-afk-return.sh" begin >"$st/output" 2>&1; then
+    fail "quiet: ordinary return consumed quiet without explicit quiet-off"
+  fi
+  [ -e "$st/state/.afk" ] || fail "quiet: ordinary return removed the flag"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$ROOT/bin/fm-afk-return.sh" quiet-off >"$st/output" 2>&1 \
+    || fail "quiet: explicit exit failed: $(cat "$st/output")"
+  [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ] \
+    || fail "quiet: exit retained daemon lifecycle records"
+  [ ! -e "$st/state/.afk-return-catchup" ] && [ ! -d "$st/state/afk-contracts" ] \
+    || fail "quiet: exit fabricated an away return"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_MODE=away "$LAUNCH" start-native >"$st/output" 2>&1; then
+    fail "away: entry without a confirmed record succeeded after quiet exit"
+  fi
+  confirm_posture "$st" || fail "quiet: could not confirm away fixture"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_MODE=quiet "$LAUNCH" start-native >"$st/output" 2>&1; then
+    fail "quiet: entry bypassed an active away record"
+  fi
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$ROOT/bin/fm-afk-return.sh" quiet-off >"$st/output" 2>&1; then
+    fail "quiet: explicit exit consumed an active away record"
+  fi
+  [ -e "$st/state/.afk-contract" ] || fail "quiet: refused transition lost the away record"
+  rm -rf "$st"
+}
+
 unit_propose_confirm_records_the_posture_without_a_daemon() {
   local st out rc
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-propose.XXXXXX")
@@ -271,6 +307,112 @@ unit_fresh_vs_refresh() {
   fi
   kill "$sleep_pid" 2>/dev/null || true
   wait "$sleep_pid" 2>/dev/null || true
+  rm -rf "$st"
+}
+
+# ---------------------------------------------------------------------------
+# UNIT 2a: away/quiet mode plumbing (kunchenguid/firstmate#2356). fm_afk_mode
+# is the single owner of reading the mode; these pin its write side
+# (fm_afk_launch_flag_write / fm_afk_flag_write) against the exact double-
+# write risk a live entry hits - the launcher writes the flag, then the
+# terminal-side fm-afk-start.sh entry re-writes it a second time on every
+# real (non-native) entry, per UNIT 2 above.
+# ---------------------------------------------------------------------------
+read_mode() {  # <state-dir>
+  bash -c '. "$1"; fm_afk_mode "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+}
+
+unit_mode_explicit_write() {
+  local st out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-mode-explicit.XXXXXX")
+  mkdir -p "$st/state"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_MODE=quiet \
+    bash -c '. "$1"; fm_afk_launch_flag_write' _ "$LAUNCH"
+  out=$(read_mode "$st/state")
+  if [ "$out" = quiet ]; then
+    pass "mode: a fresh entry with FM_AFK_MODE=quiet writes quiet"
+  else
+    fail "mode: explicit FM_AFK_MODE=quiet fresh entry wrote '$out' instead of quiet"
+  fi
+  rm -rf "$st"
+}
+
+unit_mode_fresh_defaults_away() {
+  local st out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-mode-default.XXXXXX")
+  mkdir -p "$st/state"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
+    bash -c '. "$1"; fm_afk_launch_flag_write' _ "$LAUNCH"
+  out=$(read_mode "$st/state")
+  if [ "$out" = away ]; then
+    pass "mode: a fresh entry with FM_AFK_MODE unset defaults to away"
+  else
+    fail "mode: fresh unset-mode entry wrote '$out' instead of away"
+  fi
+  rm -rf "$st"
+}
+
+unit_mode_refresh_preserves_quiet() {
+  local st sleep_pid lock out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-mode-preserve.XXXXXX")
+  mkdir -p "$st/state"
+  printf 'quiet\n%s\n' "$(date '+%s')" > "$st/state/.afk"
+  sleep 600 &
+  sleep_pid=$!
+  lock="$st/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s' "$sleep_pid" > "$lock/pid"
+  ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
+  # The exact real-entry shape: a bare direct re-write with no explicit mode,
+  # simulating the terminal-side fm-afk-start.sh redundant write that would
+  # silently clobber quiet back to away if it were not preserve-on-refresh.
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
+  out=$(read_mode "$st/state")
+  if [ "$out" = quiet ]; then
+    pass "mode: a bare refresh (FM_AFK_MODE unset) of an already-running quiet daemon preserves quiet, never resets to away"
+  else
+    fail "mode: refresh incorrectly changed quiet mode to '$out'"
+  fi
+  kill "$sleep_pid" 2>/dev/null || true
+  wait "$sleep_pid" 2>/dev/null || true
+  rm -rf "$st"
+}
+
+unit_mode_garbage_and_legacy_content_reads_away() {
+  local st out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-mode-garbage.XXXXXX")
+  mkdir -p "$st/state"
+
+  : > "$st/state/.afk"
+  out=$(read_mode "$st/state")
+  if [ "$out" = away ]; then
+    pass "mode: an empty (legacy pre-mode) flag reads as away"
+  else
+    fail "mode: empty flag read as '$out' instead of away"
+  fi
+
+  date '+%s' > "$st/state/.afk"
+  out=$(read_mode "$st/state")
+  if [ "$out" = away ]; then
+    pass "mode: a bare-epoch-timestamp (legacy pre-mode) flag reads as away"
+  else
+    fail "mode: legacy timestamp flag read as '$out' instead of away"
+  fi
+
+  printf 'nonsense-mode\n' > "$st/state/.afk"
+  out=$(read_mode "$st/state")
+  if [ "$out" = away ]; then
+    pass "mode: unrecognized content falls back to away"
+  else
+    fail "mode: unrecognized content read as '$out' instead of away"
+  fi
+
+  out=$(read_mode "$st/state/missing")
+  if [ "$out" = away ]; then
+    pass "mode: a missing flag reads as away"
+  else
+    fail "mode: missing flag read as '$out' instead of away"
+  fi
   rm -rf "$st"
 }
 
@@ -1074,6 +1216,8 @@ e2e_tmux() {
 }
 
 unit_clear_stale
+unit_quiet_attended_lifecycle
+
 unit_propose_confirm_records_the_posture_without_a_daemon
 unit_pi_preserves_the_daemon_lifecycle
 unit_daemon_entry_requires_confirmation
@@ -1081,6 +1225,10 @@ unit_failed_daemon_launch_preserves_confirmed_record
 unit_stop_archives_the_record_last
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
+unit_mode_explicit_write
+unit_mode_fresh_defaults_away
+unit_mode_refresh_preserves_quiet
+unit_mode_garbage_and_legacy_content_reads_away
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state

@@ -17,9 +17,12 @@ Each round brings one upstream merge through its own reviewable PR, and the conf
 ### Agy crew adapter
 
 The fork carries an Antigravity CLI adapter so workers can use the operator's paid Gemini subscription.
-Upstream has no agy support at all, so every part of it is fork-local.
+Upstream added agy detection, model validation, trust registration, and readiness checks in `kunchenguid/firstmate#4200`, with ancestry precedence refined in `kunchenguid/firstmate#3578`.
+The fork adopts those compatible capabilities while retaining the following scope and native-state contracts.
 It is deliberately crew-only and Herdr-only because Herdr supplies the native identity, liveness, working-state, and delivery signals needed to supervise that CLI without treating screen text as authority.
 It is not selectable for the primary firstmate or a persistent second mate, and its raw-command bypass is rejected so the kind, backend, trust, and supervision guards cannot be skipped.
+The shared settings mutation owner remains `bin/fm-agy-trust-lib.sh`, preserving created-versus-preexisting ownership, abort rollback, teardown cleanup, and locking.
+Upstream's `bin/fm-agy-trust.sh` retains its linked-worktree scope checks and logical/resolved path registration while delegating writes to that owner.
 The adapter contract lives in the [`harness-adapters` skill's agy reference](../.agents/skills/harness-adapters/references/harness/agy.md), reachable through that skill's routing artifact, and its executable guards live in `bin/fm-spawn.sh`, `bin/fm-launch-lib.sh`, and [`tests/fm-agy-adapter.test.sh`](../tests/fm-agy-adapter.test.sh).
 Herdr's atomic agy prompt emits a fork-local `unverifiable` send verdict for an acceptance it can prove neither way, which `bin/fm-send.sh` keeps distinct from upstream's `pending`: both exit 3, but `unverifiable` marks the request's delivery state unknown while `pending` discards it as undelivered.
 Upstream's durable steering inbox (`kunchenguid/firstmate#2856`, reached 2026-08-25) moved ordinary local text off the typed submit path, so both verdicts now describe the typed plane alone - a harness-native invocation or an explicit backend target - while an ordinary steer's delivery is its durable record.
@@ -30,6 +33,30 @@ Upstream's Gemini CLI, Rovo, and OMP adapters are additive and do not replace An
 Their launch templates and flag construction use the fork's existing `bin/fm-launch-lib.sh` owner, whose renderer accepts explicit adapter bindings without rescanning substituted paths.
 The dead-endpoint doorbell protection from `kunchenguid/firstmate#3823` preserves the harness-aware atomic submit path, while its shell-no-op prefix and partial-line race describe typed transport.
 This entry covered Cursor as well until 2026-08-18; see "Fork-local cursor crew adapter" under retired divergences.
+
+### Attended quiet lifecycle
+
+Upstream introduced presentation-only quiet supervision in `kunchenguid/firstmate#4337`, but its away launcher still required a confirmed away record and its return guard refused ordinary work for any quiet flag.
+Firstmate resolved this contradiction in favor of the feature's attended semantics during the pinned September 14 sync.
+`bin/fm-afk-launch.sh` owns mode-aware entry through the existing single daemon, and `bin/fm-afk-return.sh` owns the read-only guard and explicit `quiet-off` exit.
+Quiet grants no away authority, does not fabricate an away record, and cannot consume an actual away return or its pending catch-up gate.
+Ordinary work leaves quiet active; explicit quiet exit stops the shared daemon without an away brief or archive.
+The agent-facing lifecycle is owned by the [quiet skill](../.agents/skills/quiet/SKILL.md), and `tests/fm-afk-launch.test.sh` plus `tests/fm-afk-return.test.sh` exercise quiet alongside the unchanged confirmed-away entry and return gates.
+
+### Herdr terminal-wide agent absence
+
+Upstream `kunchenguid/firstmate#4191` adds a shared harness process classifier and distinguishes a stale registration from an unregistered pane.
+The fork adopts those states and positive harness detection while retaining its stricter terminal-wide absence proof in `bin/backends/herdr.sh`.
+A shell-only foreground cannot prove absence when a suspended, backgrounded, reparented same-terminal agent, or an agent hosting an escape shell remains.
+The shared negative proof accepts the nested Treehouse shell chain only after accounting for every process on that terminal.
+An unreadable process-info response now reports `unreadable` rather than `alive`; both continue to refuse recovery, while proven stale registration permits recovery but not destructive husk cleanup.
+`tests/fm-backend-herdr.test.sh` exercises these distinct decisions, and `tests/fm-herdr-pi-stale-registration-live-e2e.test.sh` refreshes the actual vendor evidence in [runtime backend verification](verification/runtime-backends.md#stale-agent-registration).
+
+### Installed AXI compatibility floors
+
+The fork retains its installed-version AXI floors when upstream introduces a feature at an older compatible release.
+The floor policy and current constants are owned by `bin/fm-bootstrap.sh`; this round keeps Lavish at `0.1.62` while adopting upstream's optional presentation behavior introduced against `0.1.46`.
+`tests/fm-bootstrap.test.sh` exercises below-floor refusal and compatible versions, and `tests/fm-brief.test.sh` verifies that visual scout instructions follow the same effective floor.
 
 ### Pinned ShellCheck download retry budget
 
@@ -174,9 +201,9 @@ Serving that bound, [`bin/fm-timeout-lib.sh`](../bin/fm-timeout-lib.sh) publishe
 The rationale beside the constant owns why 480s and what the bound costs each CI lane, including the accepted margin on the required real-Herdr lane recorded in `HelloWorldSungin/firstmate#256`, and the script's `--help` owns the flag contract and its `0` opt-out.
 [`tests/fm-test-run.test.sh`](../tests/fm-test-run.test.sh) pins the default arming, the opt-out, the exit 124 versus exit 125 distinction, and the signal relay, so an upstream round that rewrites the timeout wiring cannot retire the default silently.
 
-The upstream `kunchenguid/firstmate#3489` rebalance refreshes shared duration hints and raises the portable serial job cap to 20 minutes.
-The fork retains eight shards and its fork-only timing hints.
-The fork adopts the upstream 30-minute serial job cap and takes per-script maxima across both parents; the runner still owns the 480-second per-script bound and the updated margin arithmetic.
+Upstream `kunchenguid/firstmate#4151` refreshes shared duration hints and raises the portable serial job cap to 30 minutes.
+The fork retains eight shards and takes per-script maxima across both parents, preserving its fork-only timing hints.
+The runner still owns the 480-second per-script bound and the updated margin arithmetic.
 
 Watcher triage cases are partitioned between `tests/fm-watch-triage.test.sh` and `tests/fm-watch-triage-waits.test.sh`, with shared case definitions in `tests/watch-triage-helpers.sh`, so suite growth does not weaken the per-script bound.
 
@@ -353,7 +380,8 @@ A future round must take upstream's queue behaviour unchanged rather than re-der
 
 One consequence is left standing deliberately and is the thing to read before "fixing" it.
 The forwarded-argument allow-list still refuses `--auto` by name, which is a separate rule about what a caller may hand the forge and not a claim about merge queues, so upstream's restored retry guidance names flags this script would itself turn away.
-That allow-list is additive rather than divergent - it constrains what a caller may pass, admitting merge-method selectors, message arguments, post-execution branch cleanup, and head-binding arguments, each recorded with why it cannot defer execution.
+That allow-list is additive rather than divergent - it constrains what a caller may pass, admitting merge-method selectors, message arguments, and post-execution branch cleanup, each recorded with why it cannot defer execution.
+Upstream `kunchenguid/firstmate#4199` now binds execution to the freshly verified head internally, so caller-supplied head bindings are refused to prevent replacing that proof.
 Reconciling the two, by retiring that allow-list entry as well or by rewording the guidance a second time, is open work left to the captain who ordered the restoration; no issue tracks it yet, and `HelloWorldSungin/firstmate#259` is the allow-list's own open issue rather than a record of this.
 
 #### ACCEPTED and standing: a failed command whose readback confirms the merge landed

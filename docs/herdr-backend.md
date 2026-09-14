@@ -189,6 +189,7 @@ Each entrypoint creates its own source, homes, lab, and evidence; both are selec
 `tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab.
 `tests/fm-backend-herdr-focus-flash-e2e.test.sh` reproduces the raw explicit-close focus steal on the installed release and proves the focus-safe emptying-close plan removes a doomed workspace with no wrong-focus interval; [`verification/runtime-backends.md`](verification/runtime-backends.md#workspace-removal-focus-safety) owns the active versioned evidence.
 `tests/fm-backend-herdr-stale-active-tab-e2e.test.sh` proves a persisted-focused tab still closes when no foreground client is attached.
+`tests/fm-herdr-attached-viewer-live-e2e.test.sh` proves the other half against a real attached viewer, which `bin/fm-herdr-lab.sh viewer start` supplies over a pty sized before the fork; [`verification/runtime-backends.md`](verification/runtime-backends.md#attached-foreground-viewer) owns the active versioned evidence and the re-run trigger.
 
 ## Default-tab prune safety
 
@@ -297,20 +298,16 @@ A restored same-labeled tab with a missing pane or no registered agent is a husk
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
 
-The generic Herdr agent-liveness probe reuses the same pane classifier, then applies one recovery-only exception.
-A structurally gone pane or a pane read from a session positively reported as having no running server becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive` unless its registration is proven stale, and every other unexpected read becomes `unreadable`.
-The stopped-server exception does not widen husk detection or any close authority; those paths still refuse an unreadable pane.
-Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
-`tests/fm-backend-herdr-agent-exit-shell-e2e.test.sh` pins the live-Pi versus leftover-shell distinction; [`verification/runtime-backends.md`](verification/runtime-backends.md#agent-lifecycle-control) owns the versioned evidence.
+A registration alone never proves an agent: hook-authoritative Pi registrations can survive both clean and killed exits.
+The shared positive process classifier in `bin/fm-agent-process-lib.sh` recognizes running harnesses, while `bin/backends/herdr.sh` owns the stricter terminal-wide absence proof and its bounded settling.
+That negative proof accounts for the nested Treehouse shell chain, background and suspended jobs, same-terminal processes outside the shell tree, and escape shells before labeling a registration `stale-agent`.
+An unreadable process view remains `unknown`, and a working registration over a proven shell-only pane cannot authorize a busy verdict.
 
-A registration is not trusted on its own, because Herdr can hold one that outlives its agent.
-An agent whose lifecycle reporting is hook-authoritative (Pi's `herdr:pi` extension) never deregisters on exit, Herdr skips screen detection for it, and Herdr exposes no agent-deregister verb, so `agent get` keeps reporting the last agent state forever after any exit, clean or killed.
-The recovery-grade probe therefore cross-checks every registered agent against an operating-system agent-free proof: the pane's process tree must be nothing but sleeping recognized shells plus the resident treehouse worktree wrapper, with the foreground held by an idle shell that is the tree's only leaf.
-That is exactly the shape a task pane is left in when its agent dies (pane shell, treehouse wrapper, worktree subshell), so a stale registration over it classifies `dead`, while a foreground, suspended, backgrounded, or shell-hosting agent breaks one of those rules and stays `alive`.
-Any inconclusive read also fails the proof, so recovery stays refused unless the pane is positively agent-free.
-The proof is deliberately not a screen read; a rendered prompt glyph cannot distinguish a dead shell from every agent composer.
-It is a separate, classification-only predicate beside the stricter lone-idle-shell proof under [Presentation spaces](#presentation-spaces), which licenses signaling a shell pid and stays unchanged.
-`bin/backends/herdr.sh`'s `fm_backend_herdr_agent_state` owns the exact contract.
+The generic recovery probe maps a structurally gone pane or positively stopped server to `missing`, an unregistered shell or proven stale registration to `dead`, and a readable registered agent with live process evidence to `alive`.
+Other unexpected reads remain `unreadable`.
+These recovery verdicts do not widen destructive husk cleanup: `stale-agent` and unknown panes are never closed as husks.
+The separate lone-idle-shell proof under [Presentation spaces](#presentation-spaces) still owns permission to signal a shell pid.
+`tests/fm-backend-herdr-agent-exit-shell-e2e.test.sh` and `tests/fm-herdr-pi-stale-registration-live-e2e.test.sh` refresh the live distinction; [runtime verification](verification/runtime-backends.md#stale-agent-registration) owns measured versions and process-info compatibility evidence.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
@@ -384,10 +381,12 @@ tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-recovery-e2e.test.sh
 tests/fm-backend-herdr-agent-exit-shell-e2e.test.sh
+tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-control-herdr-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
+tests/fm-herdr-attached-viewer-live-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 tests/fm-busy-state.test.sh

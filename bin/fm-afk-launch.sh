@@ -14,7 +14,10 @@
 # only: no phone channel exists). The record is the posture in every harness.
 # Every harness retains daemon-backed away supervision. Pi and OMP extensions
 # stand down while state/.afk exists; docs/watcher-continuity.md owns that handoff.
-# `start` and `start-native` require the confirmed record before daemon launch.
+# `start` and `start-native` require the confirmed record for away daemon launch.
+# Explicit FM_AFK_MODE=quiet enters attended supervision without a posture record;
+# an existing quiet flag preserves that mode on refresh. Active away state must
+# finish its normal return before quiet entry.
 # `stop` (the return, driven by bin/fm-afk-return.sh) shuts the daemon down,
 # clears state/.afk last, and archives the record under state/afk-contracts/.
 #
@@ -38,11 +41,14 @@
 #   fm-afk-launch.sh propose [--words-file <path> | --words <text>]
 #                            [--action <verb> --object <text> --when <text> [--stop <text>]]...
 #                            [--expected-return <UTC ISO 8601>] [--spend <n>]
+#                            [--grant <task-id>]...
 #                              Record the captain's away words and mandate
 #                              clause fields into a proposal and print the
 #                              read-back. Exit 3 when a clause was refused (its
 #                              missing part is named in the read-back); the
 #                              proposal still records it as refused.
+#                              Repeatable --grant records captain-named task
+#                              ids that may merge-when-green while away.
 #   fm-afk-launch.sh confirm   Promote the required proposal and print the entry
 #                              announcement; daemon launch follows.
 #   fm-afk-launch.sh start     Capture the captain pane, then (unless the daemon
@@ -68,6 +74,9 @@
 # terminal (default bin/fm-afk-start.sh), so a topology test can run a harmless
 # placeholder instead of a real daemon. FM_SUPERVISOR_TARGET/FM_SUPERVISOR_BACKEND
 # override the captured captain pane/backend (an isolated lab pane in tests).
+# FM_AFK_MODE (away|quiet, default away) declares which mode a `start` entry
+# requests; leave it unset for a plain refresh of an already-running daemon
+# so its current mode is preserved (bin/fm-afk-start.sh fm_afk_flag_write).
 set -u
 
 FM_AFK_LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +203,16 @@ fm_afk_launch_catchup_pending() {
 
 fm_afk_launch_record_require() {
   local record
+  # Quiet is attended presentation, never an away grant or an implicit return.
+  if [ "${FM_AFK_MODE:-$(fm_afk_mode "$FM_AFK_LAUNCH_STATE")}" = quiet ]; then
+    if fm_afk_contract_present "$FM_AFK_LAUNCH_STATE" || {
+      [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] && [ "$(fm_afk_mode "$FM_AFK_LAUNCH_STATE")" != quiet ];
+    }; then
+      fm_afk_launch_log "finish the active away return before entering quiet mode"
+      return 1
+    fi
+    return 0
+  fi
   record=$(fm_afk_contract_path "$FM_AFK_LAUNCH_STATE")
   if ! fm_afk_contract_present "$FM_AFK_LAUNCH_STATE"; then
     fm_afk_launch_log "a confirmed away-posture record is required; run propose and confirm before starting the daemon"
@@ -230,7 +249,11 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
 }
 
 fm_afk_launch_flag_write() {
-  fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
+  # FM_AFK_MODE is the ONE place a caller declares which mode this entry
+  # requests (away, the unset default, or quiet - kunchenguid/firstmate#2356);
+  # fm_afk_flag_write itself preserves the on-disk mode when it is unset, so
+  # a plain /afk refresh of an already-quiet daemon never resets it.
+  fm_afk_flag_write "$FM_AFK_LAUNCH_STATE" "${FM_AFK_MODE:-}"
 }
 
 # Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third

@@ -76,13 +76,15 @@ fm_control_harness_supported() {  # <harness>
 # harness= that way), which is why the spawn adapters match `claude*`, `muse*`,
 # and friends. This is the one place that prefix rule is stated. `pi` and
 # `pi-signed` are exact because a `pi*` prefix would swallow the signed adapter,
-# `omp` is exact because an `omp*` prefix would claim unrelated commands, and an
+# `omp` is exact because an `omp*` prefix would claim unrelated commands, `agy`
+# is exact for the same reason on an even shorter name, and an
 # unrecognized value returns nonzero rather than being guessed into a family.
 fm_control_harness_family() {  # <recorded-harness>
   case "${1-}" in
     pi) printf 'pi' ;;
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
+    agy) printf 'agy' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
@@ -117,7 +119,9 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # gemini names its own key in the running turn's status row
 # (`(esc to cancel, <n>s)`), and a single Escape was verified to cancel it.
 # rovo cancels on a single Escape too, printing "Agent cancelled" (verified,
-# 202609.1.2). omp (Oh My Pi) shares Pi's single Escape, empty composer
+# 202609.1.2). agy cancels on a single Escape, printing the Interrupted row
+# with an idle composer and no repollution (verified live, agy 1.2.0 through
+# Herdr). omp (Oh My Pi) shares Pi's single Escape, empty composer
 # afterwards, and /quit exit (verified omp 18.1.2 in a PTY, re-verified 18.1.11
 # through Herdr).
 fm_control_interrupt_key() {  # <harness>
@@ -182,8 +186,8 @@ fm_control_interrupt_ack_source() {  # <harness>
 # The command that exits the agent from its own composer.
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
-    claude|opencode|grok|kimi|cursor|muse|rovo|agy) printf '/exit' ;;
-    codex|pi|pi-signed|omp|gemini) printf '/quit' ;;
+    claude|opencode|grok|kimi|cursor|muse|rovo) printf '/exit' ;;
+    codex|pi|pi-signed|omp|gemini|agy) printf '/quit' ;;
     *) return 1 ;;
   esac
 }

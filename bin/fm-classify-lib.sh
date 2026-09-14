@@ -2170,3 +2170,25 @@ stale_is_terminal() {  # <window> <state>
   last=$(last_status_line "$state/$(window_to_task "$win" "$state").status")
   [ -n "$last" ] && status_is_captain_relevant "$last"
 }
+
+# fm_classify_afk_mode <state>
+# The single owner of reading state/.afk's declared mode. Always prints
+# exactly one of "away" or "quiet" and always succeeds - every caller gets a
+# definitive answer, never an error to handle. Presence/liveness stays owned
+# by fm_afk_daemon_owns_supervision and the raw `-e "$state/.afk"` checks
+# throughout the tree; this is the mode of an ALREADY-present flag.
+# "away" (today's return-on-any-unmarked-message behavior) is the safe
+# default: missing, empty, unreadable, or unrecognized content, and the
+# legacy bare-epoch-timestamp content written before mode existed, all read
+# as "away". Only an exact first-line "quiet" ever reads as "quiet" -
+# kunchenguid/firstmate#2356's standing captain-present quiet mode, entered
+# only through /quiet and exited only through an explicit /quiet off
+# (AGENTS.md section 8's away-mode stub).
+fm_classify_afk_mode() {
+  local state=$1 mode
+  mode=$(head -n 1 "$state/.afk" 2>/dev/null) || { printf '%s\n' away; return 0; }
+  case "$mode" in
+    quiet) printf '%s\n' quiet ;;
+    *) printf '%s\n' away ;;
+  esac
+}
