@@ -44,6 +44,12 @@ TMP_ROOT=$(fm_test_tmproot fm-backend-tests)
 # and adds no launch prefix, since fm-spawn only prefixes a non-empty value.
 SPAWN_HOME="$TMP_ROOT/user-home"
 mkdir -p "$SPAWN_HOME"
+# Pool locks are rooted in FM_HOME/state, independently of per-call state
+# overrides. A developer checkout may already have state/ while clean CI does
+# not, so every spawn below must use this fixture-owned operational home.
+SPAWN_FM_HOME="$TMP_ROOT/spawn-firstmate-home"
+mkdir -p "$SPAWN_FM_HOME/state"
+SPAWN_FM_HOME=$(cd "$SPAWN_FM_HOME" && pwd -P)
 
 write_spawn_brief() {  # <file> <id>
   cat > "$1" <<EOF
@@ -815,7 +821,7 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
   local bin=$1 fb=$2 log=$3 state=$4 data=$5 config=$6 proj=$7; shift 7
   [ "${1:-}" = -- ] && shift
   : > "$log"
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" FM_HOME="$SPAWN_FM_HOME" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_TMUX_LOG="$log" \
@@ -882,7 +888,7 @@ SH
 }
 
 run_spawn_symlink_case() {  # <label> <physical|logical>
-  local label=$1 first_reply=$2 real_root link_root proj wt id fb data state config log out rc proj_phys initial_path
+  local label=$1 first_reply=$2 real_root link_root proj wt id fb data state config log out rc proj_phys initial_path logical_lock physical_lock
   real_root="$TMP_ROOT/symlink-real-$label"; link_root="$TMP_ROOT/symlink-link-$label"
   mkdir -p "$real_root"
   ln -s "$real_root" "$link_root"
@@ -896,6 +902,19 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
   # fm-spawn.sh's own PROJ_ABS_REAL computes, including any symlink layers
   # ABOVE this test's own synthetic real_root/link_root pair.
   proj_phys=$(cd "$real_root/proj" && pwd -P)
+  # Compare identities through the lock owner before driving the real spawn.
+  # Both paths must bind to this fixture home, never the ambient checkout.
+  logical_lock=$(FM_HOME="$SPAWN_FM_HOME" FM_STATE_OVERRIDE="$TMP_ROOT/lock-probe-state" \
+    bash -c '. "$1"; fm_treehouse_project_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$proj") \
+    || fail "logical project path did not resolve a fixture-owned pool lock"
+  physical_lock=$(FM_HOME="$SPAWN_FM_HOME" FM_STATE_OVERRIDE="$TMP_ROOT/lock-probe-state" \
+    bash -c '. "$1"; fm_treehouse_project_lock_path "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$proj_phys") \
+    || fail "physical project path did not resolve a fixture-owned pool lock"
+  [ "$logical_lock" = "$physical_lock" ] || fail "symlink and physical project paths resolved different pool locks"
+  case "$logical_lock" in
+    "$SPAWN_FM_HOME/state/"*) ;;
+    *) fail "pool lock escaped the fixture operational home: $logical_lock" ;;
+  esac
   case "$first_reply" in
     physical) initial_path=$proj_phys ;;
     logical) initial_path=$proj ;;
@@ -1079,7 +1098,7 @@ test_spawn_default_backend_writes_no_meta_field() {
   state="$TMP_ROOT/nobackend-state"; config="$TMP_ROOT/nobackend-config"
   mkdir -p "$state" "$config"
 
-  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$SPAWN_FM_HOME" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_TMUX_LOG="$TMP_ROOT/nobackend.log" \
@@ -1103,7 +1122,7 @@ test_spawn_explicit_backend_flag_beats_autodetect_herdr_env() {
 
   # HERDR_ENV=1 is present (as if firstmate itself were running under herdr),
   # but an explicit --backend tmux flag must still win outright.
-  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$SPAWN_FM_HOME" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" HERDR_ENV=1 \
     FM_TMUX_LOG="$TMP_ROOT/explicit-backend.log" \
@@ -1130,7 +1149,7 @@ test_spawn_autodetect_nesting_resolves_tmux_silently() {
   # (tmux nested inside a herdr pane) - the full fm-spawn.sh pipeline, not just
   # fm_backend_name, must resolve this to tmux and stay completely silent about
   # it (today's default path, byte-identical).
-  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
+  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$SPAWN_FM_HOME" HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" HERDR_ENV=1 \
     FM_TMUX_LOG="$TMP_ROOT/nest.log" \
