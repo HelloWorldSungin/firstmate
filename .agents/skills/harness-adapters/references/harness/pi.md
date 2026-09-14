@@ -44,6 +44,7 @@ Pi sets `PI_CODING_AGENT=true` for its children as its harness-detection marker.
 The primary turn-end behavior was verified on 2026-07-09 with Pi 0.80.5.
 `.pi/extensions/fm-primary-turnend-guard.ts` listens for logical-run `agent_settled`, not per-tool-loop `turn_end`, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one guarded follow-up when `../../../bin/fm-turnend-guard.sh` returns 2.
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.
+That option does not cover two prompts that both start while the primary is idle, because Pi chooses between queueing and a new turn before its preflight; `.pi/extensions/lib/fm-pi-prompt-delivery.ts` owns how the primary joins such an overlapping prompt to the running turn instead of dropping it.
 On native Windows, the extension runs its session-start, both PreToolUse, turn-end, and operational-input Bash helpers through `bash`; macOS and Linux invoke those helpers directly.
 
 The primary watcher protocol also requires `.pi/extensions/fm-primary-pi-watch.ts`.
@@ -51,6 +52,11 @@ The Pi engine auto-discovers both tracked project-local extensions once the proj
 The model arms through the `fm_watch_arm_pi` tool, never through a foreground shell arm.
 The tool result and clean-exit fallback are owned by `../../../docs/supervision-protocols/pi.md`.
 `../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
+
+Changed extension code activates only through `/reload` in the running primary or a full process restart (verified 2026-09-14 with Pi 0.85.1).
+Pi caches each extension factory for the life of the process, and `/new`, `/resume`, and `/fork` rebind that cached factory, so a session replaced that way keeps running the extension code it first loaded even after the files on disk change.
+Run `/reload` between turns: a handler already running keeps its old code, and the reload keeps the durable wake queue and any pending replacement wakes.
+The loaded-generation markers are the proof of which build the lock-holding session loaded; only that session writes them, so a `--list-models` probe run from its shell cannot make stale code read as current.
 
 When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`.
 Both files already exist in the secondmate home's git worktree.

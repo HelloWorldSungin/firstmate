@@ -320,6 +320,7 @@ family_for_basename() {
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
+    fm-pi-loaded-marker.test.sh|fm-pi-prompt-delivery.test.sh|\
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
@@ -378,7 +379,7 @@ family_for_basename() {
     fm-rovo-signals-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
-    fm-pi-hung-delivery-herdr-e2e.test.sh|\
+    fm-pi-hung-delivery-herdr-e2e.test.sh|fm-pi-prompt-collision-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-stow-horizon-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
@@ -1480,6 +1481,25 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-pi-primary-types.test.sh
       # Whether an arriving outcome still lets the captain type is a fact only
       # a real Pi TUI can answer, so the live guards are selected too.
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-pi-prompt-delivery.ts)
+      # The primary prompt delivery owner: its own suites, the watch extension
+      # that installs it, and the live TUI guard for the captain-visible overlap.
+      printf '%s\n' __script__:fm-pi-prompt-delivery.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-pi-loaded-marker.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
+      ;;
+    .pi/extensions/lib/fm-pi-loaded-marker.ts)
+      # The loaded-marker writer rule both primary extensions apply, and the
+      # session-start proof that reads those markers.
+      printf '%s\n' __script__:fm-pi-loaded-marker.test.sh
+      printf '%s\n' __script__:fm-pi-watch-extension.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-session-start.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
       printf '%s\n' live-harness-optin
       ;;
     .pi/extensions/lib/fm-operational-input.ts)
