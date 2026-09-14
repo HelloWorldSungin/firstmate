@@ -51,7 +51,7 @@ The primary watcher protocol also requires `.pi/extensions/fm-primary-pi-watch.t
 The Pi engine auto-discovers both tracked project-local extensions once the project is trusted.
 The model arms through the `fm_watch_arm_pi` tool, never through a foreground shell arm.
 The tool result and clean-exit fallback are owned by `../../../docs/supervision-protocols/pi.md`.
-`../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
+`../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at `/reload` or restarting the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
 
 Changed extension code activates only through `/reload` in the running primary or a full process restart (verified 2026-09-14 with Pi 0.85.1).
 Pi caches each extension factory for the life of the process, and `/new`, `/resume`, and `/fork` rebind that cached factory, so a session replaced that way keeps running the extension code it first loaded even after the files on disk change.
