@@ -249,8 +249,8 @@ test_family_map_labels_this_contract() {
   safe_max=$("$RUNNER" --concurrent-safe-family-jobs-max pure-contract-unit)
   [ "$safe_max" -eq 4 ] || fail "runner exposed the wrong contract-unit family worker cap: $safe_max"
   scheduled_first=$("$RUNNER" --list-scheduled --family watcher-wake-lock | head -n 1)
-  # The split wait suite has the largest watcher hint (191775 ms versus
-  # 160205 ms for core); timing ownership stays in the runner.
+  # The split wait suite retains the largest watcher hint after the CI refresh;
+  # timing ownership stays in the runner.
   [ "$scheduled_first" = tests/fm-watch-triage-waits.test.sh ] \
     || fail "runner scheduled the watcher family out of longest-hint order: $scheduled_first"
   pass "isolation-proof contract test is family-mapped"
