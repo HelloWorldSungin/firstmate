@@ -24,12 +24,8 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-if [ "${FM_PI_PROMPT_COLLISION_LIVE_E2E:-0}" != 1 ]; then
-  echo "skip: set FM_PI_PROMPT_COLLISION_LIVE_E2E=1 to run the real Pi TUI prompt-overlap regression"
-  exit 0
-fi
+fm_live_gate opt-in FM_PI_PROMPT_COLLISION_LIVE_E2E pi
 
-command -v pi >/dev/null 2>&1 || fail "pi not found"
 TERMINAL=tmux
 if [ -n "${HERDR_LAB_SESSION:-}" ]; then
   TERMINAL=herdr

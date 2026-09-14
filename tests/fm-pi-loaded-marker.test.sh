@@ -49,13 +49,15 @@ SH
 }
 
 test_writer_rule_through_both_extensions() {
-  local repo home out status
+  local repo home script out status
   repo="$TMP_ROOT/writer-root"
   home="$TMP_ROOT/writer-home"
+  script="$TMP_ROOT/writer-rule.mjs"
   mkdir -p "$home/state" "$home/config"
   install_marker_fixture "$repo"
-  out=$(cd "$repo" && FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" REPO="$repo" \
-    node --experimental-strip-types --input-type=module 2>&1 <<'EOF'
+  # Written outside any command substitution: stock macOS Bash 3.2 cannot parse
+  # a quoted heredoc containing apostrophes inside $(...).
+  cat > "$script" <<'EOF'
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -143,7 +145,8 @@ try {
 }
 process.exit(0);
 EOF
-)
+  out=$(cd "$repo" && FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" REPO="$repo" \
+    node --experimental-strip-types "$script" 2>&1)
   status=$?
   expect_code 0 "$status" "loaded-marker writer rule: $out"
   [ -z "$out" ] || fail "loaded-marker writer rule printed output: $out"
