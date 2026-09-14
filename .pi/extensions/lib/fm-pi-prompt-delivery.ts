@@ -34,7 +34,10 @@ import { classifyFirstmateCurrentOperationalText } from "./fm-operational-input.
 //
 // The wrap is process-global and idempotent: the first extension factory to
 // load installs it, and later factories, reloads, and session replacements
-// reuse the installed wrap. A Pi build that lacks the seam is reported, never
+// reuse a stable trampoline with the latest registered implementation. Joined
+// user text enters the session queue bookkeeping for display and editor restore;
+// stranded restart failures are reported through the extension runner.
+// A Pi build that lacks the seam is reported, never
 // silently patched around; the watcher extension surfaces that report.
 
 type QueuedMessage = { role?: unknown; content?: unknown };
@@ -54,6 +57,12 @@ type JoinableSession = {
   agent?: JoinableAgent;
   _isAgentRunActive?: unknown;
   isCompacting?: unknown;
+  _steeringMessages?: string[];
+  _followUpMessages?: string[];
+  _emitQueueUpdate?: () => void;
+  _extensionRunner?: {
+    emitError?: (error: { extensionPath: string; event: string; error: string }) => void;
+  };
 };
 
 type RunAgentPrompt = (this: JoinableSession, messages: QueuedMessage | QueuedMessage[]) => Promise<void>;
@@ -64,17 +73,19 @@ export type PromptDeliveryInstall = { ok: true } | { ok: false; detail: string }
 
 export type OperationalClassifier = (text: string) => boolean;
 
+type PromptDeliveryEntry = { original: RunAgentPrompt; implementation: RunAgentPrompt };
+
 type PromptDeliveryRegistry = typeof globalThis & {
-  [key: symbol]: WeakSet<object> | undefined;
+  [key: symbol]: WeakMap<object, PromptDeliveryEntry> | undefined;
 };
 
 // Keep the introduction-version symbol stable so a reload or a compatible
 // upgrade of this module cannot wrap the same live prototype twice.
 const PROMPT_DELIVERY_WRAPS = Symbol.for("firstmate:pi-prompt-delivery:pi-0.85.1");
 
-function wrappedPrototypes(): WeakSet<object> {
+function wrappedPrototypes(): WeakMap<object, PromptDeliveryEntry> {
   const registry = globalThis as PromptDeliveryRegistry;
-  return (registry[PROMPT_DELIVERY_WRAPS] ??= new WeakSet<object>());
+  return (registry[PROMPT_DELIVERY_WRAPS] ??= new WeakMap<object, PromptDeliveryEntry>());
 }
 
 function messageText(content: unknown): string {
@@ -129,8 +140,9 @@ export function installPromptJoin(
 ): PromptDeliveryInstall {
   const prototype = sessionClass?.prototype;
   if (!prototype) return { ok: false, detail: "AgentSession is not exported" };
-  if (wrappedPrototypes().has(prototype)) return { ok: true };
-  const original = prototype._runAgentPrompt;
+  const registry = wrappedPrototypes();
+  const installed = registry.get(prototype);
+  const original = installed?.original ?? prototype._runAgentPrompt;
   if (typeof original !== "function") return { ok: false, detail: "AgentSession._runAgentPrompt is missing" };
 
   const joinRunningTurn = function (this: JoinableSession, messages: QueuedMessage | QueuedMessage[]): boolean {
@@ -138,6 +150,12 @@ export function installPromptJoin(
     const queued = Array.isArray(messages) ? messages : [messages];
     const lead = queued[0];
     const steer = lead?.role === "user" && !isOperational(messageText(lead.content));
+    if (lead?.role === "user") {
+      const pending = steer ? this._steeringMessages : this._followUpMessages;
+      if (!Array.isArray(pending)) return false;
+      pending.push(messageText(lead.content));
+      if (typeof this._emitQueueUpdate === "function") this._emitQueueUpdate();
+    }
     const agent = this.agent as Required<Pick<JoinableAgent, "steer" | "followUp">>;
     for (const message of queued) {
       if (steer) agent.steer(message);
@@ -152,11 +170,29 @@ export function installPromptJoin(
       await original.call(this, messages);
     } finally {
       const stranded = strandedMessages(this);
-      if (stranded.length > 0) void wrapped.call(this, stranded);
+      if (stranded.length > 0) {
+        void entry.implementation.call(this, stranded).catch((error: unknown) => {
+          try {
+            if (typeof this._extensionRunner?.emitError === "function") {
+              this._extensionRunner.emitError({
+                extensionPath: ".pi/extensions/lib/fm-pi-prompt-delivery.ts",
+                event: "agent_settled",
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          } catch {}
+        });
+      }
     }
   };
-  prototype._runAgentPrompt = wrapped;
-  wrappedPrototypes().add(prototype);
+  const entry = installed ?? { original, implementation: wrapped };
+  entry.implementation = wrapped;
+  if (!installed) {
+    registry.set(prototype, entry);
+    prototype._runAgentPrompt = function (messages) {
+      return entry.implementation.call(this, messages);
+    };
+  }
   return { ok: true };
 }
 

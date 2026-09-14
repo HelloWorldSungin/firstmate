@@ -67,6 +67,12 @@ function sessionClass(lateJoin?: (session: DoubleSession) => void) {
     _isAgentRunActive = false;
     isCompacting = false;
     runs: unknown[] = [];
+    _steeringMessages: string[] = [];
+    _followUpMessages: string[] = [];
+    queueUpdates = 0;
+    _emitQueueUpdate() { this.queueUpdates += 1; }
+    getSteeringMessages() { return this._steeringMessages; }
+    getFollowUpMessages() { return this._followUpMessages; }
     agent = {
       state: { isStreaming: false },
       steered: [] as unknown[],
@@ -127,6 +133,29 @@ if (JSON.stringify(running.agent.followed) !== JSON.stringify([wake, processing]
   fail(`Firstmate prompts were not queued as follow-ups exactly once: ${JSON.stringify(running.agent.followed)}`);
 }
 
+if (JSON.stringify(running.getSteeringMessages()) !== JSON.stringify(["CAPTAIN"])) {
+  fail("joined captain input was invisible in the session steering queue");
+}
+if (JSON.stringify(running.getFollowUpMessages()) !== JSON.stringify([wake.content[0].text]) || running.queueUpdates !== 2) {
+  fail("joined user input did not update session bookkeeping exactly once");
+}
+
+const trampoline = Routing.prototype._runAgentPrompt;
+const { installPromptJoin: reloadedInstall } = await import("./.pi/extensions/lib/fm-pi-prompt-delivery.ts?reload");
+reloadedInstall(Routing, () => true);
+if (Routing.prototype._runAgentPrompt !== trampoline) fail("reload replaced the stable trampoline");
+const reloaded = new Routing();
+reloaded._isAgentRunActive = true;
+await reloaded._runAgentPrompt([captain, digest]);
+if (reloaded.agent.steered.length !== 0 || JSON.stringify(reloaded.agent.followed) !== JSON.stringify([captain, digest])) {
+  fail("reload did not activate the new classifier exactly once");
+}
+reloaded._isAgentRunActive = false;
+reloaded.agent.steeringQueue.drain();
+reloaded.agent.followUpQueue.drain();
+await reloaded._runAgentPrompt([captain]);
+if (reloaded.runs.length !== 1) fail("reload double-wrapped the original run");
+
 // The gap between a turn's last queue check and its settlement: the agent run
 // has ended while the session run is still active. A join there is started as
 // its own turn once the running turn settles.
@@ -145,6 +174,48 @@ if (late.runs.length !== 2 || JSON.stringify(late.runs[1]) !== JSON.stringify([w
   fail(`a stranded join was not started after the running turn settled: ${JSON.stringify(late.runs)}`);
 }
 if (late.agent.hasQueuedMessages()) fail("a stranded join stayed queued behind an idle session");
+
+const unhandled: unknown[] = [];
+const onUnhandled = (error: unknown) => { unhandled.push(error); };
+process.on("unhandledRejection", onUnhandled);
+for (const reporter of ["present", "absent", "throws"]) {
+  const errors: { extensionPath: string; error: string }[] = [];
+  let attempts = 0;
+  class Rejecting extends sessionClass() {
+    _extensionRunner = reporter === "absent" ? undefined : {
+      emitError(error: { extensionPath: string; error: string }) {
+        errors.push(error);
+        if (reporter === "throws") throw new Error("reporter failed");
+      },
+    };
+    async _runAgentPrompt(messages: unknown) {
+      attempts += 1;
+      if (attempts === 2) throw new Error("restart failed");
+      this._isAgentRunActive = true;
+      await this._runAgentPrompt([wake]);
+      this._isAgentRunActive = false;
+    }
+  }
+  installPromptJoin(Rejecting);
+  await new Rejecting()._runAgentPrompt([captain]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  if (attempts !== 2 || unhandled.length !== 0) fail("stranded restart escaped as an unhandled rejection");
+  if (reporter !== "absent" && (errors.length !== 1 || errors[0].error !== "restart failed" ||
+      errors[0].extensionPath !== ".pi/extensions/lib/fm-pi-prompt-delivery.ts")) {
+    fail("stranded restart failure was not reported through the extension runner");
+  }
+}
+process.removeListener("unhandledRejection", onUnhandled);
+
+const MissingBookkeeping = sessionClass();
+installPromptJoin(MissingBookkeeping);
+const missingBookkeeping = new MissingBookkeeping();
+missingBookkeeping._isAgentRunActive = true;
+(missingBookkeeping as any)._steeringMessages = undefined;
+await missingBookkeeping._runAgentPrompt([captain]);
+if (missingBookkeeping.runs.length !== 1 || missingBookkeeping.agent.steered.length !== 0) {
+  fail("missing session bookkeeping did not fall through to Pi");
+}
 
 // A session without Pi's queue API keeps Pi's own behavior.
 const Opaque = class {
@@ -267,12 +338,21 @@ if (scenario === "control") {
   api.sendUserMessage(wake, { deliverAs: "followUp" });
   await settle();
   expected = [captainText, wake];
-} else if (scenario === "wake-first") {
+} else if (scenario === "wake-first" || scenario === "wake-first-escape") {
   const preflight = nextPreflight();
   api.sendUserMessage(wake, { deliverAs: "followUp" });
   await preflight;
   await captainPrompt();
-  expected = [wake, captainText];
+  if (patched && !session.getSteeringMessages().includes(captainText)) {
+    fail("joined captain prompt is missing from the real session pending display");
+  }
+  if (patched && scenario === "wake-first-escape") {
+    const restored = session.clearQueue();
+    if (JSON.stringify(restored.steering) !== JSON.stringify([captainText]) || session.pendingMessageCount !== 0) {
+      fail("Escape clearing did not restore the joined captain text");
+    }
+  }
+  expected = scenario === "wake-first-escape" ? [wake] : [wake, captainText];
   loser = `captain: Agent is already processing a prompt`;
 } else {
   const preflight = nextPreflight();
@@ -321,7 +401,7 @@ test_real_pi_overlap() {
   fixture="$TMP_ROOT/real"
   install_delivery_fixture "$fixture" real
   write_real_race "$fixture"
-  for scenario in captain-first-wake captain-first-nudge captain-first-processing wake-first control; do
+  for scenario in captain-first-wake captain-first-nudge captain-first-processing wake-first wake-first-escape control; do
     for patched in 0 1; do
       [ "$scenario" = control ] && [ "$patched" = 0 ] && continue
       mkdir -p "$fixture/tmp-$scenario-$patched"
