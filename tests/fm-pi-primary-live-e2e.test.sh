@@ -265,8 +265,19 @@ cp "$ROOT/bin/fm-supervision-instructions.sh" "$PROJECT/bin/fm-supervision-instr
 chmod +x "$PROJECT/bin/fm-operational-input.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 
+# The session lock names the Pi process itself, exactly as bin/fm-session-start.sh
+# records the engine pid: the loaded-generation markers are written only by the
+# lock holder (.pi/extensions/lib/fm-pi-loaded-marker.ts), never by a child.
+cat > "$LAB/launch-pi.sh" <<'SH'
+#!/usr/bin/env bash
+bash -c 'printf "%s\n" "$$" > "$FM_HOME/state/.lock"; exec pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --model openai-codex/gpt-5.6-sol --thinking low'
+rc=$?
+printf 'PI_EXIT=%s\n' "$rc"
+sleep 300
+SH
+chmod +x "$LAB/launch-pi.sh"
 "$TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -c "$PROJECT" \
-  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc 'printf \"%s\\n\" \"\$\$\" > \"\$FM_HOME/state/.lock\"; pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --model openai-codex/gpt-5.6-sol --thinking low; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"
+  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc '$LAB/launch-pi.sh'"
 
 i=0
 while [ "$i" -lt 120 ]; do
@@ -297,7 +308,15 @@ printf '%s\n' "$pane" | grep -Fq "Working..." \
   && fail "Calm left Pi's stock working row visible on the credentialed provider path"
 wait_for_exact_line "CALM_LIVE_WORKING_VISIBLE" 120 \
   || fail "Pi did not settle the Calm working-ship provider probe"
-pane=$(capture)
+# The reply renders before the run settles, so give the settlement a bounded
+# moment to retire the ship rather than sampling the frame that painted the reply.
+i=0
+while [ "$i" -lt 100 ]; do
+  pane=$(capture)
+  printf '%s\n' "$pane" | grep -Fq '\__/' || break
+  sleep 0.1
+  i=$((i + 1))
+done
 printf '%s\n' "$pane" | grep -Fq '\__/' \
   && fail "Calm left the working ship on screen after the run settled"
 printf '%s\n' "$pane" | grep -Fq "calm transcript" \
@@ -307,7 +326,18 @@ sleep 0.2
 
 : > "$HOME_DIR/state/pi-e2e.meta"
 send_prompt "Start supervision with fm_watch_arm_pi and never use bash to arm supervision. After the watcher wake arrives, run bin/fm-wake-drain.sh and reply exactly HANDLED."
-wait_for_text "watcher: started Pi extension arm child 1" || fail "Pi did not render the initial watcher tool result"
+# The lock is already held when Pi starts, so the extension arms the first cycle
+# at session start and the model's required call reports that ownership as a
+# no-op (docs/supervision-protocols/pi.md); a start without that owned lock
+# would report the first arm child instead.
+i=0
+while [ "$i" -lt 240 ]; do
+  capture | grep -Eq 'watcher: (started Pi extension arm child 1|unchanged - Pi extension already owns an arm child)' && break
+  sleep 0.5
+  i=$((i + 1))
+done
+capture | grep -Eq 'watcher: (started Pi extension arm child 1|unchanged - Pi extension already owns an arm child)' \
+  || fail "Pi did not render the initial watcher tool result"
 
 printf 'done: pi live e2e watcher fire\n' > "$HOME_DIR/state/pi-e2e.status"
 i=0
