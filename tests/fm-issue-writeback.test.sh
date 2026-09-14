@@ -1506,41 +1506,54 @@ test_an_unknown_milestone_is_a_usage_error() {
 # one command that drives two of them, and therefore the one place a second
 # comment would appear if the two call sites did not find each other's work.
 
+# Model the guarded forge transaction separately from tracker API failures.
+install_merge_forge() {  # <case-dir>
+  local dir=$1
+  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "api graphql")
+    case "$*" in
+      *'pullRequest(number:'*) ;;
+      *) exec "$(dirname "$0")/gh-api-fake" "$@" ;;
+    esac
+    if [ -e "$(dirname "$0")/../merge-called" ]; then
+      printf '%s\n' state=MERGED merged=true queued=false base=main default=main
+    else
+      printf '%s\n' state=OPEN merged=false queued=false base=main default=main
+    fi
+    ;;
+  "pr view")
+    case " $* " in
+      *statusCheckRollup*) printf '%s\n' '{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefOid":"1111111111111111111111111111111111111111","baseRefName":"main","statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]}' ;;
+      *headRefOid*) printf '%s\n' 1111111111111111111111111111111111111111 ;;
+    esac
+    ;;
+  "pr merge")
+    printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+    : > "$(dirname "$0")/../merge-called"
+    ;;
+  *) exec "$(dirname "$0")/gh-api-fake" "$@" ;;
+esac
+SH
+  cat > "$dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "api "*) printf 'tip: 2222222222222222222222222222222222222222\n' ;;
+  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
+esac
+SH
+  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+}
+
 test_the_merge_path_posts_its_own_milestones() {
   local dir out rc body
   dir=$(board_case mergepath)
   mkdir -p "$dir/wt" "$dir/projects/widget" "$dir/data"
   # The merge guard must resolve a real home before proving no delivery hold.
   cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
-  # `gh api` is the fake GitHub; every other `gh` call fm-pr-check.sh makes
-  # answers as the PR-head lookup, and gh-axi records the merge.
-  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
-  cat > "$dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = api ]; then
-  exec "$(dirname "$0")/gh-api-fake" "$@"
-fi
-case "${1:-} ${2:-}" in
-  "pr view")
-    case " $* " in
-      *headRefOid*) printf '%s\n' deadbeefcafe ; exit 0 ;;
-    esac
-    ;;
-esac
-exit 0
-SH
-  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
-  # for a merge it cannot confirm, so this stub must report the landed state
-  # the fixture is modelling before any bookkeeping runs.
-  cat > "$dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+  install_merge_forge "$dir"
 
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
@@ -1568,26 +1581,7 @@ test_a_refusing_tracker_never_makes_a_completed_merge_look_retryable() {
   mkdir -p "$dir/wt" "$dir/projects/widget" "$dir/data"
   # The merge guard must resolve a real home before proving no delivery hold.
   cp "$ROOT/.tasks.toml" "$dir/.tasks.toml"
-  mv "$dir/fakebin/gh" "$dir/fakebin/gh-api-fake"
-  cat > "$dir/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = api ]; then
-  exec "$(dirname "$0")/gh-api-fake" "$@"
-fi
-exit 0
-SH
-  # Upstream's merge confirmation reads `gh-axi pr view` and records nothing
-  # for a merge it cannot confirm, so this stub must report the landed state
-  # the fixture is modelling before any bookkeeping runs.
-  cat > "$dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr view") printf 'pull_request:\n  number: %s\n  state: merged\n' "${3:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$dir/fakebin/gh" "$dir/fakebin/gh-axi"
+  install_merge_forge "$dir"
 
   set +e
   out=$(env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \

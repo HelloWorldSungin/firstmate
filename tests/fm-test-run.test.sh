@@ -26,6 +26,29 @@ skip_without() {  # <interpreter> <case-title>
     "$2" "$1"
 }
 
+# Every synthetic runner installation uses this owner, including constructors
+# that deliberately omit or replace the optional timeout helper. Exercise the
+# public runner immediately so missing runtime dependencies fail at construction.
+install_runner_fixture() {  # <repository>
+  local repo=$1 output probe=tests/fixture-install.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  cat > "$repo/$probe" <<'SH'
+#!/usr/bin/env bash
+[ "${GIT_CONFIG_GLOBAL:-}" = /dev/null ] || exit 1
+[ "${GIT_CONFIG_NOSYSTEM:-}" = 1 ] || exit 1
+printf 'ok - fixture runner isolates inherited Git configuration\n'
+SH
+  chmod +x "$repo/$probe"
+  output=$(cd "$repo" && FM_TASK_ID='' GIT_CONFIG_GLOBAL=/fixture-invalid-config \
+    GIT_CONFIG_NOSYSTEM=0 bin/fm-test-run.sh --per-script-timeout-secs 0 "$probe" 2>&1) \
+    || fail "synthetic runner cannot execute its dependency probe in $repo: $output"
+  assert_contains "$output" 'FM_TEST_SUMMARY total=1 failed=0' "synthetic runner dependency probe did not complete"
+  rm "$repo/$probe"
+}
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -104,7 +127,8 @@ test_changed_file_selection_is_conservative() {
 init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  install_runner_fixture "$repo"
+
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -112,6 +136,7 @@ init_changed_fixture_repo() {
     fm-documentation-audiences.test.sh \
     fm-test-isolation-proof.test.sh \
     fm-test-run.test.sh \
+    fm-test-fixtures.test.sh \
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
     fm-harness-adapter-instructions-live-e2e.test.sh \
@@ -143,6 +168,7 @@ init_changed_fixture_repo() {
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/fm-control-lib.sh"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   : >"$repo/bin/fm-procevent-quota.sh"
   : >"$repo/bin/fm-quota-axi-lib.sh"
   : >"$repo/bin/fm-quota-choose.sh"
@@ -190,8 +216,9 @@ init_primary_and_linked_worktree() {
   git -C "$repo" worktree add --quiet -b linked-probe "$linked"
   for tree in "$repo" "$linked"; do
     mkdir -p "$tree/bin" "$tree/tests"
-    cp "$RUNNER" "$tree/bin/fm-test-run.sh"
+    install_runner_fixture "$tree"
     cp "$ROOT/bin/fm-timeout-lib.sh" "$tree/bin/fm-timeout-lib.sh"
+
     chmod +x "$tree/bin/fm-test-run.sh"
     cat >"$tree/tests/probe.test.sh" <<PROBE
 #!/usr/bin/env bash
@@ -270,6 +297,12 @@ test_changed_runner_surfaces_select_their_family() {
     *tests/fm-ask-user-authority.test.sh*) ;;
     *) fail "runner change did not select its pure-contract-unit family: $listed" ;;
   esac
+  # The suite that proves the runner's per-suite fixture Git isolation lives in
+  # the standalone family, which pure-contract-unit never reaches.
+  case "$listed" in
+    *tests/fm-test-fixtures.test.sh*) ;;
+    *) fail "runner change did not select its fixture-isolation regression: $listed" ;;
+  esac
   git -C "$repo" add bin/fm-test-run.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm runner-change
 
@@ -316,6 +349,14 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" "shared helper selects snapshot dependents"
   git -C "$repo" add tests/lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm helper-change
+
+  printf '\n' >>"$repo/tests/git-config-helpers.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-pr-merge.test.sh" "git-config helper selects lib.sh dependents"
+  assert_contains "$listed" "tests/fm-secondmate-safety.test.sh" "git-config helper selects secondmate dependents"
+  assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" "git-config helper selects snapshot dependents"
+  git -C "$repo" add tests/git-config-helpers.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm git-config-helper-change
 
   printf '\n' >>"$repo/tests/fm-backend-herdr-eventwait.test.py"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
@@ -512,7 +553,8 @@ PY
   timeout_repo="$tmp/timeout-repo"
   timeout_script=tests/fm-calm-pi-extension.test.sh
   mkdir -p "$timeout_repo/bin" "$timeout_repo/tests"
-  cp "$RUNNER" "$timeout_repo/bin/fm-test-run.sh"
+  install_runner_fixture "$timeout_repo"
+
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
   [ "$1" -eq 900 ] || return 99
@@ -662,8 +704,10 @@ test_family_proofs_run_in_separate_concurrent_phases() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-family-phases.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  install_runner_fixture "$repo"
+
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-calm-pi-extension.test.sh fm-vendor-auth-probe.test.sh \
@@ -987,6 +1031,63 @@ test_exclude_family() {
   pass "exclude-family drops the named primary family after selection"
 }
 
+test_list_scheduled_proven_isolated_uses_serial_weights() {
+  local tmp
+  tmp=$(fm_test_tmproot fm-test-run-proven-schedule)
+  "$RUNNER" --list --proven-isolated | LC_ALL=C sort >"$tmp/expected"
+  "$RUNNER" --list-scheduled --proven-isolated >"$tmp/actual" \
+    || fail "--list-scheduled --proven-isolated failed"
+  cmp -s "$tmp/expected" "$tmp/actual" \
+    || fail "proven-isolated scheduling must break serial-default ties by path"
+  pass "proven-isolated scheduling ignores parallel hints"
+}
+
+test_list_scheduled_non_lane_selections_use_serial_weights() {
+  local tmp repo script selection
+  local -a scripts=(
+    tests/fm-operational-input.test.sh
+    tests/fm-lint.test.sh
+    tests/fm-muse-harness.test.sh
+    tests/fm-captain-hold-lifecycle.test.sh
+    tests/fm-kimi-harness.test.sh
+    tests/fm-brief.test.sh
+  )
+  tmp=$(fm_test_tmproot fm-test-run-non-lane-schedule)
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests"
+  install_runner_fixture "$repo"
+  for script in "${scripts[@]}"; do
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$repo/$script"
+    chmod +x "$repo/$script"
+  done
+  git -C "$repo" init -q
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+  for script in "${scripts[@]}"; do
+    printf '\n' >>"$repo/$script"
+  done
+  printf '%s\n' \
+    tests/fm-muse-harness.test.sh \
+    tests/fm-brief.test.sh \
+    tests/fm-captain-hold-lifecycle.test.sh \
+    tests/fm-lint.test.sh \
+    tests/fm-kimi-harness.test.sh \
+    tests/fm-operational-input.test.sh >"$tmp/expected"
+  for selection in family all changed scripts; do
+    case "$selection" in
+      family) set -- --family pure-contract-unit ;;
+      all) set -- --all ;;
+      changed) set -- --changed --base HEAD ;;
+      scripts) set -- "${scripts[@]}" ;;
+    esac
+    "$repo/bin/fm-test-run.sh" --list-scheduled "$@" >"$tmp/actual" \
+      || fail "--list-scheduled $selection failed"
+    cmp -s "$tmp/expected" "$tmp/actual" \
+      || fail "$selection scheduling must use serial hints and path-ordered default ties"
+  done
+  pass "family, all, changed, and script selections ignore parallel hints"
+}
+
 test_portable_shard_union_and_coverage_guard() {
   local s1 s2 proven serial herdr optin all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
@@ -1021,11 +1122,36 @@ test_portable_shard_union_and_coverage_guard() {
   # No duplicates across the four partitions.
   [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
     || fail "lanes must not duplicate scripts"
-  # LPT order: first script of shard 1 is the longest proven script.
-  first=$(printf '%s\n' "$s1" | head -n 1)
-  [ "$first" = "tests/fm-captain-hold-lifecycle.test.sh" ] \
-    || fail "shard 1 must start with the longest proven script, got $first"
+  # LPT execution order, asserted against the runner's own measured schedule
+  # rather than against a script name: naming the current longest script here is
+  # what let the recorded lane duration go stale unnoticed in the first place.
+  for lane in portable-parallel-1 portable-parallel-2; do
+    [ "$("$RUNNER" --list --lane "$lane")" = "$("$RUNNER" --list-scheduled --lane "$lane")" ] \
+      || fail "$lane membership must be stored longest-measured-first"
+  done
   pass "portable shard union, disjointness, and coverage guard hold"
+}
+
+# The two parallel lanes are only "duration-balanced" while every member has a
+# measured hint and the packing over those hints stays even. Both halves went
+# unchecked until one lane grew past its CI job cap and was cancelled on every
+# run, so assert them through the guard's own reported numbers.
+test_portable_parallel_lanes_stay_duration_balanced() {
+  local out max imbalance unhinted
+  out=$("$RUNNER" --check-coverage)
+  unhinted=$(printf '%s\n' "$out" | sed -n 's/.*parallel_unhinted=\([0-9]*\).*/\1/p')
+  max=$(printf '%s\n' "$out" | sed -n 's/.*parallel_max_ms=\([0-9]*\).*/\1/p')
+  imbalance=$(printf '%s\n' "$out" | sed -n 's/.*parallel_imbalance_ms=\([0-9]*\).*/\1/p')
+  [ -n "$unhinted" ] && [ -n "$max" ] && [ -n "$imbalance" ] \
+    || fail "coverage guard must report parallel_unhinted, parallel_max_ms, parallel_imbalance_ms: $out"
+  [ "$unhinted" = "0" ] \
+    || fail "$unhinted proven-isolated scripts have no measured parallel hint, so the lanes are packed on a guess"
+  [ "$max" -gt 0 ] || fail "parallel_max_ms must be a positive packed duration, got $max"
+  # 5% of the worst lane: wide enough that one script's growth does not trip it,
+  # narrow enough that a lopsided partition cannot call itself balanced.
+  [ "$((imbalance * 20))" -le "$max" ] \
+    || fail "parallel lanes differ by ${imbalance}ms against a ${max}ms worst lane, more than 5%"
+  pass "portable parallel lanes are fully hinted and packed within 5% of each other"
 }
 
 test_portable_serial_shards_partition_the_serial_lane() {
@@ -1240,8 +1366,10 @@ test_unmapped_new_test_never_inherits_family_concurrency() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unmapped.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  install_runner_fixture "$repo"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
+
   chmod +x "$repo/bin/fm-test-run.sh"
   # Two members of the proven residual family, plus a test basename the family
   # map has never seen - the shape of any test added tomorrow.
@@ -1318,8 +1446,10 @@ test_per_script_timeout_bounds_a_hang() {
   runner="$repo/bin/fm-test-run.sh"
   hang=tests/fm-hang-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
+
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   grandchild_pid="$tmp/grandchild.pid"
   cat >"$repo/$hang" <<'SH'
 #!/usr/bin/env bash
@@ -1386,8 +1516,10 @@ test_max_wall_ms_is_a_result_not_advice() {
   runner="$repo/bin/fm-test-run.sh"
   fast=tests/fm-budget-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
+
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
 sleep 1
@@ -1452,10 +1584,12 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   c=tests/fm-lint.test.sh
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   # The copied runner's per-script timeout default (see bin/fm-test-run.sh) needs
   # the timeout helper next to it; the runner refuses the run otherwise.
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
+
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -1614,8 +1748,9 @@ test_per_script_timeout_bounds_a_hung_script_under_jobs() {
   # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
   proven=tests/fm-brief.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   cat >"$repo/$proven" <<'SH'
 #!/usr/bin/env bash
 echo "ok - hung parallel fixture started"
@@ -1650,7 +1785,7 @@ test_per_script_timeout_zero_is_a_real_opt_out() {
   runner="$repo/bin/fm-test-run.sh"
   fixture=tests/slow.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   chmod +x "$runner"
   cat >"$repo/$fixture" <<'SH'
 #!/usr/bin/env bash
@@ -1695,6 +1830,7 @@ SH
   # With the helper available the opt-out still runs unbounded rather than
   # quietly falling back to the default.
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   rc=0
   ( cd "$repo" && "$runner" --per-script-timeout-secs 0 "$fixture" ) \
     >"$tmp/out2" 2>"$tmp/err2" || rc=$?
@@ -1715,7 +1851,7 @@ SH
   changed_repo="$tmp/changed"
   changed_script=tests/fm-calm-pi-extension.test.sh
   mkdir -p "$changed_repo/bin" "$changed_repo/tests"
-  cp "$RUNNER" "$changed_repo/bin/fm-test-run.sh"
+  install_runner_fixture "$changed_repo"
   cat >"$changed_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
   return 124
@@ -1779,8 +1915,9 @@ test_signal_relay_reports_the_signal_that_stopped_the_sweep() {
   runner="$repo/bin/fm-test-run.sh"
   fixture=tests/slow.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   chmod +x "$runner"
   # The fixture distinguishes the two signals the way several suites in this
   # repo do, so the relayed signal is observable and not just the runner's own
@@ -1869,7 +2006,7 @@ test_per_script_bound_that_could_not_be_armed_reports_the_script_as_not_run() {
   # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
   proven=tests/fm-brief.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   chmod +x "$runner"
   # The bound owner's documented "no bounded runner could start" outcome, in
   # the one file the runner sources to get it.
@@ -1922,6 +2059,7 @@ SH
   # With a real bound owner, a script that exits 125 itself must keep its own
   # status and its own output, and must not be described as never run.
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   cat >"$repo/$fixture" <<'SH'
 #!/usr/bin/env bash
 echo "ok - self-inflicted 125 fixture ran"
@@ -1962,8 +2100,9 @@ test_a_script_that_exits_124_itself_is_not_reported_as_a_bound_kill() {
   # A real proven-isolated name, so --jobs accepts it; the body is a fixture.
   proven=tests/fm-brief.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   chmod +x "$runner"
   cat >"$repo/$fixture" <<'SH'
 #!/usr/bin/env bash
@@ -2024,7 +2163,7 @@ test_per_script_timeout_default_arms_for_standard_modes() {
   runner="$repo/bin/fm-test-run.sh"
   fixture=tests/fm-brief.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner_fixture "$repo"
   chmod +x "$runner"
   cat >"$repo/$fixture" <<'SH'
 #!/usr/bin/env bash
@@ -2051,6 +2190,7 @@ SH
 
   # And with the helper present the armed default leaves healthy work alone.
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+
   rc=0
   out="$tmp/green.out"
   ( cd "$repo" && "$runner" "$fixture" ) >"$out" 2>"$tmp/green.err" || rc=$?
@@ -2159,7 +2299,10 @@ test_a_run_that_ran_records_no_skip_reason
 test_live_guards_expect_a_capability_skip_class
 test_fail_on_gate_skip_token
 test_exclude_family
+test_list_scheduled_proven_isolated_uses_serial_weights
+test_list_scheduled_non_lane_selections_use_serial_weights
 test_portable_shard_union_and_coverage_guard
+test_portable_parallel_lanes_stay_duration_balanced
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_hint_coverage_is_reported_and_bounded
 test_portable_serial_shard_lane_refusals

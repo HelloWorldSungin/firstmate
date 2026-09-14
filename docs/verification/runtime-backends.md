@@ -130,6 +130,111 @@ all fm-subagent-pretool-check tests passed
 all fm-documentation-audiences tests passed
 all fm-pointer-check tests passed
 ```
+## Harness detection precedence
+
+Firstmate's own harness comes from two kinds of evidence, and `bin/fm-harness.sh` owns how they combine: an environment marker names its harness, and the nearest harness process in the parent chain proves who owns the process tree.
+A marker alone is not proof of ownership, because it is ordinary environment state that a child inherits and a terminal multiplexer can replay into an unrelated session.
+Verified on 2026-09-02 on Linux 7.1.12 with the portable regression, which builds every case from real renamed processes and no installed harness:
+
+```sh
+bin/fm-test-run.sh tests/fm-harness-precedence.test.sh
+```
+
+Observed output:
+
+```text
+ok - a markerless harness keeps its identity under an inherited foreign marker
+ok - a harness that publishes a marker inside its own process tree is unchanged
+ok - with ancestry silent, the marker layer and its cursor-first ordering still decide
+ok - a retained cursor marker does not rename a nested claude worker
+ok - an agreeing marker keeps Pi's finer identity that ancestry cannot prove
+ok - an interpreter script-path match answers alone but never outranks a marker
+ok - a native harness binary under an interpreter shim decides at comm strength
+ok - a harness that is pid 1 of its own namespace is examined, not skipped
+ok - the descent probe reaches comm strength where the top-of-session probe sees only args
+ok - the descent probe reports no verdict from a sibling branch detection cannot reach
+ok - a foreign args-only verdict at the deepest vantage leaves the comm-strength identity intact
+ok - equal-depth descent ties prefer the comm-strength leaf regardless of spawn order
+ok - session start renders the Codex protocol for a Codex primary holding a retained CLAUDECODE
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=3666
+```
+
+Before that boundary existed, a Codex session started from an environment that had retained `CLAUDECODE=1` reported `claude`, and session start emitted Claude's Stop-owned supervision protocol to a Codex primary.
+The same live shape, reproduced with a real process named `codex` and no installed harness, now reports `codex` with the marker present and `claude` with the marker present and ancestry blinded, which is what proves the case is not vacuous.
+
+### A real Codex session holding a retained Claude marker
+
+The portable regression builds its process tree from renamed executables, so the same guarantee is proven again against the real installed Codex.
+`codex sandbox` runs a command under the installed native binary with no model turn, inside a PID namespace where that binary is pid 1 and the command is pid 2.
+Verified on 2026-09-01 with codex-cli 0.152.0 on Linux 7.1.10, with both Claude markers retained in the launching environment:
+
+```sh
+CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli codex sandbox bash -c \
+  'cd <checkout> && bin/fm-harness.sh; bin/fm-harness.sh ancestry; bin/fm-supervision-instructions.sh'
+```
+
+Against the parent commit, with `CLAUDECODE=1` and `CLAUDE_CODE_ENTRYPOINT=cli` confirmed present in the probe's own environment and the chain reading pid 2 `bash` to pid 1 `codex`:
+
+```text
+verdict=claude
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+Mode: Claude Stop-hook-owned supervision.
+```
+
+With the current boundaries in place, from the same command and the same process chain:
+
+```text
+verdict=codex
+ancestry=comm codex
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: codex
+Mode: Codex foreground checkpoint.
+```
+
+Two boundaries are load-bearing here, and the marker-versus-ancestry precedence above is only the first.
+The walk also used to stop as soon as the next pid was 1, on the assumption that pid 1 is always init.
+That assumption inverts inside a PID namespace, where the harness is pid 1: the walk returned no ancestry at all, so the retained marker won by default even with precedence corrected.
+The walk now examines that top process before stopping, which costs one `ps` call and can introduce no false positive, because a host's real pid 1 (init, systemd, launchd) matches no harness name.
+The portable regression asserts both directions of that case: a host-shaped pid 1 still leaves the marker to answer, and a harness at pid 1 outranks it.
+
+Run on the host under Claude Code 2.1.252 with the same two markers set, the same probe reports `claude`, `comm claude`, and Claude's Stop-owned protocol, so the correction does not trade one misidentification for its inverse.
+
+### Real harness process names behind the walk
+
+The detection half of the opt-in drift guard asks the ancestry walk what it makes of each INSTALLED harness's real running process:
+
+```sh
+FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
+```
+
+The guard probes the upward path between the deepest foreground descendant of the pane process and the pane process itself, and reports each distinct verdict that vantage set produces.
+Refreshed on 2026-09-14 with the command above: Claude 2.1.270, Codex CLI 0.154.0, OpenCode 1.18.30, Pi 0.85.1, and Cursor 2026.09.10-fd3934a each reported alive and comm-strength ancestry identity.
+The guard printed `checked 5 installed harness(es)` and its complete-suite success marker.
+Pi-signed, Grok, Kimi, and Muse were explicitly absent; Gemini, Rovo, and OMP were also absent from this host.
+Agy 1.2.2 is covered by its separate real lifecycle and vendor guards below.
+
+Observed on 2026-09-02 for the harnesses installed on that machine:
+
+```text
+# claude 2.1.258 (Claude Code): title='claude' foreground=[claude ]
+# claude 2.1.258 (Claude Code): ancestry verdicts=[comm claude]
+# codex codex-cli 0.152.0: title='node' foreground=[node codex ]
+# codex codex-cli 0.152.0: ancestry verdicts=[comm codex;args codex]
+```
+
+The verdicts are reported deepest first, so Codex's native child answers before the shim above it.
+When eligible foreground descendants tie at the greatest depth, the probe prefers a leaf whose own verdict reaches comm strength; if none does, it keeps the first leaf, so process-table ordering cannot hide an equally deep native harness binary behind an args-strength interpreter.
+
+Codex ships as a `node` npm shim that spawns its native `codex` binary as a foreground child, which is why its two verdicts differ: the pane process is identified only from the shim's script path, and the native child is what carries the process name.
+That difference is the reason the guard cannot probe the pane process alone.
+The guarantee this guard holds is a strength claim, not only an identity one, because `detect_own` hands an args-strength verdict straight back to a retained foreign marker.
+A pane-only probe would have observed `args codex`, passed, and gone on passing if a later release stopped spawning the native child, while real sessions silently regressed to the original bug.
+Probing from below asks the question from the vantage a tool subprocess actually occupies, so the guard can require comm strength somewhere in the session and require every comm-strength vantage to name the same harness.
+The vantage set stops at the upward path rather than the whole subtree, because `harness_ancestry` only ever climbs and a sibling branch is therefore a vantage firstmate's own detection can never occupy.
+The reject-other-harness cross-check judges comm-strength vantages only, because an args-strength verdict is path-ambiguous by construction: a harness-spawned MCP server running as `node <home>/.claude/mcp/<server>.js` answers `args claude` purely from the `.claude` path component, and such a server is normally a child of the agent binary, so it can be the deepest descendant and sit on this path.
+That narrowing changes only which vantages the cross-check judges; the comm-strength requirement itself is unchanged.
+A single-process harness has no descendant that adds a distinct verdict, which is why `claude` reports one.
+The portable regression pins every half without any harness installed: `tests/fm-harness-precedence.test.sh` asserts that this two-process topology decides at comm strength, that the descent probe reaches a strength the top-of-session probe cannot, that a sibling branch answering a foreign harness contributes no verdict, that a foreign args-only verdict at the deepest vantage leaves the comm-strength identity intact, and that equal-depth ties choose the comm-strength leaf regardless of process ordering.
+The run did not reach `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, or `muse`, which were not installed, and stopped at the same pre-existing liveness failure for `cursor` 3.18.9, whose resolved binary on that machine is the editor rather than `cursor-agent`; those adapters are unverified by this run.
 
 ## tmux
 
@@ -188,7 +293,7 @@ The crewmate-only Muse Code 0.1.0-R708.1 adapter was verified separately on 2026
 Its installed `muse-bin-0.1.0-R708.1` foreground identity classified `alive`, while `musescore`, `amuse`, `muse-binary`, and `muse-bind` remained ambiguous in the portable regression.
 [`muse.md`](muse.md#process-identity) owns the artifact identity and launcher evidence for that verification.
 
-The crewmate/scout-only Rovo CLI 202609.1.2 adapter added `*rovo*` to the same glob family as `*grok*`/`*kimi*` in `fm_backend_tmux_classify_process_name`, and was relaunched live under tmux 3.6a in an isolated private socket.
+The crewmate/scout-only Rovo CLI 202609.1.2 adapter added `*rovo*` to the same glob family as `*grok*`/`*kimi*` in the shared process-name classifier (now `fm_agent_process_classify_name` in `bin/fm-agent-process-lib.sh`), and was relaunched live under tmux 3.6a in an isolated private socket.
 `#{pane_current_command}` reported the truncated on-disk binary name `atlassian_cli_r` - macOS's 15-char `comm` truncation cuts `atlassian_cli_rovodev` off just before the `rovo` substring begins, the same truncation-volatility class codex/kimi's own patch-release name drift shows above - while the foreground ps-based `comm` correctly reported `rovo`, so `fm_backend_tmux_agent_state` returned `alive` through that primary source; the two-independent-name-sources design is exactly why the truncated title does not break the verdict.
 [`rovo.md`](rovo.md#backend-liveness-tmux-verified-live-herdr-placement-verified-live-with-a-herdr-side-agent-detection-gap) owns the fuller record, including the busy/interrupt/exit facts captured in that same live tmux session and the herdr agent-detection gap found when herdr placement was verified live in an isolated lab session.
 
@@ -427,7 +532,48 @@ That warning rendered in the same shape as the trust dialog, with the selection 
 That gate is not a production blocker, because a normal environment has already accepted it and the treatment arm above ran against the real config and saw neither dialog.
 This change does not address that warning and does not claim to.
 
-`bin/fm-spawn.sh` therefore pre-registers the task worktree through `bin/fm-claude-trust.sh` before launch, and `tests/fm-claude-trust.test.sh` pins both halves of the scope contract: a fresh worktree is trusted, and an out-of-scope path is refused.
+### Secondmate homes
+
+Verified 2026-09-11 on Claude Code 2.1.269.
+A secondmate launches in its own firstmate home rather than a task worktree, and that home meets the same gate.
+The control arm launched a standalone-clone secondmate home that the store had no entry for, the way `bin/fm-spawn.sh --secondmate` launches one.
+
+```sh
+tmux -L <sock> new-session -d -s ctrl -x 180 -y 44 -c <home> \
+  "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions"
+```
+
+```
+ Accessing workspace:
+ /private/tmp/fm-sm-trust-live-69759/fm-homes/livemate-n1
+ Quick safety check: Is this a project you created or one you trust? ...
+ ❯ No, exit
+   Yes, I trust this folder
+```
+
+The treatment arm pre-registered that same home through the secondmate-home mode and launched it identically against the operator's real config.
+
+```sh
+bin/fm-claude-trust.sh --secondmate-home <home> livemate-n1
+```
+
+```
+trusted: /private/tmp/fm-sm-trust-live-69759/fm-homes/livemate-n1
+```
+
+```
+ ▐▛███▛█   Claude Code v2.1.269
+▝▜██████▀  Opus 4.8 with high effort · Claude Max
+  ▝▝ ▝▝    /private/tmp/fm-sm-trust-live-69759/fm-homes/livemate-n1
+...
+❯
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+```
+
+No dialog appeared, the composer was reached, and neither did the machine-scoped bypass warning, because this ran against the real config.
+The lab home was deleted and the test entry was removed from the store and verified absent, with the same point-in-time caveat as the worktree arms above.
+
+`bin/fm-spawn.sh` therefore pre-registers the directory every claude launch starts in through `bin/fm-claude-trust.sh` before launch, and `tests/fm-claude-trust.test.sh` pins both halves of the scope contract for both shapes: a fresh worktree and a seeded secondmate home are trusted, and an out-of-scope path is refused.
 That automated spawn case runs against a fake claude, so it asserts the store entry and the launch command and nothing more; the live arms above are what establish that the entry actually suppresses the dialog.
 The composer-classification record below observes the same gate from the other side, where an untrusted worktree left Claude, Grok, and Muse unverified because the guard reads a first-launch trust dialog as an unreadable composer.
 
@@ -1024,6 +1170,41 @@ Part C is the case the suite could not reach before: a doomed pane whose shell h
 On 0.7.5 that fallback exposed a bounded four-sample wrong-focus window and restored the anchor exactly; on 0.8.0 the same fallback exposed none, which is why default-on projection is floored at 0.8.0 rather than mitigated further below it.
 The suite also cross-checks its own Part A measurement against the floor classifier on whatever release it runs, so a drifted protocol-to-release mapping fails there rather than silently gating on the wrong thing.
 
+### Attached foreground viewer
+
+A pseudo-terminal registers as a Herdr foreground client only when its window grid is non-zero.
+`script` and a bare `pty.fork()` from a non-tty parent both start at 0x0, which is why PR #4131 could validate only the detached half of the teardown focus guard and left its four attached-client scenarios untested.
+The guarded `viewer start` path fixes the pty at the proven 40-row by 120-column grid, sets that size on the master fd before the fork, and scrubs inherited `HERDR_*` variables, which makes the attached scenarios reachable from a headless runner.
+
+Measured on 2026-09-11 against Herdr 0.9.0 protocol 22 on macOS 26.5.2 aarch64 with Python 3.14.6:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-herdr-attached-viewer-live-e2e.test.sh
+```
+
+```text
+ok - attached viewer: a pty sized before the fork registers as a real Herdr foreground client
+ok - attached viewer: a live client on the target tab refuses the close and keeps the pane
+ok - attached viewer: focus moving onto the target between planning and mutation still blocks the close
+ok - attached viewer: a close preserves the fresh non-target focus the viewer moved to
+ok - attached viewer: the projection seeded-tab prune refuses while a live client watches it
+ok - attached viewer: detaching releases the refusal, so the guard tracks the client and not the pointer
+```
+
+The same six checks passed on 2026-09-14 against Herdr 0.8.2 on Linux x86_64 with Python 3.12.3, using the guarded helper from `kunchenguid/firstmate@b182d0f908b78d08c7ccb8dce3775bdca8c5d657`.
+The isolated-session cleanup completed with the live default-session tripwire intact.
+
+Both halves of the recipe are load-bearing, and each was measured by removing it from the helper and re-running the guard on the same host and release.
+Dropping the `TIOCSWINSZ` call and dropping the environment scrub each left startup reporting `no_foreground_client`, followed by the guard failure:
+
+```text
+not ok - could not attach a real foreground Herdr viewer over a sized pty
+```
+
+Re-run this guard after every Herdr upgrade.
+A release that changed the foreground-client contract, the window-grid requirement, or the nested-viewer refusal would fail here first, and the detached regressions would keep passing while saying nothing about it.
+
 ### Presentation version floor
 
 Default-on presentation projection is floored at Herdr 0.8.0.
@@ -1152,10 +1333,12 @@ Herdr is one of the two backends whose recovery-grade agent-state classifier the
 tests/fm-control-herdr-smoke.test.sh
 ```
 
-Observed output:
+Observed output, refreshed 2026-09-10 on Herdr 0.9.0 after the stale-registration fix (the two stale-registration lines are recorded under "Stale agent registration" below):
 
 ```text
 ok - real herdr: exit on a pane with no registered agent is idempotent success
+ok - real herdr 0.9.0: a gone session reads recoverable while a live pane and a malformed target do not
+ok - real herdr: a drifted agent-free shell returns to its worktree and reuses the same endpoint
 ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
 ok - real herdr: a registration with no agent process behind it classifies dead (stale), not alive
 ok - real herdr: interrupt refuses a stale registration instead of keying a dead shell
@@ -1163,15 +1346,15 @@ ok - real herdr: exit on a stale registration is idempotent success, so relaunch
 ok - real herdr: a registered agent with a live process stays alive through the cross-check
 ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
 ok - real herdr: no control verb removed the endpoint or the task's local copy
+ok - real herdr 0.9.0: a registration Herdr keeps after its agent exits reads stale-agent and recovers as dead
+ok - real herdr: exit on a pane with a stale registration is idempotent success
+ok - real herdr: a stale registration no longer blocks relaunch, and the endpoint and local copy survive
 ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
 
 all fm-control-herdr-smoke tests passed
 ```
 
-The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies.
-In this guard, the unregistered case confirms the ordinary agent-free baseline, `report-agent` creates the stale-registration state over a plain idle shell, and a real foreground process makes the paired live case fail the agent-free proof without launching a real agent.
-A separate live reading on 2026-08-15 found the other dead-pane shape the classifier must accept: pane shell, resident `treehouse` wrapper, and worktree subshell holding the foreground.
-The classifier read that endpoint `dead` while four concurrently live Pi and Claude panes on the same server all read `alive`; the portable `test_agent_state_*` cases in `tests/fm-backend-herdr.test.sh` pin the chain and negative shapes.
+The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, and since 2026-09-10 that registration counts as an agent only while `pane process-info` shows a harness process behind it, so the guard backs the registration with a real process named like a harness (a symlink to `sleep`) and then stops that process, with no real harness launched.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
 For Pi on Herdr 0.9.0, `herdr agent get` reflects whether the agent process remains live; its registration does not persist merely because the pane and parent shell do.
@@ -1238,6 +1421,90 @@ ok - real herdr: a drifted agent-free shell returns to its worktree and reuses t
 `tests/fm-control-relaunch.test.sh` drives a tmux stub and proves that tmux retains its prior refusal without sending `cd` or any other input to the pane.
 The Herdr refusal when a shell accepts the command but does not move is not exercised in this change.
 
+### Stale agent registration
+
+Fork verification on 2026-09-14 with Herdr 0.8.2 and Pi 0.85.1 uses the shared positive classifier and the fork's terminal-wide absence proof.
+The portable companion exercises suspended, backgrounded, reparented same-terminal, escape-shell, and unreadable-process cases.
+Refresh both through the isolated named-lab helper:
+
+```sh
+HERDR_LAB_HELPER=/home/sungin/firstmate/bin/fm-herdr-lab.sh bin/fm-test-run.sh tests/fm-backend-herdr.test.sh tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
+```
+
+```text
+ok - real herdr 0.8.2 + pi 0.85.1: a running registered pi classifies alive at process level
+# herdr 0.8.2 kept the pi registration (idle) after /quit under a nested shell: the stale-registration branch is exercised
+ok - real herdr 0.8.2 + pi 0.85.1: the registration left behind by a quit pi reads stale-agent and recovers as dead
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=22692
+```
+
+
+Measured 2026-09-10 on macOS aarch64 against Herdr 0.9.0 (protocol 22) and Pi 0.85.1 in an isolated `fm-lab-` session (upstream issue #4115, duplicates #3639, #3487, #2908, #3545).
+
+Herdr keeps a Pi registration after the Pi process has exited to a shell when a nested interactive shell sits under the pane's top shell, which is the crew shape `treehouse get` leaves behind; a plain `/quit` directly under the top shell, and a `kill -9` of Pi, both released it on this version.
+Reproduced in the lab with a nested `zsh` under the pane shell, then `pi` with no prompt, then `/quit`:
+
+```sh
+herdr pane run w1:p1 zsh --session "$LAB"; herdr pane run w1:p1 pi --session "$LAB"
+herdr agent get w1:p1 --session "$LAB" | jq -c '.result.agent | {agent, agent_status}'
+herdr pane process-info --pane w1:p1 --session "$LAB" | jq -c '.result.process_info | {shell_pid, fg: .foreground_process_group_id, procs: [.foreground_processes[] | {pid, name, argv0}]}'
+herdr pane send-text w1:p1 '/quit' --session "$LAB"; herdr pane send-keys w1:p1 Enter --session "$LAB"
+herdr agent get w1:p1 --session "$LAB" | jq -c '.result.agent | {agent, agent_status}'
+herdr pane process-info --pane w1:p1 --session "$LAB" | jq -c '.result.process_info | {shell_pid, fg: .foreground_process_group_id, procs: [.foreground_processes[] | {pid, name, argv0}]}'
+```
+
+```text
+{"agent":"pi","agent_status":"idle"}
+{"shell_pid":87754,"fg":35952,"procs":[{"pid":35952,"name":"node","argv0":"pi"}]}
+{"agent":"pi","agent_status":"idle"}
+{"shell_pid":87754,"fg":35834,"procs":[{"pid":35834,"name":"zsh","argv0":"zsh"}]}
+```
+
+Before the fix `fm_backend_agent_state herdr` read that second state as `alive`, so `bin/fm-control.sh <id> relaunch` and `bin/fm-spawn.sh --relaunch` were refused for as long as the registration lived, which is hours.
+The registration is still present after the wait, and Herdr's own `pane report-agent` leaves the same shape behind on any pane, which is what the lifecycle-control guard uses.
+
+Two vendor facts the fix rests on, both read from the outputs above and from `fm_backend_herdr_pane_process_state`'s `pane process-info` parse:
+
+- Pi's process presents with kernel name `node` and argv0 `pi` (its foreground group also carries Pi's child `node` helpers with argv0 such as `npm view ... version`), so a running Pi is attributed by argv[0] exactly as the tmux probe attributes it; a symlink named `claude` to `sleep` presents as name `sleep`, argv0 `claude`.
+- Herdr creates the record with its own placeholder `agent_status` of `unknown` the moment it notices Pi, before Pi's extension reports `idle`; that transient reads `unknown` in the pane classifier as it always did, and only a lifecycle status is subject to the process-level proof.
+
+Subcommand presence below the 0.9.0 measurement, checked 2026-09-10 on macOS aarch64 against the pinned upstream release clients fetched from `https://github.com/ogulcancelik/herdr/releases/download/v<version>/herdr-macos-aarch64`:
+
+| Release | sha256 |
+|---------|--------|
+| 0.7.1 | `16f4653f0491ea1e7d2b46b5b02542f18e1b82e88daaf9e2900572e5bb634df8` |
+| 0.7.3 | `b31345392d004ec1f1b2c821e1ad601019fa8385fe1e4c6931321eb58a920773` |
+| 0.7.4 | `24992e1625dbdcb18354a59e299e4b263c312400b31396cdc07cd46ed57f24a7` |
+| 0.7.5 | `37350546b0012555943b92eaf962665de4e264395baeb44227b8015e8ff5b0d6` |
+
+The command run against each client was `<client> pane --help`, which is client-side, session-independent, and opens no socket, and each printed the line:
+
+```text
+process-info  Show pane process information
+```
+
+This proves subcommand presence in the client only, not the server response shape, which is measured only on 0.9.0 above.
+
+The live guard that refreshes this record runs by default wherever Herdr and Pi are installed, spends no model token, and fails naming both versions:
+
+```sh
+tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
+```
+
+Observed 2026-09-10:
+
+```text
+# pi 0.85.1 under herdr 0.9.0: registered idle, foreground [{"name":"node","argv0":"node"},{"name":"node","argv0":"node"},{"name":"node","argv0":"rpiv-ask-user-question version"},{"name":"node","argv0":"npm view gentle-engram version"},{"name":"node","argv0":"pi"}]
+ok - real herdr 0.9.0 + pi 0.85.1: a running registered pi classifies alive at process level
+# herdr 0.9.0 kept the pi registration (idle) after /quit under a nested shell: the stale-registration branch is exercised
+ok - real herdr 0.9.0 + pi 0.85.1: the registration left behind by a quit pi reads stale-agent and recovers as dead
+```
+
+`tests/fm-control-herdr-smoke.test.sh` proves the same shape through the control plane with no harness launched (the two `stale` lines under "Agent lifecycle control" above): a registration over a real agent-named process reads `alive`, stopping that process makes the pane read `stale-agent` and recover as `dead` while `agent get` still reports the record, `exit` then reports `already-stopped`, and `--relaunch` reuses the same endpoint with the local copy intact.
+`tests/fm-backend-herdr.test.sh` pins the logic portably with canned `process-info` bodies over real processes, driving the signals apart: the identical shell-only foreground reads `stale-agent` for a childless shell and `live` when an agent-named process is still a descendant of that shell, a `working`, `done`, or `blocked` record over a shell-only pane reads the same as `idle`, an unreadable process view reads `unknown` and refuses husk closing, a transient prompt helper beside the shell settles into `stale-agent` on the next shell-only sample while a foreground that never settles within the bound still reads `live`, and `busy_state` verifies a `working` record before reporting busy.
+`tests/fm-crew-state.test.sh` pins the recovery classifier: a stale registration over a shell-only pane reports agent gone rather than alive or unreachable, and a stale `working` record never reports the pane working.
+A stale-registration pane is never a husk: create, reclaim, presentation recovery, and session cleanup keep refusing it, and only recovery reuses it.
+
 ### Away-mode transport
 
 The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
@@ -1249,6 +1516,7 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+The catch-up reporting boundary is pinned by `tests/fm-afk-return.test.sh`: Bearings reports a pending catch-up while an active away window still refuses.
 
 ## Zellij
 
@@ -1433,8 +1701,9 @@ Read from the live agent process and from a tool subprocess it spawned:
 | `CURSOR_CONVERSATION_ID=<uuid>` | child/tool processes |
 | `AGENT_TRANSCRIPTS=<projects-root>/<slug>/agent-transcripts` | child/tool processes |
 
-Cursor does not clear an inherited `CLAUDECODE`, so ordering decides the verdict.
-With both markers set, `bin/fm-harness.sh` reports `cursor`; with `CLAUDECODE` alone it still reports `claude`.
+Cursor does not clear an inherited `CLAUDECODE`, so ordering decides the verdict within the marker layer.
+With both markers set and ancestry silent, `bin/fm-harness.sh` reports `cursor`; with `CLAUDECODE` alone it still reports `claude`.
+[Harness detection precedence](#harness-detection-precedence) owns what happens when a structural ancestor of another harness is present, which outranks either marker.
 
 ### Composer
 
@@ -1560,31 +1829,39 @@ FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-l
 
 ## Antigravity CLI (agy) control mechanics
 
-Measured 2026-08-18 on agy 1.1.14, in a throwaway tmux pane on a temporary worktree whose exact path was seeded through `fm_agy_trust_add` and removed afterward through `fm_agy_trust_remove`.
-agy is a crew-only, Herdr-only spawn adapter, but its interrupt and exit mechanics are properties of the CLI rather than of a session provider, so a plain pane is the correct place to read them.
-This record exists because `bin/fm-control-lib.sh` refuses any lifecycle verb on a harness with no rows, which is what an agy task got before these values were measured.
-
-| Fact | Measured value |
-|---|---|
-| Workspace trust | `--dangerously-skip-permissions` does NOT cover it: an unseeded launch renders `Do you trust the contents of this project?` with `> Yes, I trust this folder`. A seeded exact path launches straight into the session. |
-| Mid-turn footer | `esc to cancel` (the idle footer reads `? for shortcuts`). |
-| Interrupt | A SINGLE Escape. The turn closes with `⎿  Interrupted · What should Antigravity CLI do instead?`. |
-| Interrupt clear key | None. After the interrupt the composer is a bare `>` with no restored prompt text, so nothing has to be cleared before the next send. |
-| Interrupt acknowledgement source | None. The `Interrupted` line is rendered text, not a durable typed close, and agy's busy state comes from Herdr's native agent-state only. |
-| Exit command | `/exit` (`/exit  Exit the CLI` in the slash-command popup). One Enter selects it and the process exits. |
-
-The exact commands that produced the values above:
+Refreshed 2026-09-14 on agy 1.2.2 and Herdr 0.8.2.
+The standalone vendor guard verified a real launch prompt, the busy footer, cancellation with one Escape, and process exit through `/quit`.
+The former `/exit` control row is superseded by this measured command.
+The production adapter remains crew-only and Herdr-only; standalone terminal checks establish CLI behavior without expanding dispatch support.
+Herdr native identity and state remain the production busy source, and rendered text is not a replacement for an unknown native state.
 
 ```sh
-tmux -L agyverify new-session -d -s v -x 200 -y 50 -c "$WT" \
-  "agy --dangerously-skip-permissions --effort high --prompt-interactive '<long prompt>'"
-tmux -L agyverify send-keys -t v:0.0 Escape
-tmux -L agyverify capture-pane -p -t v:0.0
-tmux -L agyverify send-keys -t v:0.0 '/exit' Enter
+FM_AGY_SIGNALS_LIVE=1 bin/fm-test-run.sh tests/fm-agy-signals-live-e2e.test.sh
 ```
 
-The portable regression that pins the resulting rows is `test_agy_has_verified_control_rows` in `tests/fm-control.test.sh`.
-The end-to-end agy lane on its real backend stays in the Herdr-gated `tests/fm-agy-smoke.test.sh`.
+```text
+ok - the real agy busy footer matches fm_busy_agy_tail_busy in flight
+ok - the real agy worker processed its launch prompt
+ok - a single Escape cancels the real agy turn
+ok - /quit stops the real agy process
+```
+
+The portable control regression is `test_agy_has_verified_control_rows` in `tests/fm-control.test.sh`.
+The full native lifecycle guard is `tests/fm-agy-smoke.test.sh`.
+It waits within its existing launch window for actual generic liveness: Herdr can register agy with `agent_status=unknown` before publishing `working`.
+The smoke uses a short shell wait in each real prompt so its working-to-idle observations cannot disappear inside an instantaneous one-word response.
+
+Three consecutive complete native trials passed on 2026-09-14, each including launch, working-to-idle settlement, confirmed atomic steering, native completion wake, trust removal, and named-lab teardown with the default-session tripwire.
+
+```sh
+HERDR_LAB_HELPER=/home/sungin/firstmate/bin/fm-herdr-lab.sh FM_CURSOR_AGY_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-agy-smoke.test.sh
+```
+
+```text
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=24444
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=20245
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=19678
+```
 
 ## Pi supervision branch
 

@@ -86,6 +86,13 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Shared, backend-neutral harness-process identity (bin/fm-agent-process-lib.sh):
+# the same agent|shell|other vocabulary the tmux adapter proves liveness with,
+# so a Herdr registration is verified against the pane's real processes by the
+# same rule (fm_backend_herdr_pane_process_state).
+# shellcheck source=bin/fm-agent-process-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-agent-process-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 FM_BACKEND_HERDR_MIN_AGENT_PROMPT_VERSION=0.7.5
 # events.subscribe (the native pane.agent_status_changed push stream) and its
@@ -1542,9 +1549,13 @@ fm_backend_herdr_pane_agent_free_proof() {  # <session> <pane-id>
 # fm_backend_herdr_pane_agent_free_sample: one tri-state instantaneous
 # observation for fm_backend_herdr_pane_agent_free_proof: 0 is agent-free,
 # 1 is retryable, and 2 is a conclusively live process-info foreground.
-fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id>
+fm_backend_herdr_pane_agent_free_sample() {  # <session> <pane-id> [process-info-json]
   local session=$1 pane=$2 info shell_pid fg_pgid count fg_pid name argv0 shell_name ps_bin rows
-  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  if [ "$#" -ge 3 ]; then
+    info=$3
+  else
+    info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  fi
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
     and .result.process_info.pane_id == $pane
@@ -2250,40 +2261,151 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   [ "$presence" = dead ]
 }
 
-# fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
-# dead|no-agent|live|unknown, purely from the JSON body of two read-only
-# calls - never from process exit status, since a business-logic "not found"
-# response is a normal, expected outcome here, not a call failure (real herdr
-# 0.7.1 exits 1 for it; the canned-response test fakes exit 0; parsing only
-# the JSON keeps this function correct against either).
+# fm_backend_herdr_pane_process_state: what the operating system says is
+# running in <pane_id>, as one of agent|shell|other|unreadable, from `pane
+# process-info` plus the real process table. This is the process-level proof
+# fm_backend_herdr_pane_agent_state demands before it lets a registration count
+# as a live agent (issue #4115), built on the same shape the tmux adapter uses:
+# the foreground process group is authoritative, read through the shared
+# classifier in bin/fm-agent-process-lib.sh.
 #
-#   dead     - `pane get` responds with error code pane_not_found: the pane
-#              itself is gone (closed, or its process died and herdr already
-#              reaped it - verified empirically: killing a pane's shell pid
-#              on a live server makes herdr immediately drop both the pane
-#              and its tab from `pane get`/`tab list`).
-#   no-agent - `pane get` succeeds (the pane structurally exists) but `agent
-#              get` responds with error code agent_not_found: nothing is
-#              registered in it - exactly what a herdr session-layout restore
-#              produces (verified empirically: `session stop` + fresh `herdr
-#              server` restart leaves the pane alive, agent_status "unknown",
-#              agent get -> agent_not_found - docs/herdr-backend.md "ID
-#              stability across a server restart"), and what a future
-#              `resume_agents_on_restore = false` restore would produce too
-#              (a plain shell, never an agent).
-#   live     - `agent get` succeeds and reports a real agent_status (working,
-#              idle, done, or blocked - any registered value). An idle or
-#              blocked agent is still a genuine, still-registered agent, not
-#              a restored husk, so it is never a close-and-replace candidate.
-#              A registration can outlive its agent, though: the recovery-grade
-#              fm_backend_herdr_agent_state below owns the stale-registration
-#              cross-check layered on top of this raw verdict.
-#   unknown  - anything else: an unparseable/unexpected response from either
-#              call, or a `pane get` success whose own echoed pane_id does not
-#              round-trip (guards against misreading a herdr response shape
-#              change as "the pane exists"). The caller must fail safe toward
-#              refusal here, never toward closing - this is the conservative
-#              backstop the husk check depends on.
+#   agent      - a foreground process has a verified harness identity through
+#                the shared classifier.
+#   shell      - the exact process-info sample satisfies the terminal-wide
+#                absence proof owned by fm_backend_herdr_pane_agent_free_proof.
+#   other      - readable foreground or process-tree evidence cannot prove
+#                absence. This includes background agents, unknown processes,
+#                and an empty foreground during exec handoff. Retry within the
+#                bounded settle window to let transient prompt helpers finish.
+#   unreadable - process-info failed or did not identify this pane and shell;
+#                an empty foreground naming a vanished shell also fails closed.
+#
+# Verified on Herdr 0.9.0 (docs/verification/runtime-backends.md "Stale agent
+# registration"): process-info's `.name` is the kernel process name (`node` for
+# Pi, `zsh` for a shell), `.argv0` the argv[0] basename (`pi`), and `.argv` /
+# `.cmdline` the full command line, so Pi is identified by argv[0] exactly as
+# the tmux probe identifies it from `ps`.
+fm_backend_herdr_pane_process_state() {  # <session> <pane_id>
+  local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10} verdict
+  while :; do
+    verdict=$(fm_backend_herdr_pane_process_state_sample "$1" "$2")
+    [ "$verdict" = other ] || break
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "$max_attempts" ] || break
+    sleep 0.1
+  done
+  printf '%s' "$verdict"
+}
+
+# fm_backend_herdr_pane_process_state_sample: one instantaneous observation
+# for fm_backend_herdr_pane_process_state, which owns the verdict contract and
+# the settle retry.
+fm_backend_herdr_pane_process_state_sample() {  # <session> <pane_id>
+  local session=$1 pane_id=$2 info shell_pid count i pid name argv0 args verdict
+  local others=0
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  printf '%s' "$info" | jq -e --arg pane "$pane_id" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || { printf 'unreadable'; return 0; }
+  shell_pid=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.shell_pid | select(type == "number" and . > 1) | floor' 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  count=$(printf '%s' "$info" | jq -er \
+    '.result.process_info.foreground_processes | select(type == "array") | length' 2>/dev/null) \
+    || { printf 'unreadable'; return 0; }
+  if [ "$count" -eq 0 ]; then
+    # An exec handoff may temporarily omit the foreground. Retry a real shell,
+    # but never infer absence from a provider naming a vanished process.
+    if ! "${FM_HERDR_PS_BIN:-ps}" -axo pid=,ppid=,stat=,comm=,tty= 2>/dev/null \
+      | awk -v want="$shell_pid" '$1 == want { found=1 } END { exit !found }'; then
+      printf 'unreadable'
+    else
+      printf 'other'
+    fi
+    return 0
+  fi
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    pid=$(printf '%s' "$info" | jq -r --argjson i "$i" \
+      '.result.process_info.foreground_processes[$i].pid | select(type == "number") | floor' 2>/dev/null)
+    name=$(printf '%s' "$info" | jq -r --argjson i "$i" \
+      '.result.process_info.foreground_processes[$i].name // empty' 2>/dev/null)
+    argv0=$(printf '%s' "$info" | jq -r --argjson i "$i" '
+      .result.process_info.foreground_processes[$i] as $p
+      | (($p.argv // [])[0]) // $p.argv0 // empty' 2>/dev/null)
+    args=$(printf '%s' "$info" | jq -r --argjson i "$i" '
+      .result.process_info.foreground_processes[$i] as $p
+      | $p.cmdline // (($p.argv // []) | join(" ")) // empty' 2>/dev/null)
+    verdict=$(fm_agent_process_classify "$name" "$argv0" "$args" "$pid")
+    case "$verdict" in
+      agent) printf 'agent'; return 0 ;;
+      shell) ;;
+      *) others=$((others + 1)) ;;
+    esac
+    i=$((i + 1))
+  done
+
+  # Positive harness identity is shared with upstream. Agent absence must also
+  # satisfy the fork's terminal-wide proof, including orphaned same-TTY jobs,
+  # suspended agents, and the nested Treehouse shell chain. Reuse this exact
+  # process-info sample so the proof and identity view cannot drift apart.
+  if [ "$others" -eq 0 ] && fm_backend_herdr_pane_agent_free_sample "$session" "$pane_id" "$info"; then
+    printf 'shell'
+  else
+    printf 'other'
+  fi
+}
+
+# fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
+# dead|no-agent|stale-agent|live|unknown, from the JSON body of two read-only
+# calls plus, for a registered agent, the pane's process-level view - never
+# from process exit status, since a business-logic "not found" response is a
+# normal, expected outcome here, not a call failure (real herdr 0.7.1 exits 1
+# for it; the canned-response test fakes exit 0; parsing only the JSON keeps
+# this function correct against either).
+#
+#   dead        - `pane get` responds with error code pane_not_found: the pane
+#                 itself is gone (closed, or its process died and herdr already
+#                 reaped it - verified empirically: killing a pane's shell pid
+#                 on a live server makes herdr immediately drop both the pane
+#                 and its tab from `pane get`/`tab list`).
+#   no-agent    - `pane get` succeeds (the pane structurally exists) but `agent
+#                 get` responds with error code agent_not_found: nothing is
+#                 registered in it - exactly what a herdr session-layout restore
+#                 produces (verified empirically: `session stop` + fresh `herdr
+#                 server` restart leaves the pane alive, agent_status "unknown",
+#                 agent get -> agent_not_found - docs/herdr-backend.md "ID
+#                 stability across a server restart"), and what a future
+#                 `resume_agents_on_restore = false` restore would produce too
+#                 (a plain shell, never an agent).
+#   stale-agent - `agent get` reports a registered agent_status (working, idle,
+#                 done, or blocked) but fm_backend_herdr_pane_process_state
+#                 proves the pane is shell-only: the registered agent's process
+#                 has exited and Herdr kept its registration (issue #4115;
+#                 Herdr does not release a Pi registration on TUI shutdown when
+#                 a nested shell sits under the pane's top shell, the crew
+#                 shape). This is the explicit agent-free reason: the pane is
+#                 recoverable, and the record it carries is not evidence of a
+#                 running agent. No registered status outranks the process
+#                 view, because a killed mid-turn agent leaves `working`
+#                 behind just as a quit one leaves `idle`.
+#   live        - `agent get` succeeds with a registered agent_status and the
+#                 process-level view is `agent` or `other`: a harness process
+#                 is running, or something that is not a bare shell is, so the
+#                 registration keeps its authority. An idle or blocked agent
+#                 is still a genuine, still-registered agent, not a restored
+#                 husk, so it is never a close-and-replace candidate.
+#   unknown     - anything else: an unparseable/unexpected response from
+#                 either call, a `pane get` success whose own echoed pane_id
+#                 does not round-trip (guards against misreading a herdr
+#                 response shape change as "the pane exists"), or a registered
+#                 agent whose process-level view is unreadable - the
+#                 registration alone is no longer trusted, and its absence is
+#                 not claimed either. The caller must fail safe toward refusal
+#                 here, never toward closing - this is the conservative
+#                 backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code presence status
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
@@ -2302,16 +2424,23 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
   case "$status" in
-    working|idle|done|blocked) printf 'live' ;;
+    working|idle|done|blocked) ;;
+    *) printf 'unknown'; return 0 ;;
+  esac
+  case "$(fm_backend_herdr_pane_process_state "$session" "$pane_id")" in
+    agent|other) printf 'live' ;;
+    shell) printf 'stale-agent' ;;
     *) printf 'unknown' ;;
   esac
 }
 
 # fm_backend_herdr_tab_is_husk: true (0) only for the two conservative husk
 # states (dead, no-agent) fm_backend_herdr_pane_agent_state can positively
-# confirm; live and unknown both refuse (1), so an inconclusive read never
-# licenses closing anything. Restored-layout recovery depends on this
-# fail-safe-toward-refusal behavior.
+# confirm; live, stale-agent, and unknown all refuse (1), so an inconclusive
+# read never licenses closing anything, and a stale registration - agent-free
+# for RECOVERY, which reuses the pane - still never licenses closing it, because
+# the shell it holds may be a nested worktree shell. Restored-layout recovery
+# depends on this fail-safe-toward-refusal behavior.
 fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
   case "$(fm_backend_herdr_pane_agent_state "$1" "$2")" in
     dead|no-agent) return 0 ;;
@@ -2347,9 +2476,10 @@ fm_backend_herdr_server_running_state() {  # <session>
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
 # sweep as the tmux classifier. It reuses the husk classifier rather than
 # creating a second Herdr state machine: a structurally gone pane is `missing`,
-# a confirmed agent-less pane is `dead`, a registered agent is `alive` unless
-# its registration is proven stale (below), and an unexpected or failed API
-# read is `unreadable`.
+# a confirmed agent-less pane is `dead` - whether nothing is registered or a
+# registration lingers over a shell-only pane (stale-agent, issue #4115) - a
+# registered agent with a live process is `alive`, and an unexpected or failed
+# API read is `unreadable`.
 #
 # A registered agent is NOT taken at its word here, because herdr can hold a
 # permanently stale registration. For an agent whose lifecycle reporting is
@@ -2363,23 +2493,12 @@ fm_backend_herdr_server_running_state() {  # <session>
 # recovery exists for. docs/verification/runtime-backends.md owns the active
 # versioned evidence.
 #
-# So a live registration is cross-checked against the OS-level agent-free
-# proof (fm_backend_herdr_pane_agent_free_proof): when the pane's entire
-# process tree is provably nothing but recognized idle shells plus the
-# treehouse worktree wrapper - the shape a task pane is left in when its agent
-# dies - the registered agent's process does not exist, the registration is
-# stale, and the endpoint classifies `dead` (agent-free, recovery licensed).
-# This is deliberately a process-table fact, never a
-# screen read: a rendered-prompt heuristic cannot be trusted here (agy's live
-# prompt glyph is a bare `>`, and a themed shell prompt can itself end in
-# `❯`), while any genuinely live agent - working, idle, suspended, or
-# backgrounded as a shell job - puts a non-shell process in the pane's tree,
-# fails the proof, and stays `alive`. Every inconclusive read (process info
-# unavailable, unknown shell, unreadable process table) also fails the proof
-# and stays `alive`, preserving the husk classifier's
-# fail-safe-toward-refusal contract: only a positively proven agent-free pane
-# ever unlocks recovery.
-
+# The shared process classifier uses fm_backend_herdr_pane_agent_free_sample
+# for absence, preserving the terminal-wide proof owned by
+# fm_backend_herdr_pane_agent_free_proof. Only positive absence unlocks recovery;
+# a failed process-info read is unreadable, and an inconclusive readable sample
+# remains alive. Neither state licenses removal or recovery.
+#
 # One exception to that last case, and it is deliberately made HERE rather than
 # in the husk classifier: a read can fail because the recorded session's server
 # is not running at all, which is authoritative absence for every pane in that
@@ -2398,15 +2517,8 @@ fm_backend_herdr_agent_state() {  # <target>
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
   case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
     dead) printf 'missing' ;;
-    no-agent) printf 'dead' ;;
-    live)
-      if fm_backend_herdr_pane_agent_free_proof \
-           "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1; then
-        printf 'dead'
-      else
-        printf 'alive'
-      fi
-      ;;
+    no-agent|stale-agent) printf 'dead' ;;
+    live) printf 'alive' ;;
     *)
       case "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" in
         stopped) printf 'missing' ;;
@@ -2743,7 +2855,7 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
   case "$state" in
     dead) return 0 ;;
     no-agent) ;;
-    live|unknown) return 1 ;;
+    live|stale-agent|unknown) return 1 ;;
   esac
   fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$new_pane" no-agent || return 1
   [ "$(fm_backend_herdr_pane_agent_state "$session" "$new_pane")" = dead ]
@@ -2795,7 +2907,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
       echo "warning: exact herdr presentation pane for $id is gone; spawning flat" >&2
       return 2
       ;;
-    live|unknown)
+    live|stale-agent|unknown)
       echo "error: exact herdr presentation pane for $id is $state; refusing duplicate launch" >&2
       return 1
       ;;
@@ -2844,7 +2956,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
   state=$(fm_backend_herdr_pane_agent_state "$session" "$meta_pane")
   case "$state" in
     no-agent) ;;
-    live|unknown)
+    live|stale-agent|unknown)
       fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || return 1
       echo "error: herdr presentation pane for $id became $state during reclaim; refusing duplicate launch" >&2
       return 1
@@ -2867,7 +2979,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     state=$FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || return 1
     case "$state" in
-      live|unknown)
+      live|stale-agent|unknown)
         echo "error: herdr presentation pane for $id became $state at the close boundary; refusing duplicate launch" >&2
         return 1
         ;;
@@ -2949,7 +3061,7 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
       state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
       case "$state" in
         dead|no-agent) : ;;
-        live|unknown)
+        live|stale-agent|unknown)
           echo "error: quarantined herdr presentation for $id has a $state pane; refusing duplicate launch" >&2
           return 1
           ;;
@@ -3712,10 +3824,22 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
 # gets real semantics" per the design report. See
 # fm_backend_herdr_classify_agent_status for the status->busy/idle/unknown
 # mapping.
+#
+# A `busy` verdict is proven at process level before it is reported: a
+# lingering `working` registration over a shell-only pane (an agent killed
+# mid-turn, issue #4115) reads `unknown`, never busy, so the recovery classifier
+# cannot report a shell-only pane as working. Only the busy case pays the extra
+# process read; idle and unknown are never trusted as busy by any consumer.
 fm_backend_herdr_busy_state() {  # <target>
+  local verdict
   fm_backend_herdr_target_ready "$1" || { printf 'unknown'; return 0; }
-  fm_backend_herdr_classify_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")"
+  verdict=$(fm_backend_herdr_classify_agent_status \
+    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  if [ "$verdict" = busy ] \
+    && [ "$(fm_backend_herdr_pane_process_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" = shell ]; then
+    verdict=unknown
+  fi
+  printf '%s' "$verdict"
 }
 
 # fm_backend_herdr_wait_for_working: poll <session>:<pane_id>'s NATIVE

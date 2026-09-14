@@ -38,6 +38,17 @@ curl -sf -m 5 "${EMBED_URL%/}/models" >/dev/null 2>&1 \
 
 CLI="$ROOT/bin/fm-gbrain.sh"
 TMP_ROOT=$(fm_test_tmproot fm-gbrain-e2e)
+# Every child gets an empty runtime home as well as an isolated GBRAIN_HOME.
+# This covers file-backed provider credentials before grant-read and while serving.
+RUNTIME_HOME="$TMP_ROOT/runtime-home"
+mkdir -p "$RUNTIME_HOME"
+runtime_env=(env)
+while IFS='=' read -r _name _; do
+  case "$_name" in
+    *API_KEY*|*AUTH_TOKEN*|*API_TOKEN*|*_SECRET_KEY) runtime_env+=(-u "$_name") ;;
+  esac
+done < <(env)
+runtime_env+=("HOME=$RUNTIME_HOME")
 SERVE_PID=""
 PORT=""
 
@@ -97,7 +108,7 @@ cp "$MAIN_HOME/config/gbrain.json" "$SM_HOME/config/gbrain.json"
 cp "$MAIN_HOME/config/gbrain.json" "$READER_TWO_HOME/config/gbrain.json"
 
 home_env() {  # <home> <var>
-  FM_HOME="$1" bash "$CLI" paths --json | jq -r ".$2"
+  "${runtime_env[@]}" FM_HOME="$1" bash "$CLI" paths --json | jq -r ".$2"
 }
 
 MAIN_GBRAIN_HOME=$(home_env "$MAIN_HOME" gbrain_home)
@@ -109,13 +120,13 @@ SM_PGLITE=$(home_env "$SM_HOME" pglite)
 mkdir -p "$MAIN_GBRAIN_HOME" "$SM_GBRAIN_HOME"
 
 init_brain() {  # <gbrain-home> <pglite>
-  GBRAIN_HOME="$1" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" init --pglite \
+  "${runtime_env[@]}" GBRAIN_HOME="$1" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" init --pglite \
     --path "$2" --embedding-model "$EMBED_MODEL" --embedding-dimensions "$EMBED_DIMS" \
     --non-interactive >/dev/null 2>&1
 }
 put_page() {  # <gbrain-home> <slug> <body>
   printf -- '---\ntype: note\n---\n\n%s\n' "$3" \
-    | GBRAIN_HOME="$1" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" put "$2" >/dev/null 2>&1
+    | "${runtime_env[@]}" GBRAIN_HOME="$1" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" put "$2" >/dev/null 2>&1
 }
 
 init_brain "$MAIN_GBRAIN_HOME" "$MAIN_PGLITE" || { echo "skip: could not initialize a test main brain"; exit 0; }
@@ -126,17 +137,17 @@ put_page "$SM_GBRAIN_HOME" sm-canary "This secondmate's own brain holds $SM_CANA
   || fail "could not seed the secondmate brain"
 WORLD_FACT='WORLD-CONTEXT-PACK-SENTINEL is visible remotely.'
 PRIVATE_FACT='PRIVATE-CONTEXT-PACK-SENTINEL must remain local.'
-GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$WORLD_FACT" \
+"${runtime_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$WORLD_FACT" \
   --provenance 'live read-only E2E' --entity main-canary --kind commitment \
   --visibility world >/dev/null 2>&1 || fail "could not seed the world-visible fact"
-GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$PRIVATE_FACT" \
+"${runtime_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" "$GBRAIN_BIN" remember "$PRIVATE_FACT" \
   --provenance 'live read-only E2E' --entity main-canary --kind commitment \
   --visibility private >/dev/null 2>&1 || fail "could not seed the private fact"
 pass "two real, separately initialized brains exist, one per home"
 
 # --- grant the read-only share ----------------------------------------------
 
-grant_out=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+grant_out=$("${runtime_env[@]}" FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
   bash "$CLI" grant-read fm-e2e-read --home "$SM_HOME" 2>&1) \
   || fail "grant-read failed: $grant_out"
 
@@ -149,7 +160,7 @@ CLIENT_ID=$(jq -r .client_id "$SM_HOME/config/gbrain-local.json")
 assert_not_contains "$grant_out" "$CLIENT_SECRET" "grant-read printed the credential it installed"
 pass "grant-read installed a read-only credential at mode 0600 without printing it"
 
-grant_two_out=$(FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+grant_two_out=$("${runtime_env[@]}" FM_HOME="$MAIN_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
   bash "$CLI" grant-read fm-e2e-read-two --home "$READER_TWO_HOME" 2>&1) \
   || fail "second grant-read failed: $grant_two_out"
 secret_file_two="$READER_TWO_HOME/config/gbrain-secrets/main-brain-client-secret"
@@ -160,7 +171,7 @@ CLIENT_ID_TWO=$(jq -r .client_id "$READER_TWO_HOME/config/gbrain-local.json")
 assert_not_contains "$grant_two_out" "$CLIENT_SECRET_TWO" "the second grant printed its credential"
 pass "a second remote reader received a distinct read-only OAuth client"
 
-writer_out=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth register-client \
+writer_out=$("${runtime_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth register-client \
   fm-e2e-writer --scopes write --grant-types client_credentials 2>&1) \
   || fail "writer registration failed: $writer_out"
 WRITER_ID=$(printf '%s\n' "$writer_out" | awk '/Client ID:/{print $NF}')
@@ -169,27 +180,12 @@ WRITER_SECRET=$(printf '%s\n' "$writer_out" | awk '/Client Secret:/{print $NF}')
   || fail "the disposable writer registration returned no credentials"
 
 # The registration must actually be read-scoped in GBrain's own records.
-scopes=$(GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth list 2>/dev/null || true)
+scopes=$("${runtime_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" "$GBRAIN_BIN" auth list 2>/dev/null || true)
 assert_not_contains "$scopes" "gbrain_" "auth list should not expose a usable token value"
 
 # --- serve the main brain and drive real tool calls -------------------------
 #
-# The SERVED process is the one that would synthesize. `think` is scope:read
-# since v0.42.76.0, so the guard further down really does reach it over the
-# read-only share, and it would run on this process's model and credential: an
-# inherited provider key would send the seeded main-brain page to a hosted
-# provider from a suite that is supposed to touch nothing outside its temp root.
-# So every credential-shaped variable is stripped from the served environment
-# rather than the suite trusting the operator's shell to hold none, and the
-# degrade is asserted at the call site instead of assumed.
-serve_env=(env)
-while IFS='=' read -r _name _; do
-  case "$_name" in
-    *API_KEY*|*AUTH_TOKEN*|*API_TOKEN*|*_SECRET_KEY) serve_env+=(-u "$_name") ;;
-  esac
-done < <(env)
-
-"${serve_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
+"${runtime_env[@]}" GBRAIN_HOME="$MAIN_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" serve --http --port "$PORT" > "$TMP_ROOT/serve.log" 2>&1 &
 SERVE_PID=$!
 up=0
@@ -200,10 +196,10 @@ for _ in $(seq 1 90); do
 done
 [ "$up" = 1 ] || { echo "skip: the test main brain did not start serving"; exit 0; }
 
-TOKEN=$(FM_HOME="$SM_HOME" bash "$CLI" token) \
+TOKEN=$("${runtime_env[@]}" FM_HOME="$SM_HOME" bash "$CLI" token) \
   || fail "the secondmate could not obtain a read-only token"
 [ -n "$TOKEN" ] || fail "the secondmate received an empty token"
-TOKEN_TWO=$(FM_HOME="$READER_TWO_HOME" bash "$CLI" token) \
+TOKEN_TWO=$("${runtime_env[@]}" FM_HOME="$READER_TWO_HOME" bash "$CLI" token) \
   || fail "the second remote reader could not obtain a read-only token"
 [ -n "$TOKEN_TWO" ] || fail "the second remote reader received an empty token"
 WRITER_TOKEN=$(curl -sS -m 30 -X POST "http://127.0.0.1:$PORT/token" \
@@ -346,7 +342,7 @@ pass "the main brain is byte-for-byte unaffected by the refused writes"
 
 RECALL="$ROOT/bin/fm-recall.sh"
 recall_rc=0
-recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+recall_out=$("${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
   bash "$RECALL" search --json "$CANARY" 2>&1) || recall_rc=$?
 expect_code 0 "$recall_rc" "the wrapper should read the shared corpus: $recall_out"
 [ "$(printf '%s' "$recall_out" | jq -r '.sources[] | select(.source == "main") | .state')" = ok ] \
@@ -354,7 +350,7 @@ expect_code 0 "$recall_rc" "the wrapper should read the shared corpus: $recall_o
 assert_contains "$recall_out" '"citation": "main:main-canary"' \
   "a main-brain result must arrive citable as main:<slug>"
 
-recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
+recall_out=$("${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" \
   bash "$RECALL" search --json "$SM_CANARY" 2>&1) || fail "the wrapper could not read the local corpus"
 assert_contains "$recall_out" '"citation": "local:sm-canary"' \
   "a local result must arrive citable as local:<slug>"
@@ -406,7 +402,7 @@ pass "a read-only share admits think, degrades it with no credential, cannot per
 
 put_page "$SM_GBRAIN_HOME" sm-second "The secondmate wrote this into its own brain." \
   || fail "the secondmate could not write its own brain"
-own=$(GBRAIN_HOME="$SM_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
+own=$("${runtime_env[@]}" GBRAIN_HOME="$SM_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" list 2>/dev/null || true)
 assert_contains "$own" "sm-second" "the secondmate's own write must land in its own brain"
 assert_not_contains "$own" "main-canary" "the main brain's pages must not appear in the secondmate's own index"
@@ -422,10 +418,10 @@ for _ in $(seq 1 30); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 1; don
 SERVE_PID=""
 
 rc=0
-FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" token >/dev/null 2>&1 || rc=$?
+"${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" token >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "the main brain is stopped but a token was still issued"
 
-local_search=$(GBRAIN_HOME="$SM_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
+local_search=$("${runtime_env[@]}" GBRAIN_HOME="$SM_GBRAIN_HOME" OLLAMA_BASE_URL="$EMBED_URL" \
   "$GBRAIN_BIN" search "$SM_CANARY" 2>/dev/null || true)
 assert_contains "$local_search" "sm-canary" \
   "with the main brain down, the secondmate's own search must still answer from its own index"
@@ -433,7 +429,7 @@ assert_contains "$local_search" "sm-canary" \
 # The same must hold through the wrapper crewmates actually use: a stopped main
 # brain is a degraded source, never a failed search.
 recall_rc=0
-recall_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" FM_GBRAIN_TIMEOUT=3 \
+recall_out=$("${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_BIN="$GBRAIN_BIN" FM_GBRAIN_TIMEOUT=3 \
   bash "$RECALL" search --json --timeout 30 "$SM_CANARY" 2>&1) || recall_rc=$?
 expect_code 0 "$recall_rc" "a stopped main brain must not fail the wrapper's local search: $recall_out"
 [ "$(printf '%s' "$recall_out" | jq -r '.sources[] | select(.source == "main") | .state')" = degraded ] \
@@ -442,7 +438,7 @@ assert_contains "$recall_out" '"citation": "local:sm-canary"' \
   "the home's own results must survive a stopped main brain"
 
 rc=0
-check_out=$(FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" check --json 2>/dev/null) || rc=$?
+check_out=$("${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" check --json 2>/dev/null) || rc=$?
 expect_code 0 "$rc" "a stopped main brain must not fail the reading home's check"
 state=$(printf '%s' "$check_out" | jq -r '.[] | select(.check == "main-brain") | .state')
 [ "$state" = degraded ] || fail "a stopped main brain should read as degraded, got '$state'"
@@ -454,10 +450,10 @@ artifacts="$TMP_ROOT/artifacts.txt"
 {
   printf '%s\n' "$grant_out"
   printf '%s\n' "$grant_two_out"
-  FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config
-  FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config --json
-  FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" env
-  FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" check || true
+  "${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config
+  "${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" config --json
+  "${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" env
+  "${runtime_env[@]}" FM_HOME="$SM_HOME" FM_GBRAIN_TIMEOUT=3 bash "$CLI" check || true
   cat "$SM_HOME/config/gbrain.json" "$SM_HOME/config/gbrain-local.json"
   cat "$TMP_ROOT/serve.log"
 } > "$artifacts" 2>&1

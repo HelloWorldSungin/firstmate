@@ -25,9 +25,12 @@ if [ "${FM_CURSOR_AGY_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LAB="$ROOT/bin/fm-herdr-lab.sh"
+LAB=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+# shellcheck source=tests/herdr-test-safety.sh
+. "$ROOT/tests/herdr-test-safety.sh"
+herdr_forget_inherited_pane
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup; exit 1; }
+fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 for t in herdr agy jq; do
@@ -47,26 +50,40 @@ SESSION=$("$LAB" name agy-smoke) || { echo "skip: could not derive a lab session
 WORK=
 AGY_TRUST_CREATED=0
 FM_AGY_TRUST_ADDED=
+CLEANUP_DONE=0
+CLEANUP_STATUS=0
 cleanup() {
+  [ "$CLEANUP_DONE" = 0 ] || return "$CLEANUP_STATUS"
+  CLEANUP_DONE=1
   if { [ "$AGY_TRUST_CREATED" = 1 ] || [ "${FM_AGY_TRUST_ADDED:-}" = created ]; } && [ -n "$WORK" ]; then
     if fm_agy_trust_remove "$WORK" >/dev/null 2>&1; then
       AGY_TRUST_CREATED=0
       FM_AGY_TRUST_ADDED=
     else
       printf 'not ok - agy workspace-trust cleanup for %s\n' "$WORK" >&2
+      CLEANUP_STATUS=1
     fi
   fi
   [ -z "$WORK" ] || rm -rf "$WORK"
-  "$LAB" teardown "$SESSION" >/dev/null 2>&1 || printf 'not ok - lab teardown for %s\n' "$SESSION" >&2
+  "$LAB" teardown "$SESSION" || CLEANUP_STATUS=1
+  return "$CLEANUP_STATUS"
 }
-trap cleanup EXIT
+# shellcheck disable=SC2329 # EXIT trap callback.
+smoke_exit() {
+  local exit_status=$?
+  cleanup || exit_status=1
+  exit "$exit_status"
+}
+trap smoke_exit EXIT
 "$LAB" provision "$SESSION" >/dev/null 2>&1 || { echo "skip: could not provision the isolated Herdr lab session"; trap - EXIT; exit 0; }
 export HERDR_SESSION="$SESSION"
 fm_backend_herdr_agent_prompt_capability_check "$SESSION" >/dev/null 2>&1 \
   || { echo "skip: isolated Herdr server lacks agy atomic prompt delivery"; exit 0; }
 
 WORK=$(mktemp -d)
-printf 'Reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"
+# Keep the real turn observable across native status polling; a one-word
+# cached response can finish before Herdr publishes its first working state.
+printf 'Run the shell command sleep 3 once, then reply with exactly the single word PONG and nothing else.\n' > "$WORK/brief.md"
 
 LAUNCH_TARGET=
 
@@ -101,12 +118,27 @@ EOF
   agent=
   for _ in $(seq 1 40); do
     agent=$("$LAB" run "$SESSION" agent get "$pane" 2>/dev/null | jq -r '.result.agent.agent // empty' 2>/dev/null)
-    [ -z "$agent" ] || break
+    # Native identity appears before its lifecycle state during real startup.
+    # Keep the existing launch budget, but require the production liveness
+    # postcondition before leaving it. Retain an observed working edge so a
+    # short first turn cannot disappear between readiness and settle checks.
+    st=$(fm_backend_agent_status herdr "$ses:$pane" 2>/dev/null)
+    [ "$st" = working ] && saw_working=1
+    if [ "$agent" = "$harness" ] \
+      && [ "$(fm_backend_herdr_agent_alive "$ses:$pane")" = alive ]; then
+      break
+    fi
     sleep 1
   done
   [ "$agent" = "$harness" ] || { echo "native agent get reported '$agent', expected '$harness'" >&2; return 1; }
   [ "$(fm_backend_herdr_agent_alive "$ses:$pane")" = alive ] \
-    || { echo "$harness pane not reported alive by the generic liveness probe" >&2; return 1; }
+    || {
+      echo "$harness pane not reported alive by the generic liveness probe for $ses:$pane" >&2
+      "$LAB" run "$SESSION" pane process-info --pane "$pane" >&2
+      "$LAB" run "$SESSION" agent get "$pane" >&2
+      fm_backend_herdr_agent_state "$ses:$pane" >&2
+      return 1
+    }
   # Observe a working->idle/done transition: the crew picks up the brief, works,
   # then settles (the exact edge the native completion detector keys on).
   for _ in $(seq 1 60); do
@@ -124,7 +156,7 @@ EOF
   case "$harness" in
     agy)
       token=FIRSTMATE_AGY_STEER_ACCEPTED
-      token_prompt="Reply with exactly FIRSTMATE_AGY_ followed immediately by STEER_ACCEPTED and nothing else."
+      token_prompt="Run the shell command sleep 3 once, then reply with exactly FIRSTMATE_AGY_ followed immediately by STEER_ACCEPTED and nothing else."
       ;;
   esac
   verdict=$(fm_backend_herdr_prompt_submit "$ses:$pane" \
@@ -140,8 +172,7 @@ EOF
     sleep 1
   done
   [ "$settled" = 1 ] || { echo "$harness did not start and settle a new turn after its confirmed steer" >&2; return 1; }
-  readback=$(fm_backend_herdr_cli "$ses" agent read "$pane" --source recent-unwrapped --lines 120 2>/dev/null \
-    | jq -r '.result.read.text // empty' 2>/dev/null) \
+  readback=$(fm_backend_herdr_capture "$ses:$pane" 120) \
     || { echo "$harness post-steer output could not be read" >&2; return 1; }
   case "$readback" in
     *"$token"*) : ;;
@@ -211,4 +242,5 @@ if jq -e --arg p "$WORK" '(.trustedWorkspaces // []) | index($p)' "$GLOBAL_SETTI
 fi
 pass "agy workspace trust is seeded before launch and removed afterward"
 
-echo "# all fm-agy-smoke tests passed"
+cleanup || fail "agy smoke cleanup failed"
+printf '\nall fm-agy-smoke tests passed\n'

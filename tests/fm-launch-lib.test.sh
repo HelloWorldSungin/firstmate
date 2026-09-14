@@ -62,7 +62,7 @@ test_cursor_template() {
 
 test_agy_template() {
   assert_eq "$(fm_launch_template agy ship)" \
-    'agy --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__--prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "agy ship template must skip permissions, thread model+effort, and pass the brief to --prompt-interactive"
   assert_eq "$(fm_launch_template agy scout)" "$(fm_launch_template agy ship)" \
     "agy scout template must match ship template"
@@ -71,7 +71,7 @@ test_agy_template() {
 
 test_existing_templates_keep_settings_and_hooks() {
   assert_eq "$(fm_launch_template claude ship)" \
-    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
+    'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ --settings '\''{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}'\'' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \
     "claude template drifted"
   assert_eq "$(fm_launch_template grok ship)" \
     'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' \

@@ -69,8 +69,12 @@ A sync PR is expected to carry the red `PR must be raised via no-mistakes` check
 The round deliberately uses `direct-PR` because no-mistakes rebases onto `origin/main`, which would replay and linearize a merge-only branch.
 Every other required check must pass, the PR must be mergeable, and the body must carry the applicability table and fork-survival evidence before it is reported ready.
 
-Register the ready PR through the normal task lifecycle and stop for the configured merge authority.
-When that authority later approves landing, the normal merge handler must use:
+Firstmate has standing authority to land upstream-sync rounds after its review of tests, lint, fork-preservation evidence and passing substantive CI.
+The worker still reports the ready PR through the normal task lifecycle and stops without merging.
+After that review, Firstmate records the exact round review declaration in the task metadata as specified by `github_verified_upstream_sync` in [`bin/fm-pr-merge.sh`](../../../bin/fm-pr-merge.sh).
+That guard owns the narrow expected-policy-check exception and its identity and ancestry proofs; any new head needs a fresh review declaration.
+Every other merge gate, including the existing away-authority gate, remains applicable.
+The landing handler must use:
 
 ```sh
 bin/fm-pr-merge.sh <task-id> <full-PR-url> -- --merge

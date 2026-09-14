@@ -11,6 +11,21 @@ $ gbrain version
 gbrain 0.42.69.0
 ```
 
+## Read-only scope refresh on 2026-09-14
+
+The complete live share regression passed against GBrain `0.46.21.0` at `649ffe5f8baf3ff7f979c77f4de3975904cfe029` on Linux x86_64.
+It used two disposable brains, a loopback HTTP server, a local embedding endpoint, and an empty runtime home for child processes, with provider-key environment variables removed before registration and serving.
+The runtime-home isolation covers file-backed provider credentials as well as the separate `GBRAIN_HOME` data roots.
+
+```sh
+FM_GBRAIN_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-gbrain-readonly-e2e.test.sh
+```
+
+The test verified world-only context packs, independent OAuth-client delta cursors, successful main-brain reads, refusal of attempted writes, and byte-for-byte preservation of the main brain.
+Read-scoped `think` remained reachable but degraded without credentials and could not persist a result.
+The secondmate could write its own brain and keep searching it when the main brain went offline, and generated artifacts and server logs did not contain client secrets.
+The complete script passed in 18.465 seconds.
+
 ## The installed mount model cannot express a read-only share
 
 A mount in this version carries direct transport only, so it cannot be given an OAuth credential:

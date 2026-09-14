@@ -6,6 +6,7 @@
 #          exits 0.
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
+#                 "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=<floor>; install: <command>) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
@@ -18,6 +19,7 @@
 #                 "ENDPOINT_BINDING_MIGRATION: task <id> (<backend>): <reason>",
 #                 "RUN_ATTRIBUTION: task <id>: legacy no-mistakes metadata has no proven branch=; any run is unattributable until task cleanup",
 #                 "BACKLOG_RECONCILE: <id>: <what this home could not reconcile>",
+#                 "BACKLOG_RECONCILE: code-root <file> is not this home's <file>; ...",
 #                 "TANGLE: <remediation>",
 #                 "VAULT_DRIFT: <project>: <vault problem and remedy>",
 #                 "UPSTREAM: <fork drift or measurement failure>",
@@ -73,14 +75,15 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.46.0 (structured pipeline attestation floor; see CONTRIBUTING.md).
-#          The AXI-family floor policy is owned beside GH_AXI_MIN,
-#          LAVISH_AXI_MIN, and CHROME_DEVTOOLS_AXI_MIN below; the per-tool
-#          owners point there. An installed
-#          build below its floor reports MISSING like no-mistakes, so the operator
-#          is asked to upgrade rather than silently running an older tool.
+#          The AXI-family floor policy is owned beside GH_AXI_MIN, CHROME_DEVTOOLS_AXI_MIN, and
+#          LAVISH_AXI_MIN below; the per-tool owners point there. An installed
+#          essential build below its floor reports MISSING like no-mistakes.
+#          Missing or incompatible lavish-axi reports PRESENTATION_UNAVAILABLE:
+#          nonvisual dispatch continues with plain-text decisions and reports,
+#          but Lavish use still requires a compatible build at or above its floor.
 #          tasks-axi feature probes remain a separate defense-in-depth check.
-#          tasks-axi and quota-axi are required bootstrap tools (same class as
-#          lavish-axi). A compatible tasks-axi default backend is silent.
+#          tasks-axi and quota-axi are essential bootstrap tools.
+#          A compatible tasks-axi default backend is silent.
 #          quota-axi is required for the agent-owned dispatch-profile array
 #          procedure in AGENTS.md section 4 and
 #          .agents/skills/quota-array-dispatch/SKILL.md.
@@ -150,6 +153,9 @@
 #          reads or writes another home; the fleet snapshot's classifier and
 #          bin/fm-secondmate-reconcile.sh's nudge stay as backstops. Replayed
 #          transitions and restored In-flight rows print BOOTSTRAP_INFO facts.
+#          The `code-root <file>` variant is a detect-only local check that runs
+#          even in a read-only session; detect_code_root_backlog_fork owns what
+#          it reports.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the eleven MUTATING sweeps
 #          (endpoint-binding migration, run-attribution transition,
 #          backlog_record_reconcile, secondmate_sync,
@@ -202,6 +208,9 @@
 #          keeps detect-only meaning unlocked, exactly as before.
 #        fm-bootstrap.sh install <tool>...
 #          Install the named tools (only ones the captain approved).
+#        fm-bootstrap.sh lavish-compatible
+#          Exit 0 when lavish-axi meets LAVISH_AXI_MIN, 1 otherwise, printing
+#          nothing; bin/fm-brief.sh uses it to gate scout Lavish hosting.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1207,7 +1216,7 @@ missing_tool_diagnostic() {
 # jq is universal because the read-only fleet snapshot, the crew-dispatch
 # profile reader, and the durable outcome manifest teardown publishes all parse
 # and emit JSON through it; without jq a home cannot archive a finished task.
-COMMON_TOOLS="node git gh jq no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+COMMON_TOOLS="node git gh jq no-mistakes gh-axi chrome-devtools-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -1434,6 +1443,7 @@ crew_dispatch_validate() {
       elif $h == "claude" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "codex" then (["low","medium","high","xhigh"] | index($e))
       elif $h == "grok" then (["low","medium","high"] | index($e))
+      elif $h == "agy" then (["low","medium","high"] | index($e))
       elif $h == "pi" or $h == "pi-signed" or $h == "omp" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "agy" then (["low","medium","high"] | index($e))
       elif $h == "muse" then (["low","medium","high","xhigh","max"] | index($e))
@@ -1674,6 +1684,11 @@ startup_memory_budget_setup() {
   fi
 }
 
+if [ "${1:-}" = "lavish-compatible" ]; then
+  tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"
+  exit
+fi
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1781,8 +1796,8 @@ detect_local_tools() {
   if command -v chrome-devtools-axi >/dev/null 2>&1 && ! tool_version_at_least chrome-devtools-axi "$CHROME_DEVTOOLS_AXI_MIN"; then
     echo "MISSING: chrome-devtools-axi (install: $(install_cmd chrome-devtools-axi))"
   fi
-  if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
-    echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
+  if ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
+    echo "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=$LAVISH_AXI_MIN; install: $(install_cmd lavish-axi)) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish"
   fi
   if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
     echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
@@ -1823,7 +1838,25 @@ detect_local_config() {
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"
   fi
+  detect_code_root_backlog_fork
   detect_home_summary_publication
+}
+
+# Shadow-backlog check. When this home's data directory is not the code root's,
+# a code-root data/backlog.md or data/done-archive.md that is not this home's
+# own file is a queue a cwd-relative tasks-axi write has already forked; a link
+# into the home does not survive such a write (docs/configuration.md "Backlog
+# backend" owns why). Detect-only: neither copy is a safe winner, so nothing is
+# merged here.
+detect_code_root_backlog_fork() {
+  local name root_copy
+  [ "$FM_ROOT/data" -ef "$DATA" ] && return 0
+  for name in backlog.md done-archive.md; do
+    root_copy="$FM_ROOT/data/$name"
+    [ -e "$root_copy" ] || [ -L "$root_copy" ] || continue
+    [ "$root_copy" -ef "$DATA/$name" ] && continue
+    echo "BACKLOG_RECONCILE: code-root $root_copy is not this home's $DATA/$name; tasks-axi wrote the code root instead of this home, so rows in it may be missing here - merge it into this home's copy and move it aside"
+  done
 }
 
 # This home's ledger publication is deliberately best-effort: every lifecycle

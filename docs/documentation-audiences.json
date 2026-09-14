@@ -344,6 +344,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/quiet/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/quota-array-dispatch/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -661,6 +665,10 @@
     },
     {
       "path": "docs/verification/dashboard-fleet-health.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/agy.md",
       "audience": "maintainer-verification"
     },
     {

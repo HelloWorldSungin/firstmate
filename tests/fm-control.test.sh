@@ -413,8 +413,8 @@ test_agy_has_verified_control_rows() {
     || fail "agy must still be a known adapter to the clear-key table, not an error"
   [ "$(fm_control_interrupt_ack_source agy)" = none ] \
     || fail "agy exposes no durable typed close, so it must claim no acknowledgement source"
-  [ "$(fm_control_exit_command agy)" = '/exit' ] \
-    || fail "agy exits on /exit"
+  [ "$(fm_control_exit_command agy)" = '/quit' ] \
+    || fail "agy exits on /quit"
   fm_control_harness_supports_kind agy ship \
     || fail "agy should be able to run a ship task"
   fm_control_harness_supports_kind agy secondmate \

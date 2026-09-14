@@ -22,7 +22,8 @@
 #   - LOCKED with the repository's ownership-and-liveness lock (fm_lock_*): a
 #     stale lock is reclaimed only when its holder PID is provably dead, so a slow
 #     mutator's LIVE lock is never stolen, and only the acquiring process releases.
-#   - ATOMIC - written to a sibling temp file and mv'd into place.
+#   - ATOMIC - written to a sibling temp file and mv'd into place after checking
+#     that an external writer has not changed the original bytes.
 #   - FAIL-CLOSED - a settings file that is not valid JSON is left UNTOUCHED
 #     rather than clobbered, and a missing file is created minimally only for add.
 #
@@ -80,7 +81,7 @@ fm_agy_trust_add() {  # <abs-path>
   # the caller (fm-spawn), not within this library.
   # shellcheck disable=SC2034
   FM_AGY_TRUST_ADDED=
-  local path=$1 file lock tmp rc=0 already
+  local path=$1 file lock tmp rc=0 already before
   command -v jq >/dev/null 2>&1 || { echo "warning: jq unavailable; cannot add agy workspace trust for $path" >&2; return 1; }
   case "$path" in
     /*) : ;;
@@ -91,8 +92,11 @@ fm_agy_trust_add() {  # <abs-path>
   mkdir -p "$(dirname "$file")" 2>/dev/null || true
   lock="$file.fm-trust.lock"
   fm_agy_trust_lock_acquire "$lock" || { echo "warning: could not lock agy settings to add workspace trust for $path" >&2; return 1; }
+  before=absent
   if [ -e "$file" ]; then
-    if ! jq -e . "$file" >/dev/null 2>&1; then
+    [ -f "$file" ] && [ -O "$file" ] && [ -w "$file" ] && [ ! -L "$file" ] || { fm_agy_trust_lock_release "$lock"; return 1; }
+    before=$(cksum < "$file") || { fm_agy_trust_lock_release "$lock"; return 1; }
+    if ! jq -e 'type == "object" and ((.trustedWorkspaces // []) | type == "array")' "$file" >/dev/null 2>&1; then
       echo "warning: agy settings at $file is not valid JSON; leaving it untouched (workspace trust add skipped for $path)" >&2
       fm_agy_trust_lock_release "$lock"
       return 1
@@ -110,6 +114,10 @@ fm_agy_trust_add() {  # <abs-path>
   else
     tmp=$(mktemp "$file.fm-trust.XXXXXX" 2>/dev/null) || { fm_agy_trust_lock_release "$lock"; return 1; }
     jq -n --arg p "$path" '{trustedWorkspaces: [$p]}' > "$tmp" 2>/dev/null || rc=1
+  fi
+  if [ "$before" != "$(if [ -e "$file" ]; then cksum < "$file"; else printf absent; fi)" ]; then
+    echo "warning: agy settings changed during trust mutation; preserving the external write" >&2
+    rc=1
   fi
   if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
     mv -f "$tmp" "$file" || rc=1
@@ -147,7 +155,7 @@ fm_agy_trust_rollback() {  # <abs-path> <marker>
 # contention, write failure) so the caller can treat it as an incomplete teardown
 # and retry.
 fm_agy_trust_remove() {  # <abs-path>
-  local path=$1 file lock tmp rc=0
+  local path=$1 file lock tmp rc=0 before
   command -v jq >/dev/null 2>&1 || { echo "warning: jq unavailable; cannot remove agy workspace trust for $path" >&2; return 1; }
   case "$path" in
     /*) : ;;
@@ -158,6 +166,8 @@ fm_agy_trust_remove() {  # <abs-path>
   [ -e "$file" ] || return 0
   lock="$file.fm-trust.lock"
   fm_agy_trust_lock_acquire "$lock" || { echo "warning: could not lock agy settings to remove workspace trust for $path" >&2; return 1; }
+  [ -f "$file" ] && [ -O "$file" ] && [ -w "$file" ] && [ ! -L "$file" ] || { fm_agy_trust_lock_release "$lock"; return 1; }
+  before=$(cksum < "$file") || { fm_agy_trust_lock_release "$lock"; return 1; }
   if ! jq -e . "$file" >/dev/null 2>&1; then
     echo "warning: agy settings at $file is not valid JSON; leaving it untouched (workspace trust remove skipped for $path)" >&2
     fm_agy_trust_lock_release "$lock"
@@ -165,6 +175,10 @@ fm_agy_trust_remove() {  # <abs-path>
   fi
   tmp=$(mktemp "$file.fm-trust.XXXXXX" 2>/dev/null) || { fm_agy_trust_lock_release "$lock"; return 1; }
   jq --arg p "$path" 'if (.trustedWorkspaces | type) == "array" then .trustedWorkspaces |= map(select(. != $p)) else . end' "$file" > "$tmp" 2>/dev/null || rc=1
+  if [ "$before" != "$(if [ -e "$file" ]; then cksum < "$file"; else printf absent; fi)" ]; then
+    echo "warning: agy settings changed during trust mutation; preserving the external write" >&2
+    rc=1
+  fi
   if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
     mv -f "$tmp" "$file" || rc=1
   else
