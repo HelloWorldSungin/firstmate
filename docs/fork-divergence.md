@@ -204,6 +204,7 @@ The rationale beside the constant owns why 480s and what the bound costs each CI
 Upstream `kunchenguid/firstmate#4151` refreshes shared duration hints and raises the portable serial job cap to 30 minutes.
 The fork retains eight shards and takes per-script maxima across both parents, preserving its fork-only timing hints.
 The runner still owns the 480-second per-script bound and the updated margin arithmetic.
+The fork overlaps already-admitted isolated scripts inside its existing portable parallel jobs; [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) owns worker count and caps, with current concurrency evidence in [`docs/fm-test-isolation-proof.md`](../docs/fm-test-isolation-proof.md).
 
 Watcher triage cases are partitioned between `tests/fm-watch-triage.test.sh` and `tests/fm-watch-triage-waits.test.sh`, with shared case definitions in `tests/watch-triage-helpers.sh`, so suite growth does not weaken the per-script bound.
 

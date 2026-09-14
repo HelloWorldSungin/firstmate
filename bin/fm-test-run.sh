@@ -205,10 +205,11 @@ PER_SCRIPT_TIMEOUT_SET=
 # with about nine minutes left for setup and runner variability. The script
 # bound stays unchanged; the serial job adopts upstream's 30-minute cap.
 # real-Herdr is 420s less its ~35s mean slot plus 480s, inside its 1200s step cap.
-# portable-parallel is tighter: CI runs that lane serially, so ~545s less its
-# ~45s mean slot plus 480s is ~980s, already past its 600s job cap before setup.
-# That lane can therefore lose per-script attribution to a job cancellation.
-# Raising the script bound would not remedy that enclosing-job limit.
+# Portable-parallel CI overlaps the admitted isolated scripts, so its serial
+# hint sum is no longer a job wall-time estimate. A late-starting hung script
+# can still exhaust the enclosing job cap before its own bound, losing the
+# artifact to job cancellation. The workflow owns worker count and job caps;
+# raising the script bound would not remedy that enclosing-job limit.
 #
 # It is a guard, not a speed control: a HUNG script becomes a bounded failure
 # instead of an unbounded suite, which is the shape that silently outruns a

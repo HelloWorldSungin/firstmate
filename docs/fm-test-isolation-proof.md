@@ -20,6 +20,21 @@ This record owns concurrent isolation evidence for the portable parallel candida
 | failed | 0 |
 | wall duration | 113278 ms |
 
+## Portable pool with two workers
+
+Verified on 2026-09-14 on Linux x86_64 with Git 2.54.0, Pi 0.85.1, TypeScript 7.0.2 and Ruby 3.4.9 available on PATH.
+The command was `taskset -c 0,1 bin/fm-test-isolation-proof.sh --jobs 2`, with `--json` directed to a private evidence file.
+The exact completion output was:
+
+```text
+FM_ISOLATION_SUMMARY total=24 failed=0 concurrency=2 duration_ms=434026
+```
+
+Every candidate ran without a gate skip, and the proof's Git-configuration and temporary-root isolation checks passed.
+After completion, the proof root was absent and no live process retained a `TMPDIR` beneath it.
+The two-CPU affinity bounds this local concurrency observation; it is not a measurement of hosted-runner speed or a guarantee of CI wall-time headroom.
+[The CI workflow](../.github/workflows/ci.yml) owns its worker count and deadlines, while [portable shards](fm-test-portable-shards.md) explains how to interpret lane measurements.
+
 ## Candidate set
 
 - `tests/fm-arm-pretool-check.test.sh`

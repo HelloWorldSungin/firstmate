@@ -96,7 +96,11 @@ git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add .
-git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
+# Complete fixture maintenance before the remote route clones this repository.
+# A detached repack can remove loose objects while a local clone copies them.
+# The gc setting also covers Git versions predating maintenance.autoDetach.
+git -C "$REMOTE_ROOT" -c maintenance.autoDetach=false -c gc.autoDetach=false \
+  commit -qm 'remote fixture root'
 
 cat > "$FAKEBIN/fake-ssh" <<'SH'
 #!/usr/bin/env bash
@@ -307,4 +311,4 @@ try_flag 'requires a non-empty value' \
   --secondmate --traceparent=
 pass "delivery: a parent-supplied carrier is accepted only for a secondmate launch and only as a strict W3C value"
 
-echo "ALL TESTS PASSED"
+printf '\nall fm-remote-secondmate-trace-context tests passed\n'
